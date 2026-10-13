@@ -1,0 +1,90 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  SOLANA_VERSION: v2.3.6
+
+jobs:
+  rust:
+    name: rust (check + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check || true
+      - run: cargo clippy --workspace --all-targets -- -D warnings -A clippy::too_many_arguments || true
+      - run: cargo test --workspace --exclude scash-vault
+      - name: vault unit tests (fixture tests need circuit artifacts)
+        run: cargo test -p scash-vault --lib
+
+  sbf:
+    name: build SBF programs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: install solana
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/${SOLANA_VERSION}/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+      - run: cargo build-sbf --manifest-path programs/scash_vault/Cargo.toml
+      - run: cargo build-sbf --manifest-path programs/scash_harvester/Cargo.toml
+      - name: program sizes
+        run: ls -la target/deploy/*.so
+      - uses: actions/upload-artifact@v4
+        with:
+          name: programs
+          path: target/deploy/*.so
+
+  ts:
+    name: sdk + circuits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run -w sdk build
+      - run: npm run -w sdk test
+      - name: compile circuits (constraint counts)
+        run: npm run -w circuits build
+
+  deploy-devnet:
+    name: deploy to devnet
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [rust, sbf, ts]
+    runs-on: ubuntu-latest
+    environment: devnet
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: programs
+          path: target/deploy
+      - name: install solana
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/${SOLANA_VERSION}/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+      - name: deploy
+        env:
+          DEPLOYER_KEYPAIR: ${{ secrets.DEVNET_DEPLOYER_KEYPAIR }}
+          VAULT_PROGRAM_KEYPAIR: ${{ secrets.VAULT_PROGRAM_KEYPAIR }}
+          HARVESTER_PROGRAM_KEYPAIR: ${{ secrets.HARVESTER_PROGRAM_KEYPAIR }}
+        run: |
+          if [ -z "$DEPLOYER_KEYPAIR" ]; then echo "no deployer secret, skipping"; exit 0; fi
+          mkdir -p keypairs
+          echo "$DEPLOYER_KEYPAIR" > keypairs/deployer.json
+          echo "$VAULT_PROGRAM_KEYPAIR" > keypairs/scash_vault-keypair.json
+          echo "$HARVESTER_PROGRAM_KEYPAIR" > keypairs/scash_harvester-keypair.json
+          solana config set --url https://api.devnet.solana.com --keypair keypairs/deployer.json
+          solana balance || true
+          solana program deploy target/deploy/scash_vault.so --program-id keypairs/scash_vault-keypair.json --upgrade-authority keypairs/deployer.json
+          solana program deploy target/deploy/scash_harvester.so --program-id keypairs/scash_harvester-keypair.json --upgrade-authority keypairs/deployer.json

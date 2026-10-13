@@ -1,0 +1,27 @@
+{
+  "name": "scash",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Shielded notes on Solana. Sapling-style keys and addresses, Groth16 proofs verified on-chain, relayer-paid fees, turnstile-bounded pools.",
+  "license": "MIT",
+  "workspaces": [
+    "circuits",
+    "sdk",
+    "relayer",
+    "indexer",
+    "app"
+  ],
+  "scripts": {
+    "circuits:build": "npm -w circuits run build",
+    "circuits:test": "npm -w circuits test",
+    "sdk:build": "npm -w sdk run build",
+    "sdk:test": "npm -w sdk test",
+    "relayer:dev": "npm -w relayer run dev",
+    "indexer:dev": "npm -w indexer run dev",
+    "app:dev": "npm -w app run dev",
+    "test": "npm run circuits:test && npm run sdk:test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

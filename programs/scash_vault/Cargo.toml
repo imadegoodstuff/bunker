@@ -1,0 +1,28 @@
+[package]
+name = "scash-vault"
+description = "scash shielded pool: Groth16-verified note transfers with a per-asset turnstile."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "scash_vault"
+
+[features]
+no-entrypoint = []
+test-sbf = []
+
+[dependencies]
+solana-program = { workspace = true }
+solana-poseidon = { workspace = true }
+groth16-solana = { workspace = true }
+borsh = { workspace = true }
+thiserror = { workspace = true }
+scash-core = { path = "../../crates/scash-core" }
+
+[dev-dependencies]
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -1,0 +1,63 @@
+import Fastify from "fastify";
+import cors from "@fastify/cors";
+import { Connection, PublicKey } from "@solana/web3.js";
+import { Db } from "./db.js";
+import { Scanner } from "./scanner.js";
+
+const RPC = process.env.RPC_URL ?? "https://api.devnet.solana.com";
+const PROGRAM = new PublicKey(process.env.PROGRAM_ID ?? "A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ");
+const DB_PATH = process.env.DB_PATH ?? "./scash-indexer.sqlite";
+const PORT = Number(process.env.PORT ?? 8788);
+
+const db = new Db(DB_PATH);
+const conn = new Connection(RPC, "confirmed");
+const scanner = new Scanner(conn, db, PROGRAM, Number(process.env.SCAN_INTERVAL_MS ?? 4000));
+void scanner.start();
+
+const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
+await app.register(cors, { origin: true });
+
+const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64");
+
+app.get("/health", async () => ({ ok: true, program: PROGRAM.toBase58(), commitments: db.count(), rpc: RPC.replace(/\/\/.*@/, "//") }));
+
+/** Leaves and their note ciphertexts, paginated by leaf index. Wallets trial-decrypt these. */
+app.get<{ Querystring: { from?: string; limit?: string } }>("/commitments", async (req) => {
+  const from = Number(req.query.from ?? 0);
+  const limit = Math.min(Number(req.query.limit ?? 500), 2000);
+  const rows = db.commitments(from, limit);
+  return {
+    from,
+    next: rows.length ? rows[rows.length - 1].idx + 1 : from,
+    total: db.count(),
+    items: rows.map((r) => ({ index: r.idx, commitment: r.commitment, ciphertext: b64(r.ciphertext), signature: r.signature, slot: r.slot, blockTime: r.block_time })),
+  };
+});
+
+/** Outgoing ciphertexts (sender-side recovery with ovk). */
+app.get<{ Querystring: { from?: string; limit?: string } }>("/outgoing", async (req) => {
+  const from = Number(req.query.from ?? 0);
+  const limit = Math.min(Number(req.query.limit ?? 500), 2000);
+  return db.outCiphertexts(from, limit).map((r) => ({ firstIndex: r.first_idx, signature: r.signature, ciphertext: b64(r.ciphertext) }));
+});
+
+app.get<{ Params: { nf: string } }>("/nullifiers/:nf", async (req) => ({ nullifier: req.params.nf, spent: db.hasNullifier(req.params.nf.toLowerCase()) }));
+app.get<{ Querystring: { sinceSlot?: string; limit?: string } }>("/nullifiers", async (req) =>
+  db.nullifiersSince(Number(req.query.sinceSlot ?? 0), Math.min(Number(req.query.limit ?? 1000), 5000))
+);
+app.get<{ Querystring: { n?: string } }>("/roots", async (req) => db.latestRoots(Math.min(Number(req.query.n ?? 32), 128)));
+
+/** Anonymity-set statistics for the UI (per asset, recent window). */
+app.get<{ Querystring: { sinceSlot?: string; days?: string } }>("/stats", async (req) => {
+  const since = Number(req.query.sinceSlot ?? 0);
+  const perMint: Record<string, { shields: number; unshields: number; donated: string; shielded: string; unshielded: string }> = {};
+  for (const r of db.stats(since)) {
+    const m = (perMint[r.mint] ??= { shields: 0, unshields: 0, donated: "0", shielded: "0", unshielded: "0" });
+    if (r.kind === "shield") { m.shields = r.n; m.shielded = String(r.total ?? 0); }
+    if (r.kind === "unshield") { m.unshields = r.n; m.unshielded = String(r.total ?? 0); }
+    if (r.kind === "donate") m.donated = String(r.total ?? 0);
+  }
+  return { leaves: db.count(), perMint, daily: db.dailyActivity(Number(req.query.days ?? 30)) };
+});
+
+await app.listen({ port: PORT, host: "0.0.0.0" });

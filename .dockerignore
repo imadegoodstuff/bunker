@@ -1,0 +1,14 @@
+**/node_modules
+**/dist
+**/.next
+target
+keypairs
+.git
+.github
+*.log
+circuits/ptau
+circuits/build/**/*.sym
+circuits/build/**/*.r1cs
+programs
+crates
+docs

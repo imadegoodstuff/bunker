@@ -1,0 +1,21 @@
+{
+  "name": "@scash/circuits",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "scash transact circuits (circom, Groth16 over BN254)",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "setup:dev": "node scripts/setup-dev.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "circomlib": "^2.0.5"
+  },
+  "devDependencies": {
+    "circom2": "^0.2.23",
+    "circomlibjs": "^0.1.7",
+    "snarkjs": "^0.7.6",
+    "ffjavascript": "^0.3.1"
+  }
+}

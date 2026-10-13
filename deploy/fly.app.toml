@@ -1,0 +1,35 @@
+app = "scash"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile.app"
+
+[build.args]
+  NEXT_PUBLIC_CLUSTER = "devnet"
+  NEXT_PUBLIC_RPC_URL = "https://api.devnet.solana.com"
+  NEXT_PUBLIC_INDEXER_URL = "https://scash-indexer.fly.dev"
+  NEXT_PUBLIC_RELAYER_URL = "https://scash-relayer.fly.dev"
+  NEXT_PUBLIC_PROGRAM_ID = "A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ"
+  NEXT_PUBLIC_SITE_URL = "https://scash.fly.dev"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 400
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "15s"
+  method = "GET"
+  path = "/"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

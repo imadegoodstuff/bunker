@@ -1,0 +1,36 @@
+{
+  "name": "@scash/sdk",
+  "version": "0.1.0",
+  "description": "Client library for scash: keys, addresses, notes, note encryption, Merkle proofs, Groth16 proving and transaction building.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && node --test dist/**/*.test.js"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "@solana/web3.js": "^1.98.4",
+    "bech32": "^2.0.0",
+    "borsh": "^2.0.0",
+    "circomlibjs": "^0.1.7",
+    "ffjavascript": "^0.3.1",
+    "snarkjs": "^0.7.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0"
+  }
+}

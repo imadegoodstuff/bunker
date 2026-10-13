@@ -1,0 +1,39 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+build/
+out/
+.next/
+target/
+*.tsbuildinfo
+
+# circuit artifacts (large; rebuilt from source, final keys published via ceremony/)
+circuits/build/
+circuits/ptau/*.ptau
+!circuits/ptau/.gitkeep
+*.zkey
+*.wasm
+!app/public/circuits/.gitkeep
+*.r1cs
+*.sym
+*.wtns
+
+# secrets and local state
+.env
+.env.*
+!.env.example
+*.keypair.json
+keypairs/
+relayer/data/
+indexer/data/
+
+# os / editor
+.DS_Store
+Thumbs.db
+*.log
+
+*.sqlite*
+

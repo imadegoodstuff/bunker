@@ -1,0 +1,93 @@
+# scash
+
+**Shielded notes on Solana.** Sapling-style keys and diversified addresses, Groth16 proofs verified
+on-chain, relayer-paid transactions, and an immutable vault bounded by a per-asset turnstile.
+
+> Status: pre-release on devnet. Not audited. Proving keys are development keys until the
+> [public phase-2 ceremony](ceremony/README.md) completes. See [SECURITY.md](SECURITY.md).
+
+## What it does
+
+| | |
+|---|---|
+| **Shield** | Move SOL or any SPL / Token-2022 asset into the pool. You receive a *note* holding pool shares. |
+| **Send** | Pay any `scash1…` address privately. Amount, sender, recipient: all hidden. Relayer pays the fee. |
+| **Unshield** | Withdraw to any public address from a relayer-signed transaction. Your public wallet never appears. |
+| **Swap** | Exit through a CPI adapter bound inside the proof (adapter program in review). |
+| **Yield** | Notes hold shares; `donate()` raises the share rate. SCASH creator fees are routed here. |
+
+## Why it is different
+
+- **Diversified addresses** (`pk_d = [ivk]·GroupHash(d)` on Baby Jubjub): unlimited unlinkable addresses per viewing key.
+- **Wallet-signature keys**: the spending key is `BLAKE2b(sign("scash:v1:spending-key"))`. No seed phrase, no backup.
+- **Client-side trial decryption**: the indexer serves ciphertexts; only your browser knows which are yours.
+- **Nullifier = Poseidon(nk, ρ, position)**: bound to the leaf, immune to duplicate-commitment attacks.
+- **One tree for all assets**, depth 26, 128-root ring: the anonymity set is the whole protocol, not one pool.
+- **Turnstile**: `total_out ≤ total_in` per asset is enforced on-chain, so even a circuit soundness bug cannot drain other assets.
+- **No upgrade authority.** The guardian can only pause *new* shields and *lower* the TVL cap.
+- **Compliance opt-in**: association-set roots (Privacy Pools style) as a public input, scoped viewing keys, payment receipts.
+- **VK hygiene**: the exporter refuses a verifying key whose δ equals γ.
+
+Full protocol: [SPEC.md](SPEC.md).
+
+## Repository
+
+```
+circuits/     circom 2 circuits (transact2x2: 33,435 constraints · transact4x2: 64,752), build/setup/ceremony scripts
+crates/       scash-core: shared instruction & state layouts
+programs/     scash_vault (pool, verifier, tree, turnstile, exits) · scash_harvester (SCASH fee router)
+sdk/          TypeScript: keys, addresses, notes, encryption, Merkle, proving, tx building, wallet
+relayer/      Fee-paying relayer with policy checks, simulation, randomized delay queue
+indexer/      Event scanner → SQLite, HTTP API for commitments / nullifiers / roots / stats
+app/          Next.js shielded wallet with in-browser proving
+deploy/       Dockerfiles and Fly.io manifests
+ceremony/     Phase-2 ceremony procedure
+```
+
+## Build
+
+Requirements: Node ≥ 22, Rust stable, Solana CLI (for deployment). No native circom needed — the compiler runs as wasm.
+
+```bash
+npm ci
+npm run -w circuits build         # r1cs + wasm witness generators
+node circuits/scripts/setup-dev.mjs   # DEV ONLY zkeys (single contributor)
+node circuits/scripts/export-vk.mjs   # Rust verifying keys → programs/scash_vault/src/vk
+npm run -w sdk test
+node circuits/scripts/prove-fixture.mjs      # real proofs → programs/scash_vault/tests/fixtures
+cargo test -p scash-vault                    # verifies those proofs with the on-chain verifier code
+cargo build-sbf --manifest-path programs/scash_vault/Cargo.toml
+```
+
+## Run locally
+
+```bash
+# indexer
+RPC_URL=https://api.devnet.solana.com npm run -w indexer dev
+# relayer (fund the key with devnet SOL)
+RELAYER_KEYPAIR_PATH=./keypairs/relayer.json npm run -w relayer dev
+# app
+NEXT_PUBLIC_INDEXER_URL=http://localhost:8788 NEXT_PUBLIC_RELAYER_URL=http://localhost:8787 npm run -w app dev
+```
+
+Copy `circuits/build/<name>/<name>_js/<name>.wasm` and the `.zkey` into `app/public/circuits/` as
+`<name>.wasm` / `<name>.zkey`.
+
+## Deploy
+
+Programs: `.github/workflows/ci.yml` builds SBF artifacts and deploys to devnet when the
+`DEVNET_DEPLOYER_KEYPAIR` / `*_PROGRAM_KEYPAIR` secrets are present.
+
+Services: `fly deploy -c deploy/fly.indexer.toml`, `fly deploy -c deploy/fly.relayer.toml`,
+`fly deploy -c deploy/fly.app.toml` from the repo root. Set `RELAYER_KEYPAIR` as a Fly secret.
+
+## Program IDs (devnet)
+
+| program | id |
+|---|---|
+| scash_vault | `A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ` |
+| scash_harvester | `9TorUNxbdb4vwNXNB6R487Th94616xGtvsBHpaETcqGi` |
+
+## License
+
+MIT
