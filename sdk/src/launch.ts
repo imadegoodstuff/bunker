@@ -211,14 +211,17 @@ export const EXIT_SELL = 1;
  * `relayerTip`: lamports paid from the SOL leg to the exit call's payer — the relayer. A relayed *sell* has
  * to pay its relayer this way, since the vault's own fee would be denominated in the token being sold.
  */
-export const EXIT_DATA_LEN = 1 + 32 + 8 + 8 + 8;
+export const EXIT_DATA_LEN = 1 + 32 + 8 + 4 + 4;
+const U32_MAX = 0xffff_ffffn;
+/** Layout: kind u8 ‖ claim_key 32 ‖ min_out u64 ‖ claim_budget u32 ‖ relayer_tip u32 (lamports; both < 4.3 SOL). */
 export function exitData(kind: 0 | 1, claimKey: PublicKey, claimBudget: bigint, minOut: bigint, relayerTip = 0n): Uint8Array {
-  return concatBytes(new Uint8Array([kind]), claimKey.toBytes(), bigIntToBytesLE(claimBudget, 8), bigIntToBytesLE(minOut, 8), bigIntToBytesLE(relayerTip, 8));
+  if (claimBudget > U32_MAX || relayerTip > U32_MAX) throw new Error("claim budget and relayer tip are u32 lamports");
+  return concatBytes(new Uint8Array([kind]), claimKey.toBytes(), bigIntToBytesLE(minOut, 8), bigIntToBytesLE(claimBudget, 4), bigIntToBytesLE(relayerTip, 4));
 }
 export function decodeExitData(d: Uint8Array): { kind: number; claimKey: PublicKey; claimBudget: bigint; minOut: bigint; relayerTip: bigint } {
   if (d.length !== EXIT_DATA_LEN) throw new Error("bad exit data length");
-  const le = (o: number) => { let v = 0n; for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(d[o + i]); return v; };
-  return { kind: d[0], claimKey: new PublicKey(d.subarray(1, 33)), claimBudget: le(33), minOut: le(41), relayerTip: le(49) };
+  const le = (o: number, n: number) => { let v = 0n; for (let i = n - 1; i >= 0; i--) v = (v << 8n) | BigInt(d[o + i]); return v; };
+  return { kind: d[0], claimKey: new PublicKey(d.subarray(1, 33)), minOut: le(33, 8), claimBudget: le(41, 4), relayerTip: le(45, 4) };
 }
 
 /** Accounts the vault forwards to the launch program after the nullifier PDAs. */

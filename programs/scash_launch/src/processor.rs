@@ -23,11 +23,13 @@ use solana_program::{
 
 /// Bytes the vault prepends to `exit_data` when it calls an exit target.
 const EXIT_AMOUNT_PREFIX: usize = 8;
-/// `exit_data` layout: kind u8 || claim_key 32 || claim_budget u64 || min_out u64 || relayer_tip u64.
+/// `exit_data` layout: kind u8 || claim_key 32 || min_out u64 || claim_budget u32 || relayer_tip u32.
 /// `relayer_tip` is paid from the SOL leg to the exit call's `payer` (the
 /// relayer), which is how a relayed *sell* pays its relayer: the vault's own
-/// fee would be in the token being sold, which no relayer prices.
-pub const EXIT_DATA_LEN: usize = 1 + 32 + 8 + 8 + 8;
+/// fee would be in the token being sold, which no relayer prices. The two
+/// lamport fields are u32 (< 4.3 SOL) because every byte of a relayed buy
+/// counts: the whole transaction has to fit a 1,232-byte v0 packet.
+pub const EXIT_DATA_LEN: usize = 1 + 32 + 8 + 4 + 4;
 pub const ADDRESS_LOOKUP_TABLE_PROGRAM_ID: Pubkey = solana_program::pubkey!("AddressLookupTab1e1111111111111111111111111");
 pub const EXIT_BUY: u8 = 0;
 pub const EXIT_SELL: u8 = 1;
@@ -376,9 +378,9 @@ fn process_exit(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> P
     let delivered = u64::from_le_bytes(data[0..8].try_into().unwrap());
     let kind = data[8];
     let claim_key = Pubkey::new_from_array(data[9..41].try_into().unwrap());
-    let claim_budget = u64::from_le_bytes(data[41..49].try_into().unwrap());
-    let min_out = u64::from_le_bytes(data[49..57].try_into().unwrap());
-    let relayer_tip = u64::from_le_bytes(data[57..65].try_into().unwrap());
+    let min_out = u64::from_le_bytes(data[41..49].try_into().unwrap());
+    let claim_budget = u32::from_le_bytes(data[49..53].try_into().unwrap()) as u64;
+    let relayer_tip = u32::from_le_bytes(data[53..57].try_into().unwrap()) as u64;
 
     let it = &mut accounts.iter();
     let curve = next_account_info(it)?;
@@ -746,8 +748,8 @@ mod tests {
 
     #[test]
     fn exit_data_layout_is_fixed() {
-        assert_eq!(EXIT_DATA_LEN, 57);
-        assert_eq!(EXIT_AMOUNT_PREFIX + EXIT_DATA_LEN, 65);
+        assert_eq!(EXIT_DATA_LEN, 49);
+        assert_eq!(EXIT_AMOUNT_PREFIX + EXIT_DATA_LEN, 57);
     }
 
     #[test]
