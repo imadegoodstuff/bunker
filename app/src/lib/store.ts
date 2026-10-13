@@ -7,7 +7,7 @@ import {
   ShieldedWallet, MerkleTree, assetId, seedFromSignature, encodeAddress, decodeAddress, decodePool, poolPda, treePda, decodeTree,
   buildV0, fetchLookupTable, type PoolState, type SpendableNote, SPENDING_KEY_MESSAGE, seedToBackup, seedFromBackup,
 } from "@scash/sdk";
-import { indexer, relayer, type RelayerInfo } from "./api";
+import { ApiError, indexer, relayer, type RelayerInfo } from "./api";
 import { ARTIFACTS, ASSETS, CLUSTER, PROGRAM_ID, RPC_URL, type AssetMeta } from "./config";
 
 export type Phase = "idle" | "deriving" | "syncing" | "ready" | "error";
@@ -237,6 +237,13 @@ export const useScash = create<State>((set, get) => {
   };
 });
 
+/** Relayer 422 whose simulation error is VaultError::UnknownRoot (5) or InvalidProof (7). */
+export function isStaleRootError(e: unknown): boolean {
+  if (!(e instanceof ApiError) || e.status !== 422) return false;
+  const details = JSON.stringify((e.body as { details?: unknown })?.details ?? "");
+  return /"Custom":(5|7)\b/.test(details);
+}
+
 async function relayedTransact(
   get: () => State,
   set: (p: Partial<State> | ((s: State) => Partial<State>)) => void,
@@ -260,21 +267,40 @@ async function relayedTransact(
   set((s) => ({ activity: [act, ...s.activity], tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } }));
   let consumed: bigint[] = [];
   try {
-    const t0 = performance.now();
-    const built = await wallet.buildTransact({
-      asset: assetId(asset.mint), mint: asset.mint, tokenProgram: asset.tokenProgram, pool, tree, chainTree: await loadChainTree(get().connection), artifacts: ARTIFACTS,
-      kind, amount,
-      to: o.to ? decodeAddress(wallet.bjj, o.to).address : undefined,
-      recipient: o.recipient,
-      relayer: relayerKey, relayerDest: relayerKey, relayerFee: fee, payer: relayerKey,
-      memo: o.memo ? new TextEncoder().encode(o.memo) : undefined,
-    });
-    consumed = built.consumed;
-    set({ lastProveMs: performance.now() - t0, tx: { stage: "relaying", message: "Handing the proof to the relayer" } });
-    const job = await relayer.relay(
-      Buffer.from(built.instruction.data).toString("base64"),
-      built.instruction.keys.map((k) => ({ pubkey: k.pubkey.toBase58(), isSigner: k.isSigner, isWritable: k.isWritable }))
-    );
+    const build = async () => {
+      const t0 = performance.now();
+      const built = await wallet.buildTransact({
+        asset: assetId(asset.mint), mint: asset.mint, tokenProgram: asset.tokenProgram, pool, tree, chainTree: await loadChainTree(get().connection), artifacts: ARTIFACTS,
+        kind, amount,
+        to: o.to ? decodeAddress(wallet.bjj, o.to).address : undefined,
+        recipient: o.recipient,
+        relayer: relayerKey, relayerDest: relayerKey, relayerFee: fee, payer: relayerKey,
+        memo: o.memo ? new TextEncoder().encode(o.memo) : undefined,
+      });
+      consumed = built.consumed;
+      set({ lastProveMs: performance.now() - t0, tx: { stage: "relaying", message: "Handing the proof to the relayer" } });
+      return relayer.relay(
+        Buffer.from(built.instruction.data).toString("base64"),
+        built.instruction.keys.map((k) => ({ pubkey: k.pubkey.toBase58(), isSigner: k.isSigner, isWritable: k.isWritable }))
+      );
+    };
+    let job: Awaited<ReturnType<typeof build>>;
+    try {
+      job = await build();
+    } catch (e) {
+      // The proof names a root by ring index. Under load, or after a long
+      // proving time, that slot can be overwritten before the relayer
+      // simulates (SPEC §5): the program reports UnknownRoot (5) or, when the
+      // slot now holds a different root, InvalidProof (7). Both mean "the tree
+      // moved": re-sync, re-prove once against the current root, and only
+      // then give up. Any other error is final.
+      if (!isStaleRootError(e)) throw e;
+      wallet.release(consumed);
+      consumed = [];
+      set({ tx: { stage: "proving", message: "The tree moved while proving; syncing and proving again" } });
+      await get().sync();
+      job = await build();
+    }
     const wait = Math.max(0, job.releaseAt - Date.now());
     set({ tx: { stage: "confirming", message: `Queued. Relayer releases in ~${Math.ceil(wait / 1000)}s for timing privacy` } });
     for (;;) {

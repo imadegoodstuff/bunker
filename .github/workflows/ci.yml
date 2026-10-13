@@ -57,6 +57,8 @@ jobs:
       - run: npm ci
       - run: npm run -w sdk build
       - run: npm run -w sdk test
+      - name: indexer scanner (deferred v1 transactions, contiguous paging)
+        run: npm run -w indexer test
       - name: compile circuits (constraint counts)
         run: npm run -w circuits build
 

@@ -5,13 +5,14 @@ import { Figures } from "@/components/landing/Figures";
 import { LedgerDemo } from "@/components/landing/LedgerDemo";
 import { Anatomy } from "@/components/landing/Anatomy";
 import { Reveal } from "@/components/landing/Reveal";
+import { Builds } from "@/components/landing/Builds";
 
 const GH = "https://github.com/imadegoodstuff/scash";
 
 const steps = [
   { n: "01", t: "Shield", b: "Move SOL or tokens from your wallet into the pool. This is the only public step." , icon: ShieldIcon },
   { n: "02", t: "Send", b: "Pay any scash address. Amount, sender and recipient are encrypted; a relayer pays gas.", icon: SendIcon },
-  { n: "03", t: "Withdraw", b: "Exit to a fresh wallet whenever you like. Nothing links it to the deposit.", icon: ExitIcon },
+  { n: "03", t: "Withdraw", b: "Exit to a fresh wallet whenever you like. Nothing on-chain links it to the deposit; round amounts and patience keep timing from doing so.", icon: ExitIcon },
 ];
 
 const guarantees = [
@@ -207,13 +208,7 @@ export default function Landing() {
             <div>
               <div className="flex items-center gap-2 font-medium"><img src="/icon.svg" alt="" className="h-5 w-5 rounded-md" /> scash</div>
               <p className="mt-3 max-w-xs text-xs leading-relaxed text-dim">Shielded notes on Solana. Pre-release: not audited, development proving keys. MIT licensed.</p>
-              <p className="mt-3 font-mono text-[11px] text-dim">
-                build{" "}
-                <a className="underline-offset-2 hover:underline" href={`${GH}/commit/${process.env.NEXT_PUBLIC_GIT_SHA ?? "main"}`}>
-                  {(process.env.NEXT_PUBLIC_GIT_SHA ?? "unknown").slice(0, 12)}
-                </a>
-                {" · "}program {process.env.NEXT_PUBLIC_PROGRAM_ID?.slice(0, 8) ?? "default"}…
-              </p>
+              <Builds />
             </div>
             <Col title="Product" links={[["App", "/app"], ["Spec", `${GH}/blob/main/SPEC.md`]]} />
             <Col title="Security" links={[["Policy", `${GH}/blob/main/SECURITY.md`], ["Ceremony", `${GH}/blob/main/ceremony/README.md`], ["Audit package", `${GH}/tree/main/audit`]]} />

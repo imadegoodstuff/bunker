@@ -53,17 +53,47 @@ export class Scanner {
       before = page[page.length - 1].signature;
       if (page.length < 1000) break;
     }
+    await this.retrySkipped();
     if (batch.length === 0) return;
     batch.reverse(); // oldest first
     for (let i = 0; i < batch.length; i += 50) {
       const chunk = batch.slice(i, i + 50);
       const txs = await this.fetchParsed(chunk.map((s) => s.signature));
       txs.forEach((tx, j) => {
-        if (tx && !tx.meta?.err) this.ingest(chunk[j].signature, tx);
+        if (tx === undefined) this.markSkipped(chunk[j].signature);
+        else if (tx && !tx.meta?.err) this.ingest(chunk[j].signature, tx);
       });
       this.db.setMeta("last_signature", chunk[chunk.length - 1].signature);
     }
-    console.log(`[scanner] ingested ${batch.length} tx, commitments=${this.db.count()}`);
+    console.log(`[scanner] ingested ${batch.length} tx, commitments=${this.db.count()}, skipped=${this.skipped().length}`);
+  }
+
+  /** Signatures the RPC could not return yet. Never dropped: retried on every tick until they decode. */
+  skipped(): string[] {
+    return JSON.parse(this.db.getMeta("skipped_signatures") ?? "[]") as string[];
+  }
+  private markSkipped(sig: string) {
+    const s = this.skipped();
+    if (!s.includes(sig)) {
+      s.push(sig);
+      this.db.setMeta("skipped_signatures", JSON.stringify(s));
+    }
+  }
+  private async retrySkipped() {
+    const s = this.skipped();
+    if (s.length === 0) return;
+    const remaining: string[] = [];
+    for (const sig of s) {
+      try {
+        const tx = await this.conn.getParsedTransaction(sig, { maxSupportedTransactionVersion: 1, commitment: "confirmed" });
+        if (tx === null) continue; // dropped / never landed: nothing to index
+        if (!tx.meta?.err) this.ingest(sig, tx);
+      } catch (e) {
+        console.warn(`[scanner] still cannot decode ${sig}: ${(e as Error).message}`);
+        remaining.push(sig);
+      }
+    }
+    this.db.setMeta("skipped_signatures", JSON.stringify(remaining));
   }
 
   /**
@@ -71,23 +101,25 @@ export class Scanner {
    * accept every version the RPC knows (legacy, v0, v1 — SIMD-0385, live since
    * September 2026) and must never let one undecodable signature stall the
    * scan: a batch that fails is retried one signature at a time and the
-   * offenders are skipped with a log line. Events are read from program logs,
-   * so the transaction format does not matter to `ingest`.
+   * offenders are recorded (`undefined` here → `skipped_signatures`) so the
+   * scan position can move past them while they are retried on every later tick. A
+   * skipped transaction is therefore delayed, never lost. Events are read from
+   * program logs, so the transaction format does not matter to `ingest`.
    */
-  private async fetchParsed(sigs: string[]): Promise<(ParsedTransactionWithMeta | null)[]> {
+  private async fetchParsed(sigs: string[]): Promise<(ParsedTransactionWithMeta | null | undefined)[]> {
     const opts = { maxSupportedTransactionVersion: 1, commitment: "confirmed" as const };
     try {
       return await this.conn.getParsedTransactions(sigs, opts);
     } catch (e) {
       console.warn(`[scanner] batch fetch failed (${(e as Error).message}); retrying individually`);
     }
-    const out: (ParsedTransactionWithMeta | null)[] = [];
+    const out: (ParsedTransactionWithMeta | null | undefined)[] = [];
     for (const sig of sigs) {
       try {
         out.push(await this.conn.getParsedTransaction(sig, opts));
       } catch (e) {
-        console.warn(`[scanner] skipping ${sig}: ${(e as Error).message}`);
-        out.push(null);
+        console.warn(`[scanner] deferring ${sig}: ${(e as Error).message}`);
+        out.push(undefined);
       }
     }
     return out;

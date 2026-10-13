@@ -86,7 +86,7 @@ export function Unlock() {
                   </p>
                   {usePass && (
                     <div className="mt-3 space-y-2">
-                      <input className="input" type="password" placeholder="Four or more words, or 12+ mixed characters" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="new-password" />
+                      <input className="input" type="password" placeholder="Five or more uncommon words, or 14+ mixed characters" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="new-password" />
                       {pass && (
                         <div>
                           <div className="flex h-1 gap-1" aria-hidden>
@@ -96,11 +96,10 @@ export function Unlock() {
                               return <span key={i} className={`flex-1 rounded-full ${i < on ? col : "bg-line-strong"}`} />;
                             })}
                           </div>
-                          <p className="mt-1.5 text-[11px] text-dim">
-                            ~{strength.bits} bits ·{" "}
+                          <p className="mt-1.5 text-[11px] leading-relaxed text-dim">
                             {strength.level === "weak"
-                              ? `too weak — with your signature leaked this falls in ${crackTime(strength.secondsToCrack)} at ${PASSPHRASE_GUESSES_PER_SECOND.toLocaleString()} guesses/s`
-                              : `an attacker holding your signature needs about ${crackTime(strength.secondsToCrack)} at ${PASSPHRASE_GUESSES_PER_SECOND.toLocaleString()} guesses/s`}
+                              ? `Too weak${strength.reason ? ` — ${strength.reason}` : ""}. Scored ~${strength.bits} bits; if your signature leaks, that falls in ${crackTime(strength.secondsToCrack)} at ${PASSPHRASE_GUESSES_PER_SECOND.toLocaleString()} guesses/s.`
+                              : `Scored ~${strength.bits} bits. If it were random that is ${crackTime(strength.secondsToCrack)} of guessing at ${PASSPHRASE_GUESSES_PER_SECOND.toLocaleString()}/s. The score is a rough estimate, not a measurement: avoid quotes, names and anything about you.`}
                           </p>
                         </div>
                       )}

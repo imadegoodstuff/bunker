@@ -85,28 +85,87 @@ export async function seedFromSignature(signature: Uint8Array, passphrase = ""):
  * Offline guessing budget the passphrase has to survive if the signature leaks.
  *
  * One scrypt(N=2^15, r=8, p=1) evaluation needs 32 MiB of memory; a tuned GPU
- * farm manages on the order of 10^5 guesses per second, not 10^9. The strength
- * estimate below is deliberately conservative: it assumes the attacker knows the
- * character classes in use and that human-chosen text carries about 60% of its
- * nominal entropy. Dictionary-word phrases are credited 11 bits per word (a
- * 2048-word list), which is what a diceware attacker would get.
+ * farm manages on the order of 10^5 guesses per second, not 10^9. At that rate
+ * the *expected* time to find a uniformly random secret of b bits is
+ * 2^(b-1) / 10^5 seconds:
+ *
+ *   40 bits →  64 days      50 bits → 178 years
+ *   55 bits → 5.7k years    64 bits → 2.9M years
+ *
+ * The score below is a HEURISTIC, not a measurement of entropy. Human-chosen
+ * text is never uniform; attackers order guesses by word frequency, phrase
+ * templates and leaked corpora, so the real work can be far below the score.
+ * The heuristic therefore only discounts (0.6 on nominal character entropy,
+ * repeats and runs ignored, common words credited 4 bits instead of 11, known
+ * leaked passwords credited 0) and never adds. A high score is permission to
+ * proceed, not a promise.
  */
 export const PASSPHRASE_GUESSES_PER_SECOND = 100_000;
-/** Below this the UI refuses the passphrase; the signature-only model is explicit instead. */
-export const PASSPHRASE_MIN_BITS = 40;
-/** At or above this the UI calls it strong (~10^5 guesses/s → centuries). */
-export const PASSPHRASE_STRONG_BITS = 64;
+/** Below this the UI refuses the passphrase (≈178 years expected at 10^5 guesses/s if the score were true entropy). */
+export const PASSPHRASE_MIN_BITS = 50;
+/** At or above this the UI calls it strong (≈1.9·10^8 years expected under the same caveat). */
+export const PASSPHRASE_STRONG_BITS = 70;
+
+/** Expected seconds to find a uniformly random b-bit secret at PASSPHRASE_GUESSES_PER_SECOND. */
+export function expectedSecondsToCrack(bits: number): number {
+  return bits <= 0 ? 0 : Math.pow(2, bits - 1) / PASSPHRASE_GUESSES_PER_SECOND;
+}
+
+/** The most-used leaked passwords; any passphrase that is one of these (optionally with trailing digits or a symbol) scores 0. */
+const LEAKED = new Set([
+  "password", "passphrase", "123456", "12345678", "123456789", "1234567890", "qwerty", "qwertyuiop", "abc123", "111111", "iloveyou",
+  "admin", "welcome", "monkey", "dragon", "letmein", "login", "princess", "football", "baseball", "sunshine", "master", "shadow",
+  "superman", "trustno1", "solana", "scash", "bitcoin", "crypto", "wallet", "secret", "changeme", "default", "freedom", "whatever",
+  "correcthorsebatterystaple", "correct horse battery staple", "tothemoon", "hodl", "satoshi", "nakamoto", "ethereum", "privatekey",
+  "seedphrase", "password1", "password123", "p@ssw0rd", "passw0rd", "letmein1", "qwerty123", "1q2w3e4r", "zaq12wsx", "asdfgh", "zxcvbn",
+]);
+
+/** Very common English words: an attacker's phrase dictionary starts here, so they are worth ~4 bits each, not 11. */
+const COMMON_WORDS = new Set((
+  "the be to of and a in that have i it for not on with he as you do at this but his by from they we say her she or an will my one all would " +
+  "there their what so up out if about who get which go me when make can like time no just him know take people into year your good some could " +
+  "them see other than then now look only come its over think also back after use two how our work first well way even new want because any these " +
+  "give day most us is are was were been has had did does am love hate life money cash coin crypto bitcoin solana wallet secret private key seed " +
+  "phrase pass word password horse battery staple correct dog cat house car tree sun moon star sky blue red green black white water fire earth " +
+  "wind king queen dragon monkey tiger lion bear wolf eagle apple banana orange summer winter spring autumn happy sad big small fast slow hello " +
+  "world test admin user root god jesus angel baby girl boy man woman family friend home open close yes no ok free trust strong weak hard easy " +
+  "january february march april may june july august september october november december monday tuesday wednesday thursday friday saturday sunday " +
+  "quick brown fox jump jumps over lazy today tomorrow yesterday night morning never always forever again still here where why very much many more " +
+  "long great little old right high different large next early young important few public bad same able last own under while should through " +
+  "before between both each such down off thing place case part week company system program question number point hand eye state school " +
+  "mother father son daughter brother sister child children music light dark heart soul mind body dream hope faith peace power magic future past " +
+  "gold silver diamond rose flower river ocean mountain forest rain snow storm cloud thunder lightning rock stone wood iron steel door window " +
+  "road street city town country nation america china india london paris york angel devil heaven hell live die born death kill run walk fly " +
+  "swim dance sing play read write learn teach work rest sleep wake eat drink coffee tea beer wine pizza chocolate sugar salt bread milk egg " +
+  "one two three four five six seven eight nine ten hundred thousand million first second third zero number letmein qwerty abc xyz asdf"
+).split(/\s+/));
+
+/** Phrases attackers try verbatim; any passphrase containing one gets 4 bits for the whole phrase, not 11 per word. */
+const FAMOUS_PHRASES = [
+  "the quick brown fox", "jumps over the lazy dog", "to be or not to be", "may the force be with you", "i have a dream", "correct horse battery staple",
+  "once upon a time", "all you need is love", "let it be", "in god we trust", "to the moon", "not your keys not your coins", "be your own bank",
+  "hello world", "open sesame", "mary had a little lamb", "twinkle twinkle little star", "happy birthday to you", "god is great", "carpe diem",
+  "live laugh love", "never gonna give you up", "winter is coming", "i am the one", "trust no one", "the cake is a lie", "keep calm and carry on",
+];
 
 export interface PassphraseStrength {
+  /** Heuristic score in bits; an upper bound on what the attacker has to search, never a lower bound. */
   bits: number;
   level: "weak" | "fair" | "strong";
-  /** Expected time to exhaust half the space at PASSPHRASE_GUESSES_PER_SECOND, in seconds. */
+  /** expectedSecondsToCrack(bits) — valid only if the passphrase were uniformly random, which human text is not. */
   secondsToCrack: number;
+  /** Why the score is low, when it is. */
+  reason?: string;
 }
 
 export function passphraseStrength(passphrase: string): PassphraseStrength {
-  const p = passphrase.normalize("NFKC");
+  const p = passphrase.normalize("NFKC").trim();
   if (p.length === 0) return { bits: 0, level: "weak", secondsToCrack: 0 };
+  const lower = p.toLowerCase();
+  const stripped = lower.replace(/[\d!@#$%^&*.?_-]+$/, "");
+  if (LEAKED.has(lower) || LEAKED.has(stripped) || LEAKED.has(lower.replace(/\s+/g, ""))) {
+    return { bits: 0, level: "weak", secondsToCrack: 0, reason: "this is on every attacker's list" };
+  }
   let charset = 0;
   if (/[a-z]/.test(p)) charset += 26;
   if (/[A-Z]/.test(p)) charset += 26;
@@ -123,12 +182,53 @@ export function passphraseStrength(passphrase: string): PassphraseStrength {
     effective += 1;
   }
   const charBits = effective * Math.log2(Math.max(charset, 2)) * 0.6;
-  const words = p.split(/\s+/).filter((w) => w.length >= 3);
-  const wordBits = words.length >= 3 ? words.length * 11 : 0;
-  const bits = Math.round(Math.max(charBits, wordBits));
-  const secondsToCrack = Math.pow(2, bits - 1) / PASSPHRASE_GUESSES_PER_SECOND;
+  // Word model. Anything with three or more words IS a phrase and is scored as
+  // one, never by its characters: a 35-letter sentence of common words looks
+  // like 90 bits to a character model and like 30 to the attacker who guesses
+  // phrases word by word. 11 bits per word (2048-word list), 4 for words
+  // everyone picks first, nothing for repeats, +3 if digits/symbols/case are
+  // mixed in (attackers try the obvious mutations early).
+  const words = lower.split(/\s+/).filter((w) => w.length >= 2);
+  const isPhrase = words.length >= 3;
+  let bits: number;
+  let commonCount = 0;
+  if (isPhrase) {
+    // Famous phrases are one dictionary entry each, whatever their length.
+    let text = lower.replace(/[^a-z0-9\s]/g, " ");
+    let wordBits = 0;
+    for (const f of FAMOUS_PHRASES) {
+      if (text.includes(f)) {
+        text = text.replace(f, " ");
+        wordBits += 4;
+        commonCount += f.split(" ").length;
+      }
+    }
+    const rest = text.split(/\s+/).filter((w) => w.length >= 2);
+    const seen = new Set<string>();
+    for (const w of rest) {
+      const core = w.replace(/[^a-z]/g, "");
+      if (seen.has(core)) continue;
+      seen.add(core);
+      const common = COMMON_WORDS.has(core) || core.length <= 2;
+      if (common) commonCount += 1;
+      wordBits += common ? 4 : 11;
+    }
+    if (/[0-9]/.test(p) || /[^A-Za-z0-9\s]/.test(p) || /[A-Z]/.test(p)) wordBits += 3;
+    bits = Math.round(wordBits);
+  } else {
+    bits = Math.round(charBits);
+  }
+  const secondsToCrack = expectedSecondsToCrack(bits);
   const level = bits < PASSPHRASE_MIN_BITS ? "weak" : bits < PASSPHRASE_STRONG_BITS ? "fair" : "strong";
-  return { bits, level, secondsToCrack };
+  let reason: string | undefined;
+  if (level === "weak") {
+    reason = isPhrase
+      ? commonCount > 0
+        ? `${commonCount} of ${words.length} words are among the first an attacker tries; add rarer words`
+        : "add another word or two"
+      : "too short for the characters it uses";
+  }
+  return { bits, level, secondsToCrack, reason };
 }
 
 /** Hex encoding of a seed for backup. 64 hex chars; anyone holding it can spend. */

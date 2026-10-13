@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { Db } from "./db.js";
 import { Scanner } from "./scanner.js";
+import { contiguousPrefix } from "./paging.js";
 
 const RPC = process.env.RPC_URL ?? "https://api.devnet.solana.com";
 const PROGRAM = new PublicKey(process.env.PROGRAM_ID ?? "A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ");
@@ -25,7 +26,11 @@ app.get("/health", async () => ({ ok: true, commit: process.env.GIT_SHA ?? "unkn
 app.get<{ Querystring: { from?: string; limit?: string } }>("/commitments", async (req) => {
   const from = Number(req.query.from ?? 0);
   const limit = Math.min(Number(req.query.limit ?? 500), 2000);
-  const rows = db.commitments(from, limit);
+  // Serve only the contiguous prefix. If a transaction is deferred (scanner
+  // `skipped_signatures`) there is a hole at its leaf indices; a wallet that
+  // saw leaves past the hole would build the wrong tree. `next` then points at
+  // the hole and the wallet simply asks again later.
+  const rows = contiguousPrefix(db.commitments(from, limit), from);
   return {
     from,
     next: rows.length ? rows[rows.length - 1].idx + 1 : from,

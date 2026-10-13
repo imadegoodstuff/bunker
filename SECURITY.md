@@ -32,16 +32,44 @@ signature. Mitigations in place:
   signature without the passphrase yields nothing; with scrypt at N=2¹⁵ a guess
   costs ~100 ms on one core and 32 MiB of memory, so a GPU farm manages on the
   order of 10⁵ guesses/s, not 10⁹. That only helps if the passphrase has
-  entropy: a weak one falls offline once the signature leaks. The app therefore
-  scores every passphrase (`passphraseStrength`, `sdk/src/keys.ts`: character
-  classes × length × 0.6, repeats and runs discounted, 11 bits per word for
-  phrases) and refuses anything under 40 bits — about 10 000 years at 10⁵
-  guesses/s — while showing the estimated time-to-crack for the budget above.
-  The estimate is conservative and still not a guarantee against a targeted
-  dictionary; a four-plus-word phrase is what the placeholder asks for. The
-  passphrase is on by default; there is no reset, and the app says so next to
-  the field and points at the seed backup as the only recovery path. A user
-  who turns it off accepts the signature-only model.
+  entropy: a weak one falls offline once the signature leaks. The arithmetic,
+  for a *uniformly random* secret of b bits at 10⁵ guesses/s, expected time
+  2^(b−1)/10⁵:
+
+  | bits | expected time to find |
+  |---|---|
+  | 40 | 64 days (full space: 127 days) |
+  | 50 | 178 years |
+  | 55 | 5 700 years |
+  | 64 | 2.9 million years |
+  | 70 | 190 million years |
+
+  (An earlier revision of this file said 40 bits was "about 10 000 years".
+  That was wrong by a factor of ~60 000; `sdk/src/sdk.test.ts` now pins the
+  table above so it cannot drift again.)
+
+  The app scores every passphrase with `passphraseStrength` in
+  `sdk/src/keys.ts` and refuses anything under **50**. The score is a
+  **heuristic upper bound**, not a measurement of entropy: human text is not
+  uniform, and attackers order guesses by frequency, so the real work can be
+  far below the score. The heuristic therefore only ever discounts. Inputs
+  with three or more words are scored as phrases, never by their characters
+  (a 40-letter sentence of common words looks like 90 bits to a character
+  model and like 30 to a phrase attacker): 11 bits per distinct word from a
+  2048-word model, 4 for the ~400 most common English words and number/day
+  names, 4 for a whole famous phrase ("the quick brown fox", "to the moon",
+  "correct horse battery staple" …), +3 for mixed case/digits/symbols. Short
+  inputs use character classes × length × 0.6 with repeats and runs ignored.
+  Anything on a list of the most-used leaked passwords, with or without the
+  usual trailing digits, scores 0. The UI shows the score, the expected
+  guessing time *if the passphrase were random*, says in the same sentence
+  that it is an estimate, and tells the user why a weak one is weak. Five
+  uncommon words or 14 mixed characters is the floor; seven words or 18
+  characters is "strong". None of this stops a targeted dictionary against
+  a phrase that means something to the user, and the UI says that too.
+  The passphrase is on by default; there is no reset, and the app says so
+  next to the field and points at the seed backup as the only recovery path.
+  A user who turns it off accepts the signature-only model.
 - **Seed backup is a bearer secret.** `scashseed1…` is the raw 32-byte seed.
   Anyone holding it can spend; it is shown behind a click, with that warning,
   and is never written to storage by the app.
@@ -311,9 +339,10 @@ is new; what changed is that each item now has something in the product, not
 only in this file.
 
 - **Weak passphrase + leaked signature.** Addressed in §1: the app scores the
-  passphrase, refuses under 40 estimated bits, shows the time-to-crack at
-  10⁵ scrypt guesses/s, and says plainly that there is no reset and that the
-  seed backup is the only recovery path. It is still the user's entropy; the
+  passphrase, refuses under 50 estimated bits (≈178 years expected at 10⁵
+  scrypt guesses/s, if the score were true entropy), shows that time with the
+  caveat attached, and says plainly that there is no reset and that the seed
+  backup is the only recovery path. It is still the user's entropy; the
   protocol cannot add any.
 - **No backup, lost passphrase.** Still fatal, by design; the Backup card's
   copy now says so and tells the user the backup is a bearer secret.
@@ -341,6 +370,55 @@ only in this file.
   per-signature fetches when a batch fails, and logs and skips rather than
   stalls. The relayer still rejects anything over 1,232 bytes because it
   signs `v0` transactions; that is a client limit, correctly labelled.
+
+### 10. Arithmetic correction, deferred transactions are never lost, auto re-prove, three commits in the footer
+
+A sixth review caught a numerical error in §1 and asked for the indexer fix
+to be tested rather than described.
+
+- **40 bits is 64 days, not 10 000 years.** 2⁴⁰ ≈ 1.1·10¹² guesses at 10⁵/s
+  is 127 days for the full space, 64 expected. The text in §1 was wrong; the
+  code (`expectedSecondsToCrack`, 2^(b−1)/rate) was right, so the UI had been
+  showing users "64 days" next to a document that said millennia. Fixed in
+  §1 with a table; the floor is raised from 40 to 50 bits; the test suite pins
+  40 → 63.6 days, 50 → 178 years, 55 → 5 708 years.
+- **The score is a heuristic and is labelled as one.** Phrases are now scored
+  as phrases (word model only, famous phrases and the most common words
+  discounted, leaked passwords zeroed); the previous version let a long
+  sentence of common words through on character count, which is exactly the
+  failure the reviewer described. The UI sentence says "if it were random"
+  and "a rough estimate, not a measurement". Details and limits in §1.
+- **Deferred transactions are retried, and wallets never see past a hole.**
+  "Log and skip" would have been a silent loss if the skipped transaction
+  carried leaves. The scanner now records every signature it could not decode
+  in `skipped_signatures`, retries all of them on every tick until they
+  decode, and `/commitments` serves only the contiguous prefix from the
+  requested index, so a wallet cannot insert leaf 4 before leaf 2 exists; it
+  sees `next` stop at the hole and asks again. `indexer/src/scanner.test.ts`
+  runs the exact scenario the reviewer asked for against a fake RPC: an
+  undecodable `v1` transaction between two normal ones; the scan position advances,
+  its neighbours index, the page stops at the hole, the deferred transaction
+  lands (leaves, out-ciphertext, root) once the RPC decodes it, and later
+  transactions flow normally. It runs in the `ts` CI job.
+- **Root expiry is handled, not just explained.** `audit/KNOWN_ISSUES.md`
+  listed "app does not re-prove on root expiry" as planned. The app now does:
+  a relayer 422 whose simulation error is `UnknownRoot` (5) or `InvalidProof`
+  (7) releases the reserved notes, re-syncs, re-proves once against the
+  current root and resubmits; any other error, or a second failure, is final.
+  This does not change the 128-root window or the single tree; load figures
+  remain those of §7 and mobile proving remains unmeasured.
+- **Which commit are the services on?** The footer no longer shows only the
+  app's build. It fetches the relayer's `/info` and the indexer's `/health`
+  and prints all three commits, each linked, with "all three on one commit"
+  or "services differ from this build". Reproducible-build attestation of the
+  Fly images is still not provided; the Dockerfiles and `--build-arg GIT_SHA`
+  are the current evidence.
+- **Marketing copy.** "Nothing links it to the deposit" became "Nothing
+  on-chain links it to the deposit; round amounts and patience keep timing
+  from doing so", and the hero caption names the per-asset anonymity set.
+- **Unchanged and still open:** no independent audit; Phase-2 ceremony has
+  one contribution; mainnet not deployed. These are listed first in
+  `audit/KNOWN_ISSUES.md` and need external parties.
 
 ## Design-level guarantees
 

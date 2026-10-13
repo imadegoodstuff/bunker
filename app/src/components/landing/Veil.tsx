@@ -79,7 +79,7 @@ export function Veil() {
           ))}
         </div>
       </div>
-      <p className="relative z-10 mt-5 text-center text-xs text-dim">One of the commitments on-chain is this payment. Nobody can tell which.</p>
+      <p className="relative z-10 mt-5 text-center text-xs text-dim">One of the commitments on-chain is this payment. The chain cannot tell which; your anonymity set is the other notes of the same asset.</p>
     </div>
   );
 }
