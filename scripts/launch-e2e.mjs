@@ -316,7 +316,7 @@ let gradFees, gradHolderBps, gradRealSol, vaultBefore;
   assert(vaultBefore === params.totalSupply - params.curveSupply, "the vault keeps exactly the reserved supply for the AMM");
 
   // frozen: votes, harvest and further private trades are refused; alice's notes stay unspent
-  await expectFail(send([voteIx(agents[0].publicKey, mint.publicKey, 100, 5000)], [agents[0]], "vote after graduation"), /0x11\b|Migrated/, "no fee left for the agents to set");
+  await expectFail(send([voteIx(agents[0].publicKey, mint.publicKey, 100, 0)], [agents[0]], "vote after graduation"), /0x11\b|Migrated/, "no fee left for the agents to set");
   await expectFail(send([harvestIx(mint.publicKey, treasury.publicKey)], [relayer], "harvest after graduation"), /0x11\b|Migrated/, "the last fees travel with the curve to the AMM");
   const claim4 = claimKeypair(seed, 3n);
   const late = await aliceW.buildTransact({
