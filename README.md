@@ -83,13 +83,13 @@ Programs: `.github/workflows/ci.yml` builds SBF artifacts on every push. The man
 (Actions → ci → Run workflow → `deploy_mainnet`) deploys them to mainnet-beta from the `mainnet` environment’s
 secrets (`MAINNET_DEPLOYER_KEYPAIR`, `MAINNET_RPC_URL`, `*_PROGRAM_KEYPAIR`), verifies the on-chain bytecode
 against the artifact it just built, and runs `scripts/init.mjs` (idempotent) using the variables
-`MAINNET_RELAYER_PUBKEY`, `MAINNET_TREASURY_PUBKEY`, `MAINNET_AGENT_PUBKEYS` (four comma-separated keys), `MAINNET_LOOKUP_TABLE`, `MAINNET_TVL_CAP_SOL`. The older
-`deploy-devnet` job runs on pushes to `main` only when `DEVNET_DEPLOYER_KEYPAIR` is present.
+`MAINNET_RELAYER_PUBKEY`, `MAINNET_TREASURY_PUBKEY`, `MAINNET_AGENT_PUBKEYS` (four comma-separated keys), `MAINNET_LOOKUP_TABLE`, `MAINNET_TVL_CAP_SOL`.
+Mainnet-beta is the only cluster; every end-to-end test runs on `solana-test-validator` in CI.
 
 Services: `fly deploy -c deploy/fly.indexer.toml`, `fly deploy -c deploy/fly.relayer.toml`,
 `fly deploy -c deploy/fly.agents.toml`, `fly deploy -c deploy/fly.app.toml` from the repo root, each with `--build-arg GIT_SHA=$(git rev-parse HEAD)` so the app footer, relayer `/info` and indexer `/health` report the commit they were built from. Set `RELAYER_KEYPAIR`, `RPC_URL` (keyed endpoint) and, after `init.mjs`, `LOOKUP_TABLE` as Fly secrets on the relayer; `RPC_URL` on the indexer; on the agents, `AGENT_0..3_KEYPAIR` (the four keys passed to `init.mjs`) plus either the Orbio server app (`ORBIO_CLIENT_ID`, `ORBIO_CLIENT_SECRET`, `ORBIO_CONNECT_SECRET`; the owner then opens `/auth/orbio/start?key=…` once and the four agents run on four vendors' models through that one connection) or `AGENT_0..3_MODEL` (`provider:model`) with the providers' own API keys; pass the keyed endpoint to the app build as `--build-arg NEXT_PUBLIC_RPC_URL=…`.
 
-## Program IDs (mainnet-beta; the same keypairs are used on devnet when that job is funded)
+## Program IDs (mainnet-beta)
 
 | program | id |
 |---|---|

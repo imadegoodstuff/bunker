@@ -6,7 +6,7 @@ What each suite covers, how to run it, and what nothing covers yet.
 |---|---|---|---|
 | Rust unit tests | `cargo test --workspace` | `rust` job | field encoding, share math fuzz (64 seeds × 400 ops), Token-2022 TLV parsing, migrator layout/PDA, Groth16 verification of the committed fixture incl. tamper, launchpad curve (k monotone, round trip never profits, exact-out tight, fee math) and state layouts |
 | clippy | `cargo clippy --workspace --all-targets -- -D warnings` | `rust` job | lint-level issues; `unexpected_cfgs`/`deprecated` allowed |
-| SBF build | `cargo build-sbf` for vault, harvester, migrator, launch | `sbf` job | the programs compile for the target; `.so` artifacts feed e2e and devnet deploy |
+| SBF build | `cargo build-sbf` for vault, harvester, migrator, launch | `sbf` job | the programs compile for the target; `.so` artifacts feed e2e and the manual mainnet deploy |
 | SDK tests | `npm run -w sdk test` | `ts` job | key derivation and scalar bounds, address round-trip, note encryption, Merkle paths, ext data, public amount encoding, nullifier position, seed/backup, packet size |
 | circuit build | `npm run -w circuits build` | `ts`, `audit`, `e2e`, `ceremony` jobs | circuits compile; constraint counts |
 | circuit adversarial suite | `npm run -w circuits test` | `e2e` job | 14 tampered witnesses of a valid unshield, each must be unsatisfiable (`audit/INVARIANTS.md` C1–C13) |

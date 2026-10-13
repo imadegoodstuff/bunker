@@ -311,8 +311,8 @@ oversold, and how anyone can tell which source the site is running.
   three bits of `ivk` per note the recipient later spent. Key agreement is now
   `[8·sk]·P` on both sides (Sapling `KA.Agree`). `sdk.test.ts` checks that
   `epk + T` yields the same shared point for every residue of `ivk` and that
-  the tampered ciphertext fails the AEAD. Existing devnet ciphertexts no
-  longer decrypt; there was no value in them. This is exactly the kind of
+  the tampered ciphertext fails the AEAD. Ciphertexts written by earlier
+  test deployments no longer decrypt; there was no value in them. This is exactly the kind of
   finding an independent audit is for.
 - **All-dummy no-ops are allowed by the circuit and priced by the chain and
   the relayer.** A `transact` with zero inputs, zero outputs and
@@ -466,29 +466,24 @@ it.
 - **Bytecode evidence.** `scripts/verify-program.mjs <id> <file.so>` reads
   the ProgramData account, hashes the ELF (padding stripped and checked to
   be zero) and compares with a local build; the `sbf` CI job now prints
-  `SHA256SUMS` for the artifacts of every commit, and the devnet deploy job
-  runs the verifier after deploying. The indexer inspects the program id at
+  `SHA256SUMS` for the artifacts of every commit, and the `deploy-mainnet`
+  job runs the verifier after deploying. The indexer inspects the program id at
   startup and every ten minutes and reports `onChain` (`deployed`, deploy
   slot, upgrade authority, ELF sha256) in `/health`; the footer prints it
   next to the three commits with the sentence "same commit is not the same
   binary" and a pointer to the hashes. Reproducible attestation of the Fly
   images is still not provided.
-- **What this surfaced: the program id the site talks to is not deployed on
-  devnet.** `getAccountInfo(A827Zi2V…)` on `api.devnet.solana.com` returns
-  no account. The `deploy-devnet` CI job has been skipping with "no deployer
-  secret" on every run: the deployer keypair secret was never set because
-  the project owner chose not to fund devnet SOL, and everything end-to-end
-  — e2e, adversarial suite, bench, migration — runs against
-  `solana-test-validator` in CI instead. The hosted app, relayer and indexer
-  therefore point at an id with nothing behind it on that cluster; the
-  footer now says so in red ("not deployed on this cluster") rather than
-  implying a running program. Nothing in the deployed services pretended
-  otherwise before — a shield from the app would simply fail — but the
-  previous footer line "program A827Zi2V…" read as if it existed. The fix is
-  not code: fund a devnet deployer, set `DEVNET_DEPLOYER_KEYPAIR`, and the
-  existing job deploys and verifies. Until then "devnet pre-release" means
-  "the code that CI runs on a local validator", and this section is where
-  that is stated.
+- **What this surfaced: the program id the site talked to was not deployed
+  anywhere public.** At the time the hosted app, relayer and indexer pointed
+  at an id with nothing behind it on their cluster; every end-to-end run —
+  e2e, adversarial suite, bench, migration — was (and is) on
+  `solana-test-validator` in CI. Nothing in the deployed services pretended
+  otherwise — a shield from the app would simply fail — but the footer line
+  "program …" read as if it existed. The footer now checks the chain and says
+  "not deployed on this cluster" in red until the program is actually there.
+  The cluster is mainnet-beta only; the manual `deploy-mainnet` job (§16)
+  deploys, verifies the bytecode and initialises, and this section is where
+  the gap between "CI-tested" and "deployed" is stated.
 
 ### 12. Retry safety: what happens when the first submission may have succeeded
 
@@ -549,7 +544,7 @@ kind as a stale test.
   truth in code — passphrase floor and "strong" thresholds, the
   time-to-crack row for the floor computed from the constants, scrypt `N`,
   ring size, client transaction format, re-prove, relayer idempotency,
-  indexer `null` handling, devnet status — must appear in the docs with the
+  indexer `null` handling, mainnet deployment status — must appear in the docs with the
   code's values; (2) a list of phrases that describe superseded behaviour
   (the manual-resubmit sentence, the denial of a `v1` transaction format,
   the millennia figure for 40 bits, the 40-bit floor, "skip" semantics for
@@ -734,9 +729,10 @@ exactly what that means so nobody has to infer it.
   reports its runway. The keyed RPC endpoints are Fly secrets (relayer,
   indexer) and a build argument for the app, where it is necessarily public in
   the bundle and is restricted by origin at the provider.
-- **Devnet is no longer a target.** The former `deploy-devnet` job is kept for
-  anyone who funds it, but the hosted services, the SDK defaults and the app
-  all point at mainnet-beta; addresses use the `scash` HRP.
+- **Mainnet-beta is the only cluster.** There is no other deployment target
+  in the repository: the hosted services, the SDK defaults, the app, the
+  verifier script and the CI deploy job all point at mainnet-beta, and
+  addresses use the `scash` HRP. Tests run on a local validator.
 
 ### 17. The fee policy: four agent keys, no brake, by the owner's decision
 

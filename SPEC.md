@@ -71,7 +71,7 @@ pk_d  = [ivk] g_d
 
 `GroupHash_BJJ(d)` is `H_blake("scash_Diversify", d)` interpreted as a candidate `y`, solved for `x` on the curve (taking the even `x`), multiplied by the cofactor 8, rejecting the identity. Roughly half of all `d` succeed; the wallet increments `d` until one does.
 
-One `ivk` has 2^88 unlinkable addresses. Nothing is registered on-chain to receive. Addresses are encoded with bech32m, HRP `scash` on mainnet, `tscash` on devnet, payload `d || compress(pk_d)` (11 + 32 bytes).
+One `ivk` has 2^88 unlinkable addresses. Nothing is registered on-chain to receive. Addresses are encoded with bech32m, HRP `scash` (mainnet-beta, the only cluster; `tscash` exists solely for local test-validator runs), payload `d || compress(pk_d)` (11 + 32 bytes).
 
 ## 4. Notes
 
@@ -306,7 +306,7 @@ Two transactions are needed because an old-vault `transact` plus a new-vault `tr
 | ext_data of an unshield (empty dummy ciphertext and outgoing record, §7) | 402 − 179 = 223 bytes, + 49 of exit data for a launchpad trade |
 | Two ciphertexts | 99 + 99 (no memo) or 163 + 99 (one 64-byte memo) |
 
-**Which limit applies.** Solana has three transaction formats. `legacy` and `v0` are capped at 1,232 bytes (the IPv6-MTU-derived `PACKET_DATA_SIZE`); `v0` adds address lookup tables. The `v1` format (SIMD-0385, size budget from SIMD-0296, feature gate `txv1aq4pp281K9um3tnPgkfX8UqtFT6wcVW3hNezGLL`) raises the cap to 4,096 bytes, lists all accounts inline instead of through lookup tables, and moves compute/priority settings into the message header. It has been active on mainnet-beta since epoch 1035 (15 September 2026) and on devnet and testnet.
+**Which limit applies.** Solana has three transaction formats. `legacy` and `v0` are capped at 1,232 bytes (the IPv6-MTU-derived `PACKET_DATA_SIZE`); `v0` adds address lookup tables. The `v1` format (SIMD-0385, size budget from SIMD-0296, feature gate `txv1aq4pp281K9um3tnPgkfX8UqtFT6wcVW3hNezGLL`) raises the cap to 4,096 bytes, lists all accounts inline instead of through lookup tables, and moves compute/priority settings into the message header. It has been active on mainnet-beta since epoch 1035 (15 September 2026).
 
 scash **currently builds `v0` transactions** (`sdk/src/lookup.ts: buildV0`) and therefore lives under the 1,232-byte limit; everything in this section, including the 64-byte memo ceiling, is a consequence of that client choice and not of the network. The relayer rejects anything it would serialise above 1,232 bytes (`relayer/src/index.ts`). Moving to `v1` would allow longer memos and a 4-input transaction with memos in one packet, at the cost of inlining the ~20 accounts the lookup table covers today (640 bytes, affordable in 4,096) and of wallets and RPCs that must opt in with `maxSupportedTransactionVersion: 1`; it is not scheduled, and the on-chain format does not change either way. The indexer already reads every version (§15, `indexer/src/scanner.ts`), because anyone may send the program a `v1` transaction regardless of what this client does.
 

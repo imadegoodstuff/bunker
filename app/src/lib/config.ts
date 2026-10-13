@@ -1,7 +1,9 @@
 import { PublicKey, SystemProgram } from "@solana/web3.js";
 
 export const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL ?? "https://api.mainnet-beta.solana.com";
-export const CLUSTER = (process.env.NEXT_PUBLIC_CLUSTER ?? "mainnet-beta") as "devnet" | "mainnet-beta";
+/** The app runs on mainnet-beta only; the variable remains so a local build can label itself (e.g. "localnet"). */
+export const CLUSTER = process.env.NEXT_PUBLIC_CLUSTER ?? "mainnet-beta";
+export const MAINNET = CLUSTER === "mainnet-beta";
 export const INDEXER_URL = process.env.NEXT_PUBLIC_INDEXER_URL ?? "http://localhost:8788";
 export const RELAYER_URL = process.env.NEXT_PUBLIC_RELAYER_URL ?? "http://localhost:8787";
 export const ARTIFACT_BASE = process.env.NEXT_PUBLIC_ARTIFACT_BASE ?? "/circuits";
@@ -42,9 +44,10 @@ export const ARTIFACTS = {
   transact4x2: { wasm: `${ARTIFACT_BASE}/transact4x2.wasm`, zkey: `${ARTIFACT_BASE}/transact4x2.zkey` },
 };
 
+const clusterQuery = MAINNET ? "" : `?cluster=custom&customUrl=${encodeURIComponent(RPC_URL)}`;
 export function explorerTx(sig: string) {
-  return `https://solscan.io/tx/${sig}${CLUSTER === "devnet" ? "?cluster=devnet" : ""}`;
+  return `https://solscan.io/tx/${sig}${clusterQuery}`;
 }
 export function explorerAddr(addr: string) {
-  return `https://solscan.io/account/${addr}${CLUSTER === "devnet" ? "?cluster=devnet" : ""}`;
+  return `https://solscan.io/account/${addr}${clusterQuery}`;
 }

@@ -107,7 +107,7 @@ app.get("/info", async () => ({
   commit: process.env.GIT_SHA ?? "unknown",
   relayer: signer.publicKey.toBase58(),
   program: PROGRAM.toBase58(),
-  cluster: RPC.includes("devnet") ? "devnet" : RPC.includes("mainnet") ? "mainnet-beta" : "custom",
+  cluster: RPC.includes("mainnet") ? "mainnet-beta" : "custom",
   // For SOL, advertise the effective minimum (policy or 4-input cost floor,
   // whichever is higher) so clients never build a fee the relayer refuses.
   fees: await Promise.all(policy.list().map(async (f) => {

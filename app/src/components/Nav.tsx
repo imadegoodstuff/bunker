@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { CLUSTER } from "@/lib/config";
+import { CLUSTER, MAINNET } from "@/lib/config";
 
 const WalletButton = dynamic(() => import("@solana/wallet-adapter-react-ui").then((m) => m.WalletMultiButton), { ssr: false });
 
@@ -13,7 +13,7 @@ export function Nav({ app = false }: { app?: boolean }) {
         <Link href="/" className="flex items-center gap-2.5">
           <img src="/icon.svg" alt="" className="h-6 w-6 rounded-md" />
           <span className="text-[15px] font-medium tracking-tight">scash</span>
-          <span className="rounded-full border border-line px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-dim">{CLUSTER === "devnet" ? "devnet" : "mainnet · beta"}</span>
+          <span className="rounded-full border border-line px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-dim">{MAINNET ? "mainnet · beta" : CLUSTER}</span>
         </Link>
         <nav className="flex items-center gap-6 text-sm">
           {!app && (
@@ -31,7 +31,7 @@ export function Nav({ app = false }: { app?: boolean }) {
       </div>
     </header>
       <p className="mx-auto mt-3 w-fit px-3 text-center text-[11px] text-dim">
-        {CLUSTER === "devnet" ? "Devnet pre-release" : "Mainnet beta"} · unaudited · development proving keys until the ceremony completes · programs upgradeable until then · only shield what you can afford to lose ·{" "}
+        {MAINNET ? "Mainnet beta" : `Local build (${CLUSTER})`} · unaudited · development proving keys until the ceremony completes · programs upgradeable until then · only shield what you can afford to lose ·{" "}
         <a href="https://github.com/imadegoodstuff/scash/blob/main/SECURITY.md" target="_blank" rel="noreferrer" className="link underline underline-offset-4">known limitations</a>
       </p>
     </>

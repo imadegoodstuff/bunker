@@ -9,7 +9,7 @@ import {
   isStaleRootRejection, vaultErrorName, STALE_ROOT_ERRORS,
 } from "@scash/sdk";
 import { ApiError, indexer, relayer, type RelayerInfo } from "./api";
-import { ARTIFACTS, ASSETS, CLUSTER, PROGRAM_ID, RPC_URL, type AssetMeta } from "./config";
+import { ARTIFACTS, ASSETS, MAINNET, PROGRAM_ID, RPC_URL, type AssetMeta } from "./config";
 
 export type Phase = "idle" | "deriving" | "syncing" | "ready" | "error";
 export type TxStage = "idle" | "building" | "proving" | "signing" | "relaying" | "confirming" | "done" | "failed";
@@ -74,7 +74,7 @@ interface State {
   resetTx: () => void;
 }
 
-const bjjAddress = (w: ShieldedWallet) => encodeAddress(w.bjj, w.address(), CLUSTER === "mainnet-beta" ? "scash" : "tscash");
+const bjjAddress = (w: ShieldedWallet) => encodeAddress(w.bjj, w.address(), MAINNET ? "scash" : "tscash"); // tscash only for a local test validator build
 
 async function loadChainTree(conn: Connection) {
   const info = await conn.getAccountInfo(treePda(PROGRAM_ID));

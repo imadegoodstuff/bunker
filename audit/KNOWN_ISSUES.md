@@ -10,8 +10,6 @@ entry says whether it is accepted, planned, or blocked on something external.
 | Phase-2 ceremony | open; coordinator contribution #1 for both circuits; tooling and CI verification in place | contributions from parties unrelated to the coordinator, then the beacon (`ceremony/README.md`) |
 | Independent audit | not started; this package is the input | an external team; report goes to `audit/reports/` |
 | **Mainnet deployment with development keys** | **owner's decision**: the hosted app/relayer/indexer point at mainnet-beta and the manual `deploy-mainnet` CI job deploys the four programs under the ids in the README once the `mainnet` environment secrets are set; until that job has run the footer reports "not deployed on this cluster". The verifying keys are the development keys (toxic waste public), the SOL pool cap is the loss bound and can only be lowered, and the deployer keeps the upgrade authority so the ceremony keys can replace them. `SECURITY.md` §16. | the two items above; then a release that burns in the ceremony keys and revokes the upgrade authority |
-| Devnet deployment | not a target any more; the `deploy-devnet` job remains for anyone who funds `DEVNET_DEPLOYER_KEYPAIR`. All e2e runs are on `solana-test-validator` in CI. | — |
-
 ## Accepted for the current release
 
 | item | reasoning |

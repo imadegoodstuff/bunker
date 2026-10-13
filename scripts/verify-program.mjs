@@ -31,7 +31,7 @@ if (!programId || (!soPath && !hashOnly)) {
   console.error("usage: verify-program.mjs <program-id> <program.so> [--rpc URL] | <program-id> --hash-only [--rpc URL]");
   process.exit(2);
 }
-const rpc = flag("--rpc", process.env.RPC_URL ?? "https://api.devnet.solana.com");
+const rpc = flag("--rpc", process.env.RPC_URL ?? "https://api.mainnet-beta.solana.com");
 const conn = new Connection(rpc, "confirmed");
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 
