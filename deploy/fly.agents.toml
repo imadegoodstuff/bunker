@@ -17,6 +17,8 @@ primary_region = "sin"
 #                                          orbio:google/gemini-3.8-flash, orbio:x-ai/grok-4.7).
 #                                         Direct providers (openai:…, anthropic:…) need their own *_API_KEY.
 #   RPC_URL                               keyed endpoint (overrides the public fallback below)
+#   SCASH_MINT                            the scash token; set it and the treasury (agent 0) starts the random
+#                                         buybacks (burn or airdrop). Unset = buybacks off, gas top-ups still run.
 [env]
   PORT = "8789"
   PUBLIC_URL = "https://scash-agents.fly.dev"
@@ -25,6 +27,14 @@ primary_region = "sin"
   LAUNCH_PROGRAM_ID = "861VJkPL2yUYL1DTCToeziREP4XyraihkqbTM1irFZ3k"
   TICK_MS = "60000"
   ORBIO_TOKEN_PATH = "/data/orbio.json"
+  # treasury (agent 0): fuel the other keys and the relayer, keep a reserve for migrations, buy back at random
+  RELAYER_PUBKEY = "BsPhsu4eqnbw9xumnDicKCN47eXas4SDZzxbnTJHH4Bh"
+  GAS_FLOAT_SOL = "0.03"
+  TREASURY_RESERVE_SOL = "0.6"
+  BUYBACK_MEAN_MINUTES = "240"
+  BUYBACK_SLIPPAGE_BPS = "300"
+  AIRDROP_MAX_HOLDERS = "120"
+  HARVEST_MIN_SOL = "0.02"
 
 # The Orbio token pair (refresh tokens are single use) must survive restarts.
 [mounts]

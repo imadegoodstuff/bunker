@@ -172,7 +172,7 @@ mod tests {
     fn params_are_validated() {
         let mut l = Launchpad {
             disc: DISC_LAUNCHPAD, bump: 0, vault_program: Pubkey::new_unique(), protocol_treasury: Pubkey::new_unique(),
-            trade_fee_bps: 100, holder_share_bps: 5000, virtual_sol: 30, virtual_token: 1000, curve_supply: 800, total_supply: 1000, graduation_lamports: 85, decimals: 6,
+            trade_fee_bps: 100, holder_share_bps: 0, virtual_sol: 30, virtual_token: 1000, curve_supply: 800, total_supply: 1000, graduation_lamports: 85, decimals: 6,
             agents: [Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique(), Pubkey::new_unique()],
         };
         l.validate().unwrap();
@@ -185,6 +185,9 @@ mod tests {
         l.trade_fee_bps = 1_001;
         assert!(l.validate().is_err());
         l.trade_fee_bps = 100;
+        l.holder_share_bps = 1;
+        assert!(l.validate().is_err(), "every fee is the treasury's: a holders' share is refused");
+        l.holder_share_bps = 0;
         l.virtual_token = 799;
         assert!(l.validate().is_err());
     }

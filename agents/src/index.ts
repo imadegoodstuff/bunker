@@ -10,17 +10,24 @@
  * Every decision (and every failure to decide) is kept in a public log at
  * GET /log so anyone can audit what each agent said and did.
  *
- * The service is also the launchpad's keeper: when a curve graduates (20 SOL)
- * it sends the permissionless `migrate` that turns the curve into a Raydium
- * pool. From then on the agents have nothing to set for that token.
+ * The service is also the launchpad's keeper: it harvests each curve's tax to
+ * the treasury once enough has accrued, and when a curve graduates (20 SOL) it
+ * sends the permissionless `migrate` that turns the curve into a Raydium pool.
+ * From then on the agents have nothing to set for that token.
+ *
+ * The treasury is agent 0's wallet (`treasury.ts`): it keeps the other keys
+ * and the relayer fuelled and, at random moments, buys back the scash token
+ * and burns it or airdrops it to holders. The owner funds nothing but the
+ * first few transactions.
  */
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { ComputeBudgetProgram, Connection, Keypair, PublicKey, Transaction, TransactionInstruction, sendAndConfirmTransaction } from "@solana/web3.js";
-import { LAUNCH_PROGRAM_ID, curvePda, decodeCurve, epochOf, migrateIx, policy, raydium, rolled, voteIx, type CurveState } from "@scash/sdk";
+import { LAUNCH_PROGRAM_ID, curvePda, decodeCurve, epochOf, harvestIx, migrateIx, policy, raydium, rolled, voteIx, type CurveState } from "@scash/sdk";
 import { parseDecision, prompt, shouldSend, type Decision, type TokenView } from "./decide.js";
 import { complete, keyEnvFor, parseModelSpec, type ModelSpec } from "./models.js";
 import { Orbio } from "./orbio.js";
+import { Treasury } from "./treasury.js";
 import { existsSync } from "node:fs";
 
 const RPC = process.env.RPC_URL ?? "https://api.mainnet-beta.solana.com";
@@ -29,11 +36,13 @@ const PROGRAM = new PublicKey(process.env.LAUNCH_PROGRAM_ID ?? LAUNCH_PROGRAM_ID
 const PORT = Number(process.env.PORT ?? 8789);
 /** how often to look at the chain; votes are only sent when an epoch has changed or a vote is missing */
 const TICK_MS = Number(process.env.TICK_MS ?? 60_000);
+/** a curve's accrued tax is swept to the treasury once it reaches this (lamports) */
+const HARVEST_MIN = BigInt(Math.round(Number(process.env.HARVEST_MIN_SOL ?? 0.02) * 1e9));
 const MEMO_PROGRAM = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
 const PERSONAS = [
-  "You lean toward protecting the treasury's runway and the curve's long-term health.",
-  "You lean toward rewarding holders generously whenever trading is orderly.",
-  "You lean toward low fees to maximise volume unless you see manipulation.",
+  "You lean toward protecting the curve's long-term health over short-term revenue.",
+  "You lean toward punishing bots and wash trading hard and briefly.",
+  "You lean toward low taxes to maximise volume unless you see manipulation.",
   "You lean toward reacting quickly to the most recent trades over long averages.",
 ];
 
@@ -115,6 +124,21 @@ const conn = new Connection(RPC, "confirmed");
 console.log(`[agents] program ${PROGRAM.toBase58()}, indexer ${INDEXER}`);
 agents.forEach((a) => console.log(`[agents] agent ${a.index}: ${a.key.publicKey.toBase58()} via ${a.model.provider}:${a.model.model}`));
 
+// The treasury is agent 0. SCASH_MINT turns buybacks on; RELAYER_PUBKEY adds the relayer to the keys it fuels.
+const sol = (env: string, dflt: number) => BigInt(Math.round(Number(process.env[env] ?? dflt) * 1e9));
+const treasury = new Treasury(conn, agents[0].key, {
+  scashMint: process.env.SCASH_MINT ? new PublicKey(process.env.SCASH_MINT) : undefined,
+  reserveLamports: sol("TREASURY_RESERVE_SOL", 0.6),
+  floatLamports: sol("GAS_FLOAT_SOL", 0.03),
+  funded: [...agents.slice(1).map((a) => a.key.publicKey), ...(process.env.RELAYER_PUBKEY ? [new PublicKey(process.env.RELAYER_PUBKEY)] : [])],
+  meanMinutes: Number(process.env.BUYBACK_MEAN_MINUTES ?? 240),
+  tickMs: TICK_MS,
+  jupiterUrl: (process.env.JUPITER_URL ?? "https://lite-api.jup.ag/swap/v1").replace(/\/$/, ""),
+  slippageBps: Number(process.env.BUYBACK_SLIPPAGE_BPS ?? 300),
+  maxHolders: Number(process.env.AIRDROP_MAX_HOLDERS ?? 120),
+}, (e) => record({ at: Date.now(), slot: "", epoch: "", agent: 0, agentKey: agents[0].key.publicKey.toBase58(), model: "treasury", mint: process.env.SCASH_MINT ?? "", symbol: e.kind, ...(e.kind === "error" ? { error: e.detail } : e.kind === "skip" ? { skipped: e.detail } : { decision: { feeBps: 0, holderBps: 0, reason: e.detail }, sent: e.sig }) }));
+console.log(`[agents] treasury ${agents[0].key.publicKey.toBase58()}; buybacks ${process.env.SCASH_MINT ? `of ${process.env.SCASH_MINT}` : "off (SCASH_MINT unset)"}`);
+
 interface LaunchRow { mint: string; symbol: string; decimals: number; graduated: number; amm_pool: string | null }
 interface TradeRow { side: "buy" | "sell"; sol: string; private: number; slot: number }
 
@@ -188,7 +212,25 @@ async function migrate(row: LaunchRow, curve: CurveState, mint: PublicKey, slot:
   }
 }
 
+/** Keeper duty: sweep a curve's accrued tax to the treasury (permissionless; agent 0 pays the fee). */
+const harvesting = new Set<string>();
+async function harvest(row: LaunchRow, curve: CurveState, mint: PublicKey, slot: bigint) {
+  if (harvesting.has(row.mint)) return;
+  harvesting.add(row.mint);
+  const payer = agents[0].key;
+  const base: LogEntry = { at: Date.now(), slot: slot.toString(), epoch: epochOf(slot).toString(), agent: 0, agentKey: payer.publicKey.toBase58(), model: "keeper", mint: row.mint, symbol: row.symbol };
+  try {
+    const sig = await sendAndConfirmTransaction(conn, new Transaction().add(harvestIx(mint, curve.protocolTreasury, curve.vaultProgram, PROGRAM)), [payer], { commitment: "confirmed" });
+    record({ ...base, decision: { feeBps: 0, holderBps: 0, reason: `harvested ${(Number(curve.feesAccrued) / 1e9).toFixed(4)} SOL of tax to the treasury` }, sent: sig });
+  } catch (e) {
+    record({ ...base, error: `harvest: ${(e as Error).message}` });
+  } finally {
+    harvesting.delete(row.mint);
+  }
+}
+
 async function tick() {
+  await treasury.tick();
   // graduated-but-unmigrated curves still need the keeper, so only rows the indexer already shows on the AMM are skipped
   const launches = (await getJson<LaunchRow[]>(`${INDEXER}/launches?limit=200`)).filter((l) => !l.amm_pool);
   if (launches.length === 0) return;
@@ -204,6 +246,7 @@ async function tick() {
       if (!curve.ammPool) void migrate(launches[i], curve, mints[i], slot);
       continue;
     }
+    if (curve.feesAccrued >= HARVEST_MIN) void harvest(launches[i], curve, mints[i], slot);
     if (!hasNewVolume(launches[i].mint, curve)) continue;
     seenTrades.set(launches[i].mint, curve.buys + curve.sells);
     let v: TokenView | undefined;

@@ -1,5 +1,8 @@
 //! Fee policy: four agent keys vote, the curve follows the median, one bounded
-//! step per epoch, with no human override anywhere.
+//! step per one-minute epoch, between 0 and 5 %, with no human override anywhere.
+//! The whole fee is the protocol's (the treasury is the agents' own wallet, which
+//! buys back and burns or airdrops the scash token with it); the holders' share
+//! is fixed at zero and kept in the layout only so old curves still decode.
 //!
 //! Every launched token has its own votes and its own effective fee. The hard
 //! limits below are constants: no instruction can change them, and an agent
@@ -13,20 +16,22 @@
 
 use crate::state::{Curve, Vote};
 
-/// Slots per fee epoch (≈ 6 minutes at 400 ms).
-pub const EPOCH_SLOTS: u64 = 900;
+/// Slots per fee epoch (≈ 1 minute at 400 ms).
+pub const EPOCH_SLOTS: u64 = 150;
 /// A vote older than this (counted from the start of the epoch being settled) is ignored.
 pub const VOTE_TTL_SLOTS: u64 = 4 * EPOCH_SLOTS;
 /// Fewer fresh votes than this and the fee stays where it is.
 pub const QUORUM: usize = 2;
 /// How many epochs' worth of steps a single `roll` may apply after a quiet spell.
 pub const MAX_CATCHUP_EPOCHS: u64 = 4;
-pub const FEE_MIN_BPS: u16 = 50;
-pub const FEE_MAX_BPS: u16 = 300;
+/// 0 % to 5 %, at most one percentage point of movement per epoch.
+pub const FEE_MIN_BPS: u16 = 0;
+pub const FEE_MAX_BPS: u16 = 500;
 pub const FEE_STEP_BPS: u16 = 100;
-pub const HOLDER_MIN_BPS: u16 = 5_000;
-pub const HOLDER_MAX_BPS: u16 = 10_000;
-pub const HOLDER_STEP_BPS: u16 = 1_000;
+/// The holders' share is pinned at zero: every fee goes to the treasury.
+pub const HOLDER_MIN_BPS: u16 = 0;
+pub const HOLDER_MAX_BPS: u16 = 0;
+pub const HOLDER_STEP_BPS: u16 = 0;
 pub const AGENTS: usize = 4;
 
 pub fn epoch_of(slot: u64) -> u64 {
@@ -111,60 +116,66 @@ mod tests {
 
     #[test]
     fn median_is_robust_to_one_outlier() {
-        assert_eq!(median(vec![100, 110, 120, 300]), 115);
-        assert_eq!(median(vec![50, 200, 210]), 200);
+        assert_eq!(median(vec![100, 110, 120, 500]), 115);
+        assert_eq!(median(vec![0, 200, 210]), 200);
         assert_eq!(median(vec![100, 300]), 200);
     }
 
     #[test]
     fn no_quorum_means_no_change() {
-        let mut c = curve(100, 5000, 0);
-        c.votes[0] = V(300, 10_000, 10);
+        let mut c = curve(100, 0, 0);
+        c.votes[0] = V(300, 0, 10);
         assert!(!roll(&mut c, EPOCH_SLOTS + 1));
-        assert_eq!((c.trade_fee_bps, c.holder_share_bps, c.settled_epoch), (100, 5000, 1));
+        assert_eq!((c.trade_fee_bps, c.holder_share_bps, c.settled_epoch), (100, 0, 1));
     }
 
     #[test]
     fn one_bounded_step_per_epoch_towards_the_median() {
-        let mut c = curve(100, 5000, 0);
-        c.votes[0] = V(300, 10_000, 10);
-        c.votes[1] = V(300, 9_000, 20);
-        c.votes[2] = V(250, 8_000, 30);
-        // epoch 1: +100 fee, +1000 holder
+        let mut c = curve(100, 0, 0);
+        c.votes[0] = V(500, 0, 10);
+        c.votes[1] = V(300, 0, 20);
+        c.votes[2] = V(250, 0, 30);
+        // epoch 1: +100 fee; the holders' share never moves
         assert!(roll(&mut c, EPOCH_SLOTS));
-        assert_eq!((c.trade_fee_bps, c.holder_share_bps), (200, 6000));
+        assert_eq!((c.trade_fee_bps, c.holder_share_bps), (200, 0));
         // same epoch again: nothing
-        assert!(!roll(&mut c, EPOCH_SLOTS + 500));
-        // epoch 2: reaches the fee median 300, holder 7000
+        assert!(!roll(&mut c, EPOCH_SLOTS + 100));
+        // epoch 2: reaches the fee median 300
         assert!(roll(&mut c, 2 * EPOCH_SLOTS));
-        assert_eq!((c.trade_fee_bps, c.holder_share_bps), (300, 7000));
+        assert_eq!((c.trade_fee_bps, c.holder_share_bps), (300, 0));
+        // down to zero is allowed, one step at a time
+        c.votes = [V(0, 0, 2 * EPOCH_SLOTS + 1), V(0, 0, 2 * EPOCH_SLOTS + 2), V(0, 0, 2 * EPOCH_SLOTS + 3), Vote::default()];
+        assert!(roll(&mut c, 3 * EPOCH_SLOTS));
+        assert_eq!(c.trade_fee_bps, 200);
+        assert!(roll(&mut c, 5 * EPOCH_SLOTS));
+        assert_eq!(c.trade_fee_bps, 0);
     }
 
     #[test]
     fn votes_count_only_from_the_next_epoch_and_expire() {
-        let mut c = curve(100, 5000, 1);
+        let mut c = curve(100, 0, 1);
         // cast inside epoch 2: must not count for epoch 2 itself
-        c.votes[0] = V(300, 5000, 2 * EPOCH_SLOTS + 1);
-        c.votes[1] = V(300, 5000, 2 * EPOCH_SLOTS + 2);
+        c.votes[0] = V(300, 0, 2 * EPOCH_SLOTS + 1);
+        c.votes[1] = V(300, 0, 2 * EPOCH_SLOTS + 2);
         assert!(!roll(&mut c, 2 * EPOCH_SLOTS + 10));
         assert_eq!(c.trade_fee_bps, 100);
         // epoch 3: they count
         assert!(roll(&mut c, 3 * EPOCH_SLOTS));
         assert_eq!(c.trade_fee_bps, 200);
         // far later: expired, so the fee freezes where it is (catch-up capped too)
-        let mut d = curve(100, 5000, 1);
-        d.votes[0] = V(300, 5000, 10);
-        d.votes[1] = V(300, 5000, 20);
+        let mut d = curve(100, 0, 1);
+        d.votes[0] = V(300, 0, 10);
+        d.votes[1] = V(300, 0, 20);
         assert!(!roll(&mut d, 100 * EPOCH_SLOTS));
         assert_eq!(d.trade_fee_bps, 100);
     }
 
     #[test]
     fn catch_up_is_capped() {
-        let mut c = curve(50, 5000, 0);
-        c.votes[0] = V(300, 5000, 10);
-        c.votes[1] = V(300, 5000, 20);
-        // 3 epochs elapsed, vote still fresh (ttl 4 epochs from epoch start 2700): 3 steps → 50+250 capped at 300
+        let mut c = curve(0, 0, 0);
+        c.votes[0] = V(500, 0, 10);
+        c.votes[1] = V(500, 0, 20);
+        // 3 epochs elapsed, vote still fresh (ttl 4 epochs from epoch start 450): 3 steps → 300, not 500
         assert!(roll(&mut c, 3 * EPOCH_SLOTS));
         assert_eq!(c.trade_fee_bps, 300);
     }
@@ -174,6 +185,7 @@ mod tests {
         assert!(vote_in_bounds(FEE_MIN_BPS, HOLDER_MIN_BPS));
         assert!(vote_in_bounds(FEE_MAX_BPS, HOLDER_MAX_BPS));
         assert!(!vote_in_bounds(FEE_MAX_BPS + 1, HOLDER_MIN_BPS));
-        assert!(!vote_in_bounds(FEE_MIN_BPS, HOLDER_MIN_BPS - 1));
+        assert!(!vote_in_bounds(FEE_MIN_BPS, HOLDER_MAX_BPS + 1));
+        assert!(vote_in_bounds(0, 0));
     }
 }

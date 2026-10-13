@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json && node dist/index.js",
-    "test": "tsc -p tsconfig.json && node --test dist/decide.test.js dist/orbio.test.js",
+    "test": "tsc -p tsconfig.json && node --test dist/decide.test.js dist/orbio.test.js dist/treasury.test.js",
     "start": "node dist/index.js"
   },
   "dependencies": {

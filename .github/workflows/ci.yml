@@ -208,7 +208,7 @@ jobs:
             echo "clone from mainnet-beta failed (attempt $attempt); retrying"; pkill -f solana-test-validator || true; sleep 5
           done
           solana account -u http://127.0.0.1:8899 D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2 >/dev/null
-      # --ticks-per-slot 16 makes a slot ≈ 100 ms so the 900-slot fee epoch passes in about 90 s
+      # --ticks-per-slot 16 makes a slot ≈ 100 ms so the 150-slot fee epoch passes in about 15 s
       - name: launchpad e2e (launch → agent votes → private buy → claim → harvest → private sell → claim → fee epoch rolls → graduation at 20 SOL → Raydium pool, LP burned; buyer wallet never appears)
         run: node scripts/launch-e2e.mjs
 

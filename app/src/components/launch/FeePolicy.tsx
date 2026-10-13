@@ -7,9 +7,9 @@ import { timeAgo } from "@/lib/format";
 
 export const AGENT_NAMES = ["Agent A", "Agent B", "Agent C", "Agent D"];
 
-const pct = (bps: number) => `${(bps / 100).toFixed(bps % 100 ? 1 : 0)}%`;
+const pct = (bps: number) => `${(bps / 100).toFixed(bps % 100 ? 2 : 0).replace(/\.?0+$/, "")}%`;
 
-/** The four-agent fee policy for one token: the fee charged now, each agent's standing vote, and where the next epoch takes it. */
+/** The four-agent tax policy for one token: the tax charged now, each agent's standing vote, and where the next minute takes it. */
 export function FeePolicy({ curve, slot, events }: { curve: CurveState; slot: bigint; events: FeeEventRow[] }) {
   const epoch = epochOf(slot);
   const nextStart = (epoch + 1n) * policy.EPOCH_SLOTS;
@@ -17,20 +17,20 @@ export function FeePolicy({ curve, slot, events }: { curve: CurveState; slot: bi
   const target = policyTargets(curve.votes, nextStart, curve.tradeFeeBps, curve.holderShareBps);
   const next = rolled(curve, nextStart);
   const slotsLeft = nextStart - slot;
-  const unchanged = next.tradeFeeBps === curve.tradeFeeBps && next.holderShareBps === curve.holderShareBps;
+  const unchanged = next.tradeFeeBps === curve.tradeFeeBps;
   return (
     <section className="glass px-7 py-6">
       <div className="flex flex-wrap items-baseline justify-between gap-3">
-        <div className="label">Fee policy · set by four AI agents</div>
+        <div className="label">Trading tax · set by four AI agents</div>
         <span className="text-[11px] text-dim">
           epoch {epoch.toString()} · next in ≈{slotsLeft.toString()} slots (~{Math.round(Number(slotsLeft) * 0.4)}s)
         </span>
       </div>
       <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-xs sm:grid-cols-4">
-        <Row k="Fee now" v={pct(curve.tradeFeeBps)} strong />
-        <Row k="To holders now" v={pct(curve.holderShareBps)} strong />
-        <Row k="Next epoch" v={unchanged ? "unchanged" : `${pct(next.tradeFeeBps)} · ${pct(next.holderShareBps)} to holders`} />
-        <Row k="Agents' target" v={fresh.length < policy.QUORUM ? `no quorum (${fresh.length}/${policy.QUORUM} fresh votes)` : `${pct(target.feeBps)} · ${pct(target.holderBps)} to holders`} />
+        <Row k="Tax now" v={pct(curve.tradeFeeBps)} strong />
+        <Row k="Next minute" v={unchanged ? "unchanged" : pct(next.tradeFeeBps)} />
+        <Row k="Agents' target" v={fresh.length < policy.QUORUM ? `no quorum (${fresh.length}/${policy.QUORUM} fresh votes)` : pct(target.feeBps)} />
+        <Row k="Goes to" v="the agents' treasury" />
       </dl>
       <ul className="mt-4 grid gap-2 text-xs sm:grid-cols-2">
         {curve.votes.map((v, i) => {
@@ -42,7 +42,7 @@ export function FeePolicy({ curve, slot, events }: { curve: CurveState; slot: bi
                 <span className="text-dim">no vote yet</span>
               ) : (
                 <span className={live ? "text-fg" : "text-dim line-through"} title={live ? `cast at slot ${v.slot}` : `expired (cast at slot ${v.slot})`}>
-                  {pct(v.feeBps)} fee · {pct(v.holderBps)} to holders
+                  {pct(v.feeBps)} tax
                 </span>
               )}
             </li>
@@ -55,8 +55,8 @@ export function FeePolicy({ curve, slot, events }: { curve: CurveState; slot: bi
             <li key={e.signature + e.kind} className="flex justify-between gap-3">
               <span>
                 {e.kind === "vote"
-                  ? `${AGENT_NAMES[e.agent ?? 0]} voted ${pct(e.fee_bps)} · ${pct(e.holder_bps)} to holders`
-                  : `epoch ${e.epoch} moved the fee to ${pct(e.fee_bps)} · ${pct(e.holder_bps)} to holders`}
+                  ? `${AGENT_NAMES[e.agent ?? 0]} voted ${pct(e.fee_bps)}`
+                  : `epoch ${e.epoch} moved the tax to ${pct(e.fee_bps)}`}
               </span>
               <a className="link font-mono" href={explorerTx(e.signature)} target="_blank" rel="noreferrer">
                 {e.block_time ? timeAgo(e.block_time * 1000) : `slot ${e.slot}`}
@@ -66,10 +66,10 @@ export function FeePolicy({ curve, slot, events }: { curve: CurveState; slot: bi
         </ul>
       )}
       <p className="mt-4 text-[11px] leading-relaxed text-dim">
-        Four model-driven agents each hold a key; they are the only voters and there is no proposer, guardian, or pause. Every {policy.EPOCH_SLOTS.toString()} slots the
-        program takes the median of their fresh votes (at least {policy.QUORUM}, each younger than {policy.VOTE_TTL_SLOTS.toString()} slots) and moves the fee one step toward it:{" "}
-        {pct(policy.FEE_MIN_BPS)}–{pct(policy.FEE_MAX_BPS)} in {pct(policy.FEE_STEP_BPS)} steps, holders&apos; share {pct(policy.HOLDER_MIN_BPS)}–{pct(policy.HOLDER_MAX_BPS)} in{" "}
-        {pct(policy.HOLDER_STEP_BPS)} steps. Nobody can override, veto, or stop it. Your quote above already assumes the worst fee the next few minutes can bring.
+        Four model-driven agents each hold a key; they are the only voters and there is no proposer, guardian, or pause. Once a minute ({policy.EPOCH_SLOTS.toString()} slots) the
+        program takes the median of their fresh votes (at least {policy.QUORUM}, each younger than {policy.VOTE_TTL_SLOTS.toString()} slots) and moves the tax at most{" "}
+        {pct(policy.FEE_STEP_BPS)} toward it, between {pct(policy.FEE_MIN_BPS)} and {pct(policy.FEE_MAX_BPS)}. Nobody can override, veto, or stop it. The tax goes to the agents&apos;
+        treasury, which pays their gas and buys back the scash token to burn or airdrop it. Your quote above already assumes the worst tax the next few minutes can bring.
       </p>
     </section>
   );

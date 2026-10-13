@@ -376,37 +376,42 @@ test("fee policy mirror: median, quorum, one bounded step per epoch, votes count
   const v = (feeBps: number, holderBps: number, slot: bigint) => ({ feeBps, holderBps, slot });
   assert.equal(CURVE_LEN, 352);
   // no quorum: nothing moves
-  let c = base(100, 5000, 0n);
-  c.votes[0] = v(300, 10000, 10n);
+  let c = base(100, 0, 0n);
+  c.votes[0] = v(500, 0, 10n);
   assert.deepEqual([rolled(c, E + 1n).tradeFeeBps, rolled(c, E + 1n).settledEpoch], [100, 1n]);
   // same cases as programs/scash_launch/src/policy.rs
-  c = base(100, 5000, 0n);
-  c.votes[0] = v(300, 10000, 10n); c.votes[1] = v(300, 9000, 20n); c.votes[2] = v(250, 8000, 30n);
+  c = base(100, 0, 0n);
+  c.votes[0] = v(500, 0, 10n); c.votes[1] = v(300, 0, 20n); c.votes[2] = v(250, 0, 30n);
   let r = rolled(c, E);
-  assert.deepEqual([r.tradeFeeBps, r.holderShareBps], [200, 6000]);
-  r = rolled(r, E + 500n);
-  assert.deepEqual([r.tradeFeeBps, r.holderShareBps], [200, 6000]);
+  assert.deepEqual([r.tradeFeeBps, r.holderShareBps], [200, 0]);
+  r = rolled(r, E + 100n);
+  assert.deepEqual([r.tradeFeeBps, r.holderShareBps], [200, 0]);
   r = rolled(r, 2n * E);
-  assert.deepEqual([r.tradeFeeBps, r.holderShareBps], [300, 7000]);
+  assert.deepEqual([r.tradeFeeBps, r.holderShareBps], [300, 0]);
+  // down to zero, one step at a time
+  r.votes = [v(0, 0, 2n * E + 1n), v(0, 0, 2n * E + 2n), v(0, 0, 2n * E + 3n), v(0, 0, 0n)];
+  assert.equal(rolled(r, 3n * E).tradeFeeBps, 200);
+  assert.equal(rolled(r, 5n * E).tradeFeeBps, 0);
   // votes cast inside an epoch count from the next one; expired votes freeze the fee
-  c = base(100, 5000, 1n);
-  c.votes[0] = v(300, 5000, 2n * E + 1n); c.votes[1] = v(300, 5000, 2n * E + 2n);
+  c = base(100, 0, 1n);
+  c.votes[0] = v(300, 0, 2n * E + 1n); c.votes[1] = v(300, 0, 2n * E + 2n);
   r = rolled(c, 2n * E + 10n);
   assert.equal(r.tradeFeeBps, 100);
   assert.equal(rolled(r, 3n * E).tradeFeeBps, 200);
-  c = base(100, 5000, 1n);
-  c.votes[0] = v(300, 5000, 10n); c.votes[1] = v(300, 5000, 20n);
+  c = base(100, 0, 1n);
+  c.votes[0] = v(300, 0, 10n); c.votes[1] = v(300, 0, 20n);
   assert.equal(rolled(c, 100n * E).tradeFeeBps, 100);
   // catch-up capped at 4 steps
-  c = base(50, 5000, 0n);
-  c.votes[0] = v(300, 5000, 10n); c.votes[1] = v(300, 5000, 20n);
+  c = base(0, 0, 0n);
+  c.votes[0] = v(500, 0, 10n); c.votes[1] = v(500, 0, 20n);
   assert.equal(rolled(c, 3n * E).tradeFeeBps, 300);
   // worst case over a horizon that crosses an epoch boundary
-  c = base(100, 5000, 0n);
-  c.votes[0] = v(300, 5000, 10n); c.votes[1] = v(300, 5000, 20n);
-  assert.equal(worstFeeBps(c, E - 10n, 300n), 200);
-  assert.equal(worstFeeBps(c, 10n, 300n), 100);
-  assert.ok(voteInBounds(50, 5000) && voteInBounds(300, 10000) && !voteInBounds(301, 5000) && !voteInBounds(100, 4999) && !voteInBounds(100.5, 5000));
+  c = base(100, 0, 0n);
+  c.votes[0] = v(300, 0, 10n); c.votes[1] = v(300, 0, 20n);
+  assert.equal(worstFeeBps(c, E - 10n, 100n), 200);
+  assert.equal(worstFeeBps(c, E - 10n, 300n), 300);
+  assert.equal(worstFeeBps(c, 10n, 100n), 100);
+  assert.ok(voteInBounds(0, 0) && voteInBounds(500, 0) && !voteInBounds(501, 0) && !voteInBounds(100, 1) && !voteInBounds(100.5, 0));
 });
 
 test("default curve sells out exactly at the 20 SOL graduation and the AMM opens near the final curve price", async () => {

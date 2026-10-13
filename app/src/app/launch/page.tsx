@@ -156,7 +156,7 @@ function CreateCard() {
         <Row k="On the curve" v="793,100,000 (79.3%)" />
         <Row k="Graduates at" v="20 SOL raised" />
         <Row k="Then" v="curve SOL + the reserved 20.7% of supply become a Raydium pool; LP burned" />
-        <Row k="Trading fee" v="0.5–3% until graduation, set per token by four AI agents each epoch · 50–100% of it to holders" />
+        <Row k="Trading tax" v="0–5% until graduation, set per token by four AI agents every minute · it funds scash buybacks (burn or airdrop)" />
         <Row k="Your privileges" v="none" strong />
       </dl>
       {err && <p className="mt-3 text-sm text-bad">{err}</p>}

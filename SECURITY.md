@@ -770,28 +770,38 @@ exactly what that means so nobody has to infer it.
 
 ### 17. The fee policy: four agent keys, no brake, by the owner's decision
 
-Every launched token's trading fee and holders' share are moved by four keys
+Every launched token's trading fee (its tax) is moved by four keys
 recorded in the `Launchpad` account and held by four model-driven agents
 (SPEC §16, "Fee policy"). The owner asked for this exactly: *no proposer, no
 guardian, no pause*. This section says what that buys and what it costs.
 
 - **What the program enforces, and all it enforces.** A vote is accepted only
-  from one of the four keys and only inside the bounds (fee 0.5–3 %, holders'
-  share 50–100 %). The fee moves at most one step (1 % / 10 points) per
-  ~6-minute epoch toward the median of the fresh votes, needs two fresh votes
-  to move at all, and catches up at most four steps after idle time. Votes
-  cast in an epoch apply from the next one, so nothing a trader does in the
-  same block as a vote can change the fee under them. Those bounds are the
-  whole safety envelope: the worst the four keys can do together is take the
-  fee to 3 % and the holders' share to 50 %, one step at a time, or to 0.5 %
-  and 100 %. They cannot drain, pause, freeze or redirect anything; the
-  treasury share still goes to the fixed treasury, the holders' share is
-  still bought back and donated.
+  from one of the four keys and only inside the bounds (fee 0–5 %; the
+  holders' share is pinned at 0). The fee moves at most one percentage point
+  per one-minute epoch toward the median of the fresh votes, needs two fresh
+  votes to move at all, and catches up at most four steps after idle time.
+  Votes cast in an epoch apply from the next one, so nothing a trader does in
+  the same block as a vote can change the fee under them. Those bounds are
+  the whole safety envelope: the worst the four keys can do together is take
+  the fee to 5 %, one point a minute, or to 0. They cannot drain, pause,
+  freeze or redirect anything; every fee goes to the fixed treasury.
+- **The treasury is the agents' wallet.** The launchpad's `protocol_treasury`
+  is agent 0's key, so the tax funds the agents themselves: the service keeps
+  the other three keys and the relayer topped up to a small float, keeps a
+  reserve for Raydium migrations, and at random moments (on average every
+  four hours, a random 25–100 % of the surplus) buys the scash token through
+  Jupiter and, by coin flip, burns it or airdrops it pro rata to its current
+  wallet holders (`agents/src/treasury.ts`; program-owned token accounts such
+  as pool vaults are skipped). Every action is in `GET /log`. The owner funds
+  nothing beyond the first few transactions. If agent 0's key is stolen the
+  thief gets the pot, nothing more: curves hold their own SOL and the vault
+  is untouched; the launchpad would then be re-initialised under a new
+  treasury only by a program upgrade (§16).
 - **What nobody can do.** Replace an agent key, add a fifth voter, veto a
   roll, or hold the fee still. The launchpad's `agents` are set once at
   initialisation and have no update instruction; the roll runs inside every
   trade and cannot be skipped. If all four keys were lost, the last votes
-  would expire after 24 minutes and the fee would stay wherever it was,
+  would expire after four minutes and the fee would stay wherever it was,
   forever. If all four were stolen, the thief gets the envelope above and
   nothing else. There is deliberately no key that can fix either case short
   of a program upgrade (§16: that authority exists today and is slated for
@@ -823,9 +833,9 @@ guardian, no pause*. This section says what that buys and what it costs.
   policy is exactly as good as the four models' judgement; the program is
   only the fence.
 - **For traders.** The app quotes at the fee the program will charge now and
-  sets `min_out` from the highest fee an epoch boundary within the next ~2
+  sets `min_out` from the highest fee the epoch boundaries within the next ~2
   minutes can bring, so a trade is never failed by a roll and never pays more
-  than one step above its quote. The token page shows the fee now, each
+  than two steps above its quote. The token page shows the fee now, each
   agent's standing vote, the next epoch's fee and the vote log.
 
 ## Design-level guarantees

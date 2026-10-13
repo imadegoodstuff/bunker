@@ -58,10 +58,11 @@ export interface LaunchpadParams {
 }
 
 /**
- * 1 % fee, half of it donated to holders; 1e9 supply at 6 decimals, ~79 % on the
+ * 1 % fee to start (the agents move it between 0 and 5 %), all of it to the
+ * treasury; 1e9 supply at 6 decimals, ~79 % on the
  * curve; graduation at 20 SOL. The virtual SOL reserve is sized so the curve
  * sells its last token exactly as it reaches 20 SOL
- * (`v_s = 20 Ã— (1.073 âˆ’ 0.7931) / 0.7931` SOL), and the 20.69 % of the supply
+ * (`v_s = 20 × (1.073 − 0.7931) / 0.7931` SOL), and the 20.69 % of the supply
  * not on the curve goes into the AMM with the raised SOL at migration, so the
  * pool opens at about the price the curve ended on.
  */
@@ -71,7 +72,7 @@ export function defaultLaunchpadParams(protocolTreasury: PublicKey, agents: Publ
     protocolTreasury,
     agents,
     tradeFeeBps: 100,
-    holderShareBps: 5_000,
+    holderShareBps: 0,
     virtualSol: 7_058_380_000n,
     virtualToken: 1_073_000_000_000_000n,
     curveSupply: 793_100_000_000_000n,
@@ -127,21 +128,23 @@ export interface Vote {
  * Hard limits of the agent-driven fee policy. They are constants in the
  * program; nobody, agents included, can change them. Four keys vote per
  * curve, the curve moves toward the median of the fresh votes by at most one
- * step per epoch, and only votes cast before an epoch began count for it, so
- * the fee of the epoch a trade lands in is known when its proof is made.
+ * step per one-minute epoch, and only votes cast before an epoch began count
+ * for it, so the fee of the epoch a trade lands in is known when its proof is
+ * made. The fee runs from 0 to 5 %; the holders' share is pinned at 0 (every
+ * fee goes to the treasury, which is the agents' own wallet).
  */
 export const policy = {
   AGENTS: 4,
-  EPOCH_SLOTS: 900n,
-  VOTE_TTL_SLOTS: 3600n,
+  EPOCH_SLOTS: 150n,
+  VOTE_TTL_SLOTS: 600n,
   QUORUM: 2,
   MAX_CATCHUP_EPOCHS: 4n,
-  FEE_MIN_BPS: 50,
-  FEE_MAX_BPS: 300,
+  FEE_MIN_BPS: 0,
+  FEE_MAX_BPS: 500,
   FEE_STEP_BPS: 100,
-  HOLDER_MIN_BPS: 5000,
-  HOLDER_MAX_BPS: 10000,
-  HOLDER_STEP_BPS: 1000,
+  HOLDER_MIN_BPS: 0,
+  HOLDER_MAX_BPS: 0,
+  HOLDER_STEP_BPS: 0,
 } as const;
 
 export function epochOf(slot: bigint): bigint {

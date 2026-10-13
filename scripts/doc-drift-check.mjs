@@ -102,6 +102,8 @@ const facts = [
   { doc: "SECURITY.md", re: /idempotent on nullifiers/, what: "relayer idempotency" },
   { doc: "SECURITY.md", re: /`null` and thrown errors both defer|`null`.*defer/, what: "indexer defers null" },
   { doc: "audit/KNOWN_ISSUES.md", re: /Mainnet deployment with development keys/, what: "mainnet deployment status" },
+  { doc: "SECURITY.md", re: /The treasury is the agents' wallet/, what: "tax → agent-0 treasury → buyback/burn/airdrop (agents/src/treasury.ts)" },
+  { doc: "SPEC.md", re: /agents\/src\/treasury\.ts/, what: "treasury module referenced from SPEC §16" },
   { doc: "SECURITY.md", re: /upgrade authority is held, not burned/, what: "interim upgrade authority (mainnet)" },
   { doc: "SECURITY.md", re: /`RPC_URLS` takes a comma-separated list/, what: "indexer RPC failover" },
   { doc: "SECURITY.md", re: new RegExp("\\[CU_PRICE, CU_PRICE_MAX\\]` \\(defaults 0 and " + cuPriceMax.toLocaleString("en-US").replace(/,/g, " ")), what: `relayer priority fee cap ${cuPriceMax}` },
@@ -130,6 +132,7 @@ const stale = [
   /public_buy|public_sell/, // the launchpad's public curve trades were removed: a graduated curve migrates to Raydium
   /graduation at 85 SOL|after 85 SOL|No liquidity migration/, // graduation is 20 SOL and migrates
   /public trading continues on the same curve/i,
+  /0\.5–3 ?%|holders' share 50–100|~6-minute epoch|half the fee/, // the tax is 0–5 % per one-minute epoch, all of it to the agents' treasury
 ];
 for (const [name, text] of Object.entries(docs)) {
   text.split("\n").forEach((line, i) => {

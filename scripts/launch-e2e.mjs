@@ -1,6 +1,6 @@
 // Launchpad end-to-end: a token is launched, bought from inside the shielded
-// pool, claimed into its own pool, sold back privately, and the trading fees
-// are harvested into holder yield. No buyer wallet appears anywhere.
+// pool, claimed into its own pool, sold back privately, and the trading tax
+// is harvested to the agents' treasury. No buyer wallet appears anywhere.
 //   node scripts/launch-e2e.mjs [--rpc …] [--keypair …]
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -97,21 +97,22 @@ assert((await tokenPool()).totalShares === 0n, "token pool exists and is empty")
 assert(c.lookupTable.equals(alt.table), "curve records its lookup table");
 log(`curve: ${fmtT(c.realToken)} ${meta.symbol} for sale, spot ${(spotPrice(c, 6) / LAMPORTS_PER_SOL).toExponential(3)} SOL/token`);
 
-// --- 1b. fee policy: three agents vote (median 200 bps / 7000), a stranger and an out-of-bounds vote are refused
-const voteEpoch = epochOf(BigInt(await conn.getSlot("confirmed")));
-await send([voteIx(agents[0].publicKey, mint.publicKey, 150, 6000)], [agents[0]], "agent 0 votes 1.5 % / 60 %");
-await send([voteIx(agents[1].publicKey, mint.publicKey, 200, 7000)], [agents[1]], "agent 1 votes 2.0 % / 70 %");
-await send([voteIx(agents[2].publicKey, mint.publicKey, 300, 10000)], [agents[2]], "agent 2 votes 3.0 % / 100 %");
-await expectFail(send([voteIx(relayer.publicKey, mint.publicKey, 200, 7000)], [relayer], "stranger votes"), /0x10\b|NotAgent/, "only the four agents can vote");
+// --- 1b. fee policy guards: a stranger's vote, a vote above the 5 % cap and a non-zero holders' share are refused.
+// The agents' real votes come in step 10, so the fee stays at 100 bps through the private trades below
+// (epochs are one minute, ~15 s on this validator, and the quotes assert exact amounts).
+await expectFail(send([voteIx(relayer.publicKey, mint.publicKey, 200, 0)], [relayer], "stranger votes"), /0x10\b|NotAgent/, "only the four agents can vote");
 await expectFail(
-  send([{ programId: LAUNCH_PROGRAM_ID, keys: voteIx(agents[3].publicKey, mint.publicKey, 100, 5000).keys, data: Buffer.from(new Uint8Array([7, 0x2d, 0x01, 0x88, 0x13])) }], [agents[3]], "agent 3 votes 3.01 %"),
+  send([{ programId: LAUNCH_PROGRAM_ID, keys: voteIx(agents[3].publicKey, mint.publicKey, 100, 0).keys, data: Buffer.from(new Uint8Array([7, 0xf5, 0x01, 0x00, 0x00])) }], [agents[3]], "agent 3 votes 5.01 %"),
   /0xe\b|BadParams/, "a vote above the hard cap is refused",
 );
+await expectFail(
+  send([{ programId: LAUNCH_PROGRAM_ID, keys: voteIx(agents[3].publicKey, mint.publicKey, 100, 0).keys, data: Buffer.from(new Uint8Array([7, 0x64, 0x00, 0x01, 0x00])) }], [agents[3]], "agent 3 votes a 0.01 % holders' share"),
+  /0xe\b|BadParams/, "the holders' share is pinned at zero: every fee is the treasury's",
+);
 c = await curve();
-assert(c.votes[0].feeBps === 150 && c.votes[1].holderBps === 7000 && c.votes[2].feeBps === 300 && c.votes[3].slot === 0n, "votes recorded per agent");
-assert(c.tradeFeeBps === 100 && c.holderShareBps === 5000, "votes do not move the fee inside the epoch they were cast");
+assert(c.votes.every((v) => v.slot === 0n) && c.tradeFeeBps === 100 && c.holderShareBps === 0, "no vote recorded, fee 1 %, holders' share 0");
 const slotNow = BigInt(await conn.getSlot("confirmed"));
-log(`fee now ${c.tradeFeeBps} bps; the epoch after ${voteEpoch} will step to ${rolled(c, (voteEpoch + 1n) * policy.EPOCH_SLOTS).tradeFeeBps} bps (slot ${slotNow}, epoch ${epochOf(slotNow)})`);
+log(`fee ${c.tradeFeeBps} bps, all of it to the treasury; slot ${slotNow}, epoch ${epochOf(slotNow)} (${policy.EPOCH_SLOTS} slots each)`);
 
 // --- lookup tables: the relayer's (vault statics, SOL pool) and the token's own frozen one, found via the curve
 const relayerTable = await fetchLookupTable(conn, await createLookupTable(conn, payer, staticAddresses([{ mint: SOL }], undefined, relayer.publicKey)));
@@ -195,7 +196,7 @@ assert(tp.totalIn === shieldAmount, "token pool total_in == shielded amount");
 assert((await conn.getAccountInfo(claimAta(claim1.publicKey, mint.publicKey))) === null, "claim ATA closed");
 log(`alice now privately holds ${fmtT(amountForBurn(tp, aliceW.balance(tokenAsset)))} ${meta.symbol}; claim key left with ${fmt(BigInt(await conn.getBalance(claim1.publicKey)))}`);
 
-// --- 6. harvest: fee → protocol treasury + bought-back tokens donated to the SHT pool (holders' rate rises)
+// --- 6. harvest: the whole tax goes to the treasury (the agents' wallet); the SHT pool's rate is untouched
 const rateBefore = amountForBurn(tp, 1_000_000n);
 await send([harvestIx(mint.publicKey, treasury.publicKey)], [relayer], "harvest");
 c = await curve();
@@ -203,8 +204,8 @@ tp = await tokenPool();
 const rateAfter = amountForBurn(tp, 1_000_000n);
 const treasuryBal = BigInt(await conn.getBalance(treasury.publicKey));
 log(`treasury got ${fmt(treasuryBal)}; SHT pool rate ${rateBefore} → ${rateAfter} per 1e6 shares; fees left ${fmt(c.feesAccrued)}`);
-assert(treasuryBal === q.fee - (q.fee * 5000n) / 10_000n, "protocol share is half the fee");
-assert(rateAfter > rateBefore, "holders' share rate rose");
+assert(treasuryBal === q.fee, "the treasury receives the whole fee");
+assert(rateAfter === rateBefore, "no holders' share: the pool rate does not move");
 assert(c.feesAccrued === 0n, "fees fully harvested");
 await expectFail(send([harvestIx(mint.publicKey, treasury.publicKey)], [relayer], "harvest again"), /0xc|Nothing/, "nothing to harvest twice");
 
@@ -253,22 +254,35 @@ await expectFail(
   /error: 0x0(?![0-9a-f])|InvalidInstruction/, "exit path is CPI-only",
 );
 
-// --- 10. the fee policy rolls at the epoch boundary exactly as the SDK predicts
+// --- 10. the agents vote; the fee rolls at the next epoch boundary exactly as the SDK predicts
 {
+  const slotOf = async () => BigInt(await conn.getSlot("confirmed"));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // vote early in an epoch so all three land before its boundary
+  let slot = await slotOf();
+  while (slot % policy.EPOCH_SLOTS > policy.EPOCH_SLOTS / 3n) { await sleep(500); slot = await slotOf(); }
+  const voteEpoch = epochOf(slot);
+  // median 200 bps is one step from 100, so the fee reaches its target at the first boundary and then holds
+  await send([voteIx(agents[0].publicKey, mint.publicKey, 200, 0)], [agents[0]], "agent 0 votes 2 %");
+  await send([voteIx(agents[1].publicKey, mint.publicKey, 200, 0)], [agents[1]], "agent 1 votes 2 %");
+  await send([voteIx(agents[2].publicKey, mint.publicKey, 500, 0)], [agents[2]], "agent 2 votes 5 % (the cap)");
   const before = await curve();
+  assert(before.votes[0].feeBps === 200 && before.votes[2].feeBps === 500 && before.votes[3].slot === 0n, "votes recorded per agent");
+  assert(epochOf(await slotOf()) === voteEpoch, "all votes landed inside one epoch");
+  assert(before.tradeFeeBps === 100, "votes do not move the fee inside the epoch they were cast");
   const boundary = (voteEpoch + 1n) * policy.EPOCH_SLOTS;
-  let slot = BigInt(await conn.getSlot("confirmed"));
-  const waitMs = Number(boundary - slot) * 100; // CI runs this validator with short slots; locally this may take a few minutes
-  if (slot < boundary) log(`waiting for fee epoch ${voteEpoch + 1n} (slot ${boundary}, ≈${Math.ceil(waitMs / 1000)} s)`);
-  while (slot < boundary) { await new Promise((r) => setTimeout(r, 1000)); slot = BigInt(await conn.getSlot("confirmed")); }
-  await send([voteIx(agents[3].publicKey, mint.publicKey, 50, 5000)], [agents[3]], "agent 3 votes 0.5 % / 50 % (rolls the epoch first)");
+  slot = await slotOf();
+  if (slot < boundary) log(`waiting for fee epoch ${voteEpoch + 1n} (slot ${boundary}, ≈${Math.ceil(Number(boundary - slot) / 10)} s here)`);
+  while (slot < boundary) { await sleep(500); slot = await slotOf(); }
+  await send([voteIx(agents[3].publicKey, mint.publicKey, 0, 0)], [agents[3]], "agent 3 votes 0 % (rolls the epoch first)");
   const after = await curve();
   const expected = rolled(before, slot);
-  assert(after.tradeFeeBps === expected.tradeFeeBps && after.holderShareBps === expected.holderShareBps, `program and SDK agree after the roll: ${after.tradeFeeBps}/${after.holderShareBps} vs ${expected.tradeFeeBps}/${expected.holderShareBps}`);
-  // one bounded step per epoch towards the medians (200 bps / 7000): the fee can only be 200 or, if two boundaries passed, the median itself
-  assert([200, 300].includes(after.tradeFeeBps) && [6000, 7000].includes(after.holderShareBps) && after.tradeFeeBps - before.tradeFeeBps <= policy.FEE_STEP_BPS * Number(after.settledEpoch - before.settledEpoch), `bounded steps towards the median: fee ${after.tradeFeeBps} bps, holder share ${after.holderShareBps}`);
-  assert(after.votes[3].feeBps === 50, "the late vote is recorded for the next epoch");
-  log(`fee policy rolled: ${before.tradeFeeBps} → ${after.tradeFeeBps} bps, holder share ${before.holderShareBps} → ${after.holderShareBps} (epoch ${after.settledEpoch})`);
+  assert(after.tradeFeeBps === expected.tradeFeeBps && after.holderShareBps === 0, `program and SDK agree after the roll: ${after.tradeFeeBps} vs ${expected.tradeFeeBps}`);
+  assert(after.tradeFeeBps === 200, `one bounded step towards the median (200 bps): ${after.tradeFeeBps}`);
+  assert(after.votes[3].feeBps === 0, "the late vote is recorded for the next epoch");
+  // with agent 3's 0 the median of {200, 200, 500, 0} is still 200, so the fee holds from here on (votes expire after 4 epochs and a frozen fee stays)
+  assert(rolled(after, slot + 10n * policy.EPOCH_SLOTS).tradeFeeBps === 200, "the fee holds at the median");
+  log(`fee policy rolled: ${before.tradeFeeBps} → ${after.tradeFeeBps} bps (epoch ${after.settledEpoch}); the treasury keeps all of it`);
 }
 
 // --- 11. graduation at 20 SOL: the buy that crosses the line takes the last tokens, pays only for them, and the curve freezes
