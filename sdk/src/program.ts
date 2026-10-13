@@ -270,23 +270,33 @@ export function findRootIndex(t: TreeState, root: bigint): number {
 }
 
 /** Shares <-> amount using the pool's current rate, matching on-chain rounding. */
+/**
+ * Virtual holder: V shares backed by V units from pool creation. Makes the
+ * first-depositor inflation attack unprofitable and keeps an empty pool at
+ * 1:1. Must equal `Pool::VIRTUAL_OFFSET` in programs/scash_vault/src/state.rs.
+ */
+export const VIRTUAL_OFFSET = 1_000_000n;
+
+function virt(p: PoolState): { ts: bigint; ta: bigint } {
+  return { ts: p.totalShares + VIRTUAL_OFFSET, ta: p.totalAssets + VIRTUAL_OFFSET };
+}
+
 export function sharesForDeposit(p: PoolState, amount: bigint): bigint {
-  if (p.totalShares === 0n || p.totalAssets === 0n) return amount;
-  return (amount * p.totalShares) / p.totalAssets;
+  const { ts, ta } = virt(p);
+  return (amount * ts) / ta;
 }
 export function amountForMint(p: PoolState, shares: bigint): bigint {
-  if (p.totalShares === 0n || p.totalAssets === 0n) return shares;
-  const num = shares * p.totalAssets;
-  return (num + p.totalShares - 1n) / p.totalShares;
+  const { ts, ta } = virt(p);
+  return (shares * ta + ts - 1n) / ts;
 }
 export function amountForBurn(p: PoolState, shares: bigint): bigint {
   if (p.totalShares === 0n) return 0n;
-  return (shares * p.totalAssets) / p.totalShares;
+  const { ts, ta } = virt(p);
+  return (shares * ta) / ts;
 }
 export function sharesForWithdraw(p: PoolState, amount: bigint): bigint {
-  if (p.totalShares === 0n || p.totalAssets === 0n) return amount;
-  const num = amount * p.totalShares;
-  return (num + p.totalAssets - 1n) / p.totalAssets;
+  const { ts, ta } = virt(p);
+  return (amount * ts + ta - 1n) / ta;
 }
 
 export { SYSVAR_RENT_PUBKEY };

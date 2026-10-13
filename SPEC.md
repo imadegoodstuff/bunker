@@ -210,7 +210,17 @@ amount_for(shares) = shares * total_assets / total_shares        (floor)
 
 Shield mints `shares_for(amount)` shares; unshield burns `shares` and releases `amount_for(shares)`. Anyone may call `donate(amount)`, which increases `total_assets` without minting shares, so every existing note is worth more. This is how the native token's trading fees are paid to every private holder with no distribution transaction and no information about who holds what (§13).
 
-For assets that are never donated to, `total_shares == total_assets` always and shares equal base units. In the current deployment only the `SCASH` pool is donated to (§13); SOL, USDC and every other pool have a constant share rate of 1 and earn nothing. The share rate is base units per share: it never decreases, but it says nothing about the asset's market price.
+For assets that are never donated to, `total_shares == total_assets` always and shares equal base units.
+
+**Virtual offset.** All rates are computed over `(total_shares + V, total_assets + V)` with `V = 10^6` (`Pool::VIRTUAL_OFFSET`, mirrored as `VIRTUAL_OFFSET` in the SDK):
+
+```
+shares_for_deposit(a) = floor(a · (S+V) / (A+V))
+amount_for_mint(s)    = ceil (s · (A+V) / (S+V))      what a shield of s shares costs
+amount_for_burn(s)    = floor(s · (A+V) / (S+V))      what an unshield of s shares pays
+```
+
+`V` behaves like a holder of `V` shares backed by `V` units who was there from creation. An empty pool is still 1:1. The point is the first-depositor inflation attack: minting one share and donating `D` to inflate the price now gives the attacker back `≈ D/V`, with the rest accruing to the pool for whoever comes later; `state.rs::share_invariants::inflation_attack_is_unprofitable_and_victims_are_whole` shows a 10⁹ donation after a one-unit position moves the share price to ≈1,001 units (not 10⁹), the attacker recovers under 2,000, and a later depositor loses less than one share's worth to rounding. For a pool holding 10¹² units the offset distorts rates by one part per million. Rounding dust is retained by the pool (and thereby by `V`), never extractable. In the current deployment only the `SCASH` pool is donated to (§13); SOL, USDC and every other pool have a constant share rate of 1 and earn nothing. The share rate is base units per share: it never decreases, but it says nothing about the asset's market price.
 
 **Which mints a pool accepts.** The share arithmetic assumes that `shield(amount)` puts exactly `amount` base units into the vault and that only the pool PDA can move them out. Token-2022 extensions can break both, so `create_pool` refuses mints that carry any of: `TransferFeeConfig` (vault receives less than credited), `TransferHook` (foreign code and extra accounts on every transfer), `PermanentDelegate` (a third party can pull from the vault), `NonTransferable`, `DefaultAccountState` (vault created frozen), `Pausable` (unshields can be halted). Harmless extensions (metadata, confidential transfer, interest-bearing display, close authority, memo-required, CPI guard) are accepted. As defence in depth, every inbound token transfer reads the vault balance before and after and fails with `ShortDelivery` unless it grew by exactly `amount`. A base-mint *freeze authority* is not an extension and is not rejected: USDC has one, and a frozen vault account would block every unshield of that asset. That is an accepted, documented counterparty risk of holding such assets in any pool.
 

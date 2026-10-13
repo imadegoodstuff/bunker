@@ -170,14 +170,14 @@ outline. Treat the anonymity numbers in the app as upper bounds.
   more than it holds. `state.rs::share_invariants` runs 64 randomised
   sequences of deposits, donations and burns (dust to 2^40 shares) and checks
   solvency, pro-rata bounds, that books equal the vault balance, and that
-  everyone can exit. Known limitation: a first depositor can mint one share
-  and donate a large amount, making one share expensive; later depositors
-  then pay in multiples of that price. Nothing is stolen (the test
-  `share_granularity_can_be_inflated_but_not_stolen_from` shows exact
-  pro-rata), but it degrades usability. A virtual-offset (ERC-4626 style) or
-  a minimum initial deposit would remove it and is planned. `total_in` is a
-  cumulative `u64`; a pool whose lifetime inflow exceeds 2^64 base units
-  would stop accepting deposits with `Overflow`.
+  everyone can exit. Rates are computed over a virtual offset `V = 10^6`
+  (SPEC §9), which makes the first-depositor inflation attack unprofitable:
+  `inflation_attack_is_unprofitable_and_victims_are_whole` shows a 10⁹
+  donation after a one-unit position moves the price to ≈1,001 units, the
+  attacker recovers under 2,000 of it, and the next depositor loses less than
+  one share to rounding. `total_in` is a cumulative `u64`; a pool whose
+  lifetime inflow exceeds 2^64 base units would stop accepting deposits with
+  `Overflow`.
 - **Indexer.** It serves commitments and ciphertexts; it never sees keys, but
   it sees the IP, timing and query pattern of every client. A user who relies
   on one public indexer leaks when they sync and can be denied service.

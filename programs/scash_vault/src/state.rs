@@ -216,35 +216,49 @@ impl Pool {
         Self::set_tvl_cap(d, tvl_cap);
     }
 
-    /// Shares minted for `amount` (rounds down; first depositor gets 1:1).
+    /// Shares minted for `amount` (rounds down; an empty pool is 1:1).
     pub fn shares_for_deposit(d: &[u8], amount: u64) -> Option<u64> {
-        let ts = Self::total_shares(d) as u128;
-        let ta = Self::total_assets(d) as u128;
-        if ts == 0 || ta == 0 {
-            return Some(amount);
-        }
+        let (ts, ta) = Self::virtual_totals(d);
         u64::try_from((amount as u128).checked_mul(ts)? / ta).ok()
     }
 
     /// Amount that must be deposited to mint exactly `shares` (rounds up).
     pub fn amount_for_mint(d: &[u8], shares: u64) -> Option<u64> {
-        let ts = Self::total_shares(d) as u128;
-        let ta = Self::total_assets(d) as u128;
-        if ts == 0 || ta == 0 {
-            return Some(shares);
-        }
+        let (ts, ta) = Self::virtual_totals(d);
         let num = (shares as u128).checked_mul(ta)?;
         u64::try_from(num.div_ceil(ts)).ok()
     }
 
     /// Amount released when burning `shares` (rounds down).
     pub fn amount_for_burn(d: &[u8], shares: u64) -> Option<u64> {
-        let ts = Self::total_shares(d) as u128;
-        let ta = Self::total_assets(d) as u128;
-        if ts == 0 {
+        if Self::total_shares(d) == 0 {
             return Some(0);
         }
+        let (ts, ta) = Self::virtual_totals(d);
         u64::try_from((shares as u128).checked_mul(ta)? / ts).ok()
+    }
+
+    /// The share rate is computed over `(total_shares + V, total_assets + V)`.
+    ///
+    /// The offset `V` is a virtual holder that owns `V` shares backed by `V`
+    /// base units from the moment the pool is created. It is what makes the
+    /// classic first-depositor inflation attack unprofitable: an attacker who
+    /// mints a dust position and then donates to inflate the share price now
+    /// hands `V / (V + dust)` of the donation to the virtual holder (that is,
+    /// to the pool, pro rata to everyone who comes later) and gets almost
+    /// nothing back. With `V = 10^6` and a one-unit dust position the
+    /// attacker keeps one millionth of the donation. Rounding dust that
+    /// stays in the pool also accrues to `V` and is therefore never
+    /// extractable by anyone. An empty pool still prices 1:1 because
+    /// `(0 + V) / (0 + V) = 1`. Same constant in the SDK (`VIRTUAL_OFFSET`
+    /// in `sdk/src/program.ts`).
+    pub const VIRTUAL_OFFSET: u128 = 1_000_000;
+
+    fn virtual_totals(d: &[u8]) -> (u128, u128) {
+        (
+            Self::total_shares(d) as u128 + Self::VIRTUAL_OFFSET,
+            Self::total_assets(d) as u128 + Self::VIRTUAL_OFFSET,
+        )
     }
 }
 
@@ -300,6 +314,8 @@ mod share_invariants {
     //!      amount unless the shares are worth less than one base unit;
     //!   4. `total_in - total_out` equals the real vault balance at all times.
     use super::*;
+
+    const V: u128 = Pool::VIRTUAL_OFFSET;
 
     struct Rng(u64);
     impl Rng {
@@ -378,13 +394,12 @@ mod share_invariants {
                         };
                         if let Some(amount) = mint(&mut d, &mut vault, shares) {
                             // rounding favours the pool: cost >= exact value, by < 1 unit
-                            let ts = Pool::total_shares(&d) as u128 - shares as u128;
-                            let ta = Pool::total_assets(&d) as u128 - amount as u128;
-                            if ts > 0 {
-                                let exact_num = shares as u128 * ta;
-                                assert!(amount as u128 * ts >= exact_num);
-                                assert!(amount as u128 * ts < exact_num + ts);
-                            }
+                            // (rates are over the virtual totals before this mint)
+                            let ts = Pool::total_shares(&d) as u128 - shares as u128 + V;
+                            let ta = Pool::total_assets(&d) as u128 - amount as u128 + V;
+                            let exact_num = shares as u128 * ta;
+                            assert!(amount as u128 * ts >= exact_num);
+                            assert!(amount as u128 * ts < exact_num + ts);
                             holders.push(shares);
                         }
                     }
@@ -399,8 +414,8 @@ mod share_invariants {
                         let i = rng.below(holders.len() as u64) as usize;
                         let have = holders[i];
                         let shares = if rng.below(3) == 0 { have } else { 1 + rng.below(have) };
-                        let ts = Pool::total_shares(&d) as u128;
-                        let ta = Pool::total_assets(&d) as u128;
+                        let ts = Pool::total_shares(&d) as u128 + V;
+                        let ta = Pool::total_assets(&d) as u128 + V;
                         let amount = burn(&mut d, &mut vault, shares).unwrap();
                         // never more than pro-rata, and short by less than one unit
                         assert!(amount as u128 * ts <= shares as u128 * ta);
@@ -432,36 +447,55 @@ mod share_invariants {
     }
 
     #[test]
-    fn first_depositor_is_one_to_one_and_donation_needs_shares() {
+    fn empty_pool_is_one_to_one_and_donation_needs_shares() {
         let mut d = pool();
         let mut vault = 0u128;
         assert!(donate(&mut d, &mut vault, 1_000).is_none());
         assert_eq!(mint(&mut d, &mut vault, 5_000).unwrap(), 5_000);
-        donate(&mut d, &mut vault, 5_000).unwrap();
-        // the single holder now owns everything
-        assert_eq!(burn(&mut d, &mut vault, 5_000).unwrap(), 10_000);
-        assert_eq!(vault, 0);
+        assert_eq!(Pool::shares_for_deposit(&d, 7_000).unwrap(), 7_000);
     }
 
     #[test]
-    fn share_granularity_can_be_inflated_but_not_stolen_from() {
-        // Known limitation (SECURITY.md §7): a first depositor can mint 1 share
-        // and donate a large amount, making one share expensive. Later
-        // depositors then pay in multiples of that price, but every unit they
-        // pay is backed by shares at the same rate, and the attacker gains
-        // nothing beyond their own deposit back.
+    fn inflation_attack_is_unprofitable_and_victims_are_whole() {
+        // Classic ERC-4626 first-depositor attack: mint dust, donate a lot to
+        // inflate the share price, hope later depositors lose to rounding.
+        // With the virtual offset the donation goes almost entirely to the
+        // pool (the virtual holder), the attacker gets ~1/V of it back, and a
+        // later depositor neither overpays nor loses on exit beyond < 1 unit.
         let mut d = pool();
         let mut vault = 0u128;
         mint(&mut d, &mut vault, 1).unwrap();
         donate(&mut d, &mut vault, 1_000_000_000).unwrap();
+
+        // price barely moved: 1 share costs (1e9 + 1 + V) / (1 + V) ≈ 1001 units, not 1e9
         let price = Pool::amount_for_mint(&d, 1).unwrap();
-        assert_eq!(price, 1_000_000_001);
-        // victim buys 3 shares at that price and gets exactly pro-rata back
-        let paid = mint(&mut d, &mut vault, 3).unwrap();
-        assert_eq!(paid, 3 * price);
-        assert_eq!(burn(&mut d, &mut vault, 3).unwrap(), paid);
-        // attacker exits with exactly what they put in
-        assert_eq!(burn(&mut d, &mut vault, 1).unwrap(), 1_000_000_001);
-        assert_eq!(vault, 0);
+        assert!(price < 1_100, "price per share after the attack: {price}");
+
+        // victim deposits 5e8 units and gets shares at that fair rate
+        let want = 500_000_000u64;
+        let shares = Pool::shares_for_deposit(&d, want).unwrap();
+        let paid = mint(&mut d, &mut vault, shares).unwrap();
+        assert!(paid <= want && want - paid < price, "victim pays at most < 1 share of rounding");
+        let back = burn(&mut d, &mut vault, shares).unwrap();
+        assert!(paid - back < price, "victim loses less than one share's worth to rounding: paid {paid}, back {back}");
+
+        // attacker exits with a tiny fraction of the donation
+        let attacker_back = burn(&mut d, &mut vault, 1).unwrap();
+        assert!(attacker_back < 2_000, "attacker recovered {attacker_back}");
+        // the rest of the donation stays in the pool for future depositors
+        assert!(Pool::total_assets(&d) > 999_000_000);
+        assert_eq!(Pool::total_shares(&d), 0);
+    }
+
+    #[test]
+    fn large_pool_rate_is_unaffected_by_the_offset() {
+        // With 1e12 units in the pool the offset is one part per million.
+        let mut d = pool();
+        let mut vault = 0u128;
+        mint(&mut d, &mut vault, 1_000_000_000_000).unwrap();
+        donate(&mut d, &mut vault, 100_000_000_000).unwrap(); // +10%
+        let back = Pool::amount_for_burn(&d, 1_000_000).unwrap();
+        // exact pro-rata would be 1.1e6; offset error is < 2 units
+        assert!((1_100_000i128 - back as i128).abs() < 2, "{back}");
     }
 }
