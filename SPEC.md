@@ -116,7 +116,8 @@ A single append-only Poseidon Merkle tree of depth 26 (67,108,864 leaves) holds 
 - Leaf hash: the commitment itself.
 - Node hash: `Poseidon(left, right)`.
 - Empty leaf: `Poseidon("scash_empty") = EMPTY_LEAF` (constant, computed in `sdk/src/constants.ts` and asserted in tests).
-- The program keeps `filled_subtrees[26]`, `next_index`, and a ring buffer of the last 128 roots. Proofs may reference any root in the ring, which lets a client prove against a slightly stale tree and lets relayers batch.
+- The program keeps `filled_subtrees[26]`, `next_index`, and a ring buffer of the last 128 roots. One ring slot is written per *transaction* (after all of its outputs are appended), not per leaf, so a proof built against root *R* is accepted until 128 later transactions have landed. Proofs may reference any root in the ring, which lets a client prove against a slightly stale tree and lets relayers batch.
+- A proof names its root by ring index. If the slot has since been overwritten, the public input no longer matches and the vault returns `InvalidProof`, not `UnknownRoot`; clients treat both as "re-sync and re-prove". `scripts/bench.mjs` (CI, artifact `bench-report`) fires 139 transacts concurrently against one root and fails the build if the stale proof is still accepted after 128 landed, or rejected before.
 
 ## 6. The transact circuit
 

@@ -33,7 +33,7 @@ Full protocol: [SPEC.md](SPEC.md).
 ## Repository
 
 ```
-circuits/     circom 2 circuits (transact2x2: 33,435 constraints · transact4x2: 64,752), build/setup/ceremony scripts
+circuits/     circom 2 circuits (transact2x2: 33,515 constraints · transact4x2: 64,860), build/setup/ceremony scripts
 crates/       scash-core: shared instruction & state layouts
 programs/     scash_vault (pool, verifier, tree, turnstile, exits) · scash_harvester (SCASH fee router) · scash_migrator (old vault → new vault without a public hop)
 sdk/          TypeScript: keys, addresses, notes, encryption, Merkle, proving, tx building, wallet
@@ -41,7 +41,8 @@ relayer/      Fee-paying relayer with policy checks, simulation, randomized dela
 indexer/      Event scanner → SQLite, HTTP API for commitments / nullifiers / roots / stats
 app/          Next.js shielded wallet with in-browser proving
 deploy/       Dockerfiles and Fly.io manifests
-ceremony/     Phase-2 ceremony procedure
+ceremony/     Phase-2 ceremony: transcript, attestations, tooling (circuits/scripts/ceremony.mjs)
+audit/        Audit package: scope, threat model, invariants ↔ tests, test matrix, known issues
 ```
 
 ## Build

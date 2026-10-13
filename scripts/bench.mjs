@@ -161,16 +161,25 @@ log(`ring advanced ${report.ringAdvanced} roots (ROOT_HISTORY=${ROOT_HISTORY}), 
   tx.sign([depositors[i]]);
   const sim = await conn.simulateTransaction(tx, { sigVerify: false });
   const rejected = !!sim.value.err;
-  const unknownRoot = (sim.value.logs ?? []).some((l) => /UnknownRoot|unknown root|0x3|custom program error/i.test(l));
+  // The ring slot named by root_index now holds a newer root, so the proof's
+  // public input no longer matches: the vault reports InvalidProof (custom 7),
+  // not UnknownRoot. Clients treat both as "re-sync and re-prove".
+  const custom = sim.value.err?.InstructionError?.[1]?.Custom;
+  const asInvalidProof = custom === 7;
+  // The ring records one root per transaction, so R0 is evicted after exactly
+  // ROOT_HISTORY later transactions landed (the concurrent batch itself).
   report.rootWindow = {
     transactsLandedSinceR0: ok.length,
-    evictedAsExpected: ok.length >= ROOT_HISTORY ? rejected : null,
+    expectedEvicted: ok.length >= ROOT_HISTORY,
+    rejected,
+    rejectedAsInvalidProof: asInvalidProof,
     simulationError: sim.value.err ?? null,
     freshProbeLanded: results.find((r) => r.i === freshProbeIndex)?.ok ?? false,
+    landedCapEqualsRootHistory: ok.length === ROOT_HISTORY,
   };
   log("root window:", JSON.stringify(report.rootWindow));
   if (ok.length >= ROOT_HISTORY && !rejected) throw new Error("stale root was accepted after the ring moved past it");
-  if (ok.length >= ROOT_HISTORY && !unknownRoot) log("warning: rejection reason did not look like UnknownRoot:", (sim.value.logs ?? []).slice(-3).join(" | "));
+  if (ok.length < ROOT_HISTORY && rejected) throw new Error(`root evicted after only ${ok.length} transacts (< ROOT_HISTORY)`);
 }
 
 // --- 5. a model the reader can apply: expiry probability vs rate and delay
@@ -192,5 +201,5 @@ console.log("\n## bench summary\n");
 console.log(`- prove transact2x2 (Node): p50 ${Math.round(report.proveMs.transact2x2.p50)} ms, p90 ${Math.round(report.proveMs.transact2x2.p90)} ms`);
 console.log(`- ${report.throughput.landed}/${report.throughput.submitted} concurrent transacts landed in ${report.throughput.slotsSpanned} slots; per-slot p50 ${report.throughput.perSlot.p50}, max ${report.throughput.perSlot.max}; CU mean ${Math.round(report.throughput.cu.mean)}`);
 console.log(`- observed ${report.throughput.txPerSecondObserved} tx/s end-to-end on a single test validator (tree lock serialises every transact)`);
-console.log(`- root window: ${report.rootWindow.transactsLandedSinceR0} transacts after R0 → stale proof ${report.rootWindow.evictedAsExpected ? "rejected" : "NOT rejected"}; fresh probe landed: ${report.rootWindow.freshProbeLanded}`);
+console.log(`- root window: ${report.rootWindow.transactsLandedSinceR0} transacts landed against R0 (ROOT_HISTORY=${ROOT_HISTORY}); stale proof afterwards ${report.rootWindow.rejected ? `rejected (${report.rootWindow.rejectedAsInvalidProof ? "InvalidProof: ring slot reused" : JSON.stringify(report.rootWindow.simulationError)})` : "still accepted"}; fresh probe landed: ${report.rootWindow.freshProbeLanded}`);
 process.exit(0);

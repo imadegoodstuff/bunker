@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "status": "open",
+  "phase1": {
+    "file": "pot28_0080/ppot_0080_16.ptau",
+    "sha256": "ed3622a7c79b0b49aadd134ebbc5b77df8c8c59bccebdfd0d9bf2c1a51561cf9",
+    "source": "Perpetual Powers of Tau (PSE), BN254, 2^16"
+  },
+  "opened": "2026-10-13T10:43:33.672Z",
+  "circuits": {
+    "transact2x2": {
+      "constraints": 33515,
+      "publicInputs": 9,
+      "r1csBlake2b": "138267eca69fdbea68fb79194be9c21faf3ce3f1d2c42297adca5aa51689f9563b08714f5ca109d34476048073d5fb1637ce2a1b253bf59fd97bc111cc4626f7",
+      "initialZkeyBlake2b": "b2419a648802511c0ac4d4b2b4f6b31380b174fbc89a4f4fbb5d3e63c4eb14b11e93e2d70a33f6b3bfd58c8b5d01e17c63ee838c9fbcf9dcd29a0e54197115fb",
+      "contributions": [
+        {
+          "index": 1,
+          "name": "scash coordinator",
+          "date": "2026-10-13T10:45:08.192Z",
+          "inputZkeyBlake2b": "b2419a648802511c0ac4d4b2b4f6b31380b174fbc89a4f4fbb5d3e63c4eb14b11e93e2d70a33f6b3bfd58c8b5d01e17c63ee838c9fbcf9dcd29a0e54197115fb",
+          "zkeyBlake2b": "ef9d7a932cccb7b842122754bbbdbb3f95e5e21dc7a808f78095df7e6969202628b3241a7a75226ffd0404594e98791c1fb89f2c0890bb434e8a7815ad50007f",
+          "contributionHash": "c1d43bb90ee8003a415c9782d72ab60ef1af6054983dd70f7b2e065296932643b901b2ec159cbb98aa212b4d4acdb784f77e064eede1075cac54cf5c8017ae4b",
+          "url": "https://github.com/imadegoodstuff/scash/releases/download/ceremony-phase2/transact2x2_0001.zkey"
+        }
+      ],
+      "beacon": null,
+      "initialZkeyUrl": "https://github.com/imadegoodstuff/scash/releases/download/ceremony-phase2/transact2x2_0000.zkey"
+    },
+    "transact4x2": {
+      "constraints": 64860,
+      "publicInputs": 11,
+      "r1csBlake2b": "7e267987f92ae73c244d54b5c18ae665363e1a83931088d864e72260acc4df89cafd17e8ccfa7b4ec3d98a0f8c89e94a9c5b940abb7a0bd9b1ff2fd007842f68",
+      "initialZkeyBlake2b": "abbc9824583092850cdc9e3af3c928011a16a847cee826b0d577b31da4f3442c56e04040a9fef181fbeed94ebbf800ee98fb178686e2898d858cfed2c5f094d8",
+      "contributions": [
+        {
+          "index": 1,
+          "name": "scash coordinator",
+          "date": "2026-10-13T10:45:13.342Z",
+          "inputZkeyBlake2b": "abbc9824583092850cdc9e3af3c928011a16a847cee826b0d577b31da4f3442c56e04040a9fef181fbeed94ebbf800ee98fb178686e2898d858cfed2c5f094d8",
+          "zkeyBlake2b": "cdfe3d104dd449413785c0d77ece2fcaafbd2e52028f7724274c3c4c4786b058b12cf7d125ceb935a508870f4a3dcda38fc0faac99ecfc4896b8768cc436c9aa",
+          "contributionHash": "8b42357f7e783482b2664cbd4e66814d24b2cdef44847f344103e2e385565f14400e857c4386d66015d589ed9ac2a841a779a4d597c4de89b3689eacdf51fc51",
+          "url": "https://github.com/imadegoodstuff/scash/releases/download/ceremony-phase2/transact4x2_0001.zkey"
+        }
+      ],
+      "beacon": null,
+      "initialZkeyUrl": "https://github.com/imadegoodstuff/scash/releases/download/ceremony-phase2/transact4x2_0000.zkey"
+    }
+  }
+}

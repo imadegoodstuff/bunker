@@ -373,10 +373,13 @@ pub fn process_transact(program_id: &Pubkey, accounts: &[AccountInfo], args: Tra
     // ---- append outputs
     let mut td = tree_acc.try_borrow_mut_data()?;
     let first_index = Tree::next_index(&td);
+    let mut new_root = Tree::current_root(&td);
     for cm in &args.out_commitments {
-        tree::append(&mut td, cm)?;
+        (_, new_root) = tree::append(&mut td, cm)?;
     }
-    let new_root = Tree::current_root(&td);
+    // One ring slot per transaction, not per leaf: a proof against root R
+    // stays valid for ROOT_HISTORY later transactions.
+    tree::record_root(&mut td, &new_root);
     drop(td);
 
     // ---- event for indexers: index, commitments, ciphertexts, root

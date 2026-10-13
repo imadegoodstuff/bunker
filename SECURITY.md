@@ -3,9 +3,12 @@
 scash is pre-release software. The circuits and programs are **not audited**
 and the current proving keys come from a **development setup** whose toxic
 waste is public by construction (see `circuits/scripts/setup-dev.mjs`). Do not
-use with real value until a public phase-2 ceremony (`ceremony/README.md`) has
+use with real value until the public phase-2 ceremony (`ceremony/README.md`;
+open, one contribution per circuit so far, chain verified in CI) has
 concluded, the mainnet verifying keys are pinned in a tagged release, and an
-independent audit report is linked from this file.
+independent audit report is linked from this file. No audit has taken place;
+the scoping package for one (threat model, invariants with their tests, test
+matrix, known issues) is in `audit/`.
 
 ## Reporting
 
@@ -106,7 +109,8 @@ outline. Treat the anonymity numbers in the app as upper bounds.
   shield, unshield from the old vault to the migrator PDA, anyone executes),
   which never puts a user-held public key on the path. Exercised in CI by
   `scripts/migrate-e2e.mjs`; SPEC §14.
-- **Not done:** public ceremony, independent audit, mainnet deployment,
+- **Not done:** ceremony contributions from parties other than the coordinator
+  and the beacon, independent audit, mainnet deployment,
   formal privacy analysis, incident runbook, bug bounty. None of these are
   implied by anything in the README or the app.
 
@@ -161,19 +165,35 @@ outline. Treat the anonymity numbers in the app as upper bounds.
   Solana executes conflicting writes sequentially within a slot; with ~200k
   CU per transact and a 48M CU block limit the ceiling is on the order of a
   few hundred shielded transactions per slot before the tree becomes the
-  bottleneck, well above anything a pre-release will see, but it is a ceiling
-  and it has not been measured under load. Sharded trees or batched appends
-  would raise it at the cost of per-shard anonymity sets and cross-shard
-  spends; that is a design decision for later, not an incremental fix.
-- **128-root window.** A proof is made against one of the last 128 roots. If
-  more than 127 other transactions land between proving and inclusion, the
-  proof is rejected with `UnknownRoot` and must be regenerated (≈2–3 s on a
-  desktop). The relayer's random delay is bounded so that, at the throughput
-  the ring can sustain, expiry stays rare. The relayer simulates before
-  accepting and rejects a stale root up front rather than queueing it, but the
-  app does not yet re-prove automatically; the user must resubmit. Expiry
-  probability at a given transaction rate and delay has not been measured and
-  should be before mainnet.
+  bottleneck. Measured (`scripts/bench.mjs`, run in CI on every push, numbers
+  in the `bench-report` artifact; the run below is a 2-vCPU GitHub runner,
+  `solana-test-validator`, 139 `transact2x2` shields fired at once):
+  **36 transacts landed per slot** (25 in the partial first slot), **CU per
+  transact 189k–205k, mean 193k**, **39 tx/s end-to-end** including
+  confirmation; proving `transact2x2` in Node on that runner took **p50 4.8 s,
+  p90 5.2 s** (a desktop browser is ~3 s). Per-slot numbers are bounded by the
+  validator's single-threaded write lock on the Tree account, so they are a
+  floor for mainnet, not a ceiling. Sharded trees or batched appends would
+  raise it at the cost of per-shard anonymity sets and cross-shard spends;
+  that is a design decision for later, not an incremental fix.
+- **128-root window.** A proof is made against one of the last 128 roots.
+  The first bench run found the ring advancing **per leaf**, so a 2-output
+  transaction consumed two slots and a proof survived only 64 later
+  transactions, not 128; the vault now writes one ring slot per transaction
+  (`tree::record_root`) and the bench fails if a stale proof is rejected
+  before 128 landed or accepted after. A stale root is reported as
+  `InvalidProof` (the ring slot named by `root_index` holds a newer root, so
+  the public input no longer matches), not `UnknownRoot`; the SDK and relayer
+  treat both as "re-sync and re-prove". Regenerating takes ≈3–5 s. The
+  relayer's random delay is bounded so that, at the throughput the ring can
+  sustain, expiry stays rare: with Poisson arrivals, P(expire) for a 30 s
+  prove-plus-queue delay is negligible (<10⁻¹³) up to 2 tx/s, ≈0.01 % at
+  3 tx/s and ≈97 % at 5 tx/s; at 60 s it is 24 % already at 2 tx/s
+  (`expiryModel` in the report). The relayer delay must therefore stay well
+  under a minute, and a sustained rate above ~2 shielded tx/s needs either a
+  larger ring or automatic re-proving in the app before it is comfortable. The relayer simulates before accepting and
+  rejects a stale root up front rather than queueing it, but the app does not
+  yet re-prove automatically; the user must resubmit.
 - **Share accounting.** Deposits round the cost *up*, withdrawals round the
   payout *down*, so rounding can only leave dust in the pool, never pay out
   more than it holds. `state.rs::share_invariants` runs 64 randomised

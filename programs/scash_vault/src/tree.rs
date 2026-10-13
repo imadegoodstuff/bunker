@@ -46,8 +46,15 @@ pub fn init(data: &mut [u8], bump: u8) -> Result<(), ProgramError> {
     Ok(())
 }
 
-/// Append one leaf and record the new root. Returns the leaf index.
-pub fn append(data: &mut [u8], leaf: &[u8; 32]) -> Result<u64, ProgramError> {
+/// Append one leaf without touching the root ring. Returns the leaf index and
+/// the new root.
+///
+/// Callers append all of a transaction's commitments and then call
+/// [`record_root`] once, so the ring holds one root per *transaction* and a
+/// proof built against root R survives `ROOT_HISTORY` later transactions, not
+/// `ROOT_HISTORY / outputs`. Intermediate roots (after the first of two
+/// outputs) are never observable by a client, so nothing is lost.
+pub fn append(data: &mut [u8], leaf: &[u8; 32]) -> Result<(u64, [u8; 32]), ProgramError> {
     let index = Tree::next_index(data);
     if index >= (1u64 << TREE_DEPTH) {
         return Err(VaultError::TreeFull.into());
@@ -65,9 +72,14 @@ pub fn append(data: &mut [u8], leaf: &[u8; 32]) -> Result<u64, ProgramError> {
         }
         idx >>= 1;
     }
+    Tree::set_next_index(data, index + 1);
+    Ok((index, current))
+}
+
+/// Push the root returned by the last `append` into the ring. Call exactly
+/// once per transaction, after all appends.
+pub fn record_root(data: &mut [u8], root: &[u8; 32]) {
     let ri = (Tree::root_index(data) as usize + 1) % ROOT_HISTORY;
     Tree::set_root_index(data, ri as u64);
-    Tree::set_root_at(data, ri, &current);
-    Tree::set_next_index(data, index + 1);
-    Ok(index)
+    Tree::set_root_at(data, ri, root);
 }

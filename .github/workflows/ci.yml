@@ -60,6 +60,23 @@ jobs:
       - name: compile circuits (constraint counts)
         run: npm run -w circuits build
 
+  ceremony:
+    name: phase-2 ceremony transcript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: rebuild circuits, download the pinned ptau
+        run: |
+          npm run -w circuits build
+          node circuits/scripts/setup-dev.mjs
+      - name: r1cs hashes, chain links, attestations, hosted zkeys verify against r1cs + ptau + transcript
+        run: node circuits/scripts/ceremony.mjs check --fetch
+
   audit:
     name: audit tooling (cargo-audit, circomspect, npm audit)
     runs-on: ubuntu-latest
@@ -85,6 +102,8 @@ jobs:
           node circuits/scripts/lint.mjs
       - name: npm audit (production deps; findings must be pinned via overrides or allow-listed in npm-audit-allow.json)
         run: node scripts/audit.mjs
+      - name: audit package (every test reference in audit/INVARIANTS.md resolves)
+        run: node scripts/audit-package-check.mjs
 
   e2e:
     name: end-to-end on a local validator
