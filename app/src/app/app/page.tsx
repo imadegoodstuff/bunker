@@ -5,7 +5,6 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Nav } from "@/components/Nav";
 import { useScash } from "@/lib/store";
 import { Unlock } from "@/components/Unlock";
-import { BalanceCard } from "@/components/BalanceCard";
 import { AddressCard } from "@/components/AddressCard";
 import { TransactPanel } from "@/components/TransactPanel";
 import { AnonymityPanel } from "@/components/AnonymityPanel";
@@ -23,21 +22,21 @@ export default function AppPage() {
 
   return (
     <>
+      <div className="hero-glow pointer-events-none absolute inset-x-0 top-0 -z-10 h-[40rem]" />
       <Nav app />
-      <main className="mx-auto max-w-5xl px-6 pb-24 pt-8">
+      <main className="mx-auto max-w-5xl px-6 pb-24 pt-10">
         <AnimatePresence mode="wait">
           {phase !== "ready" ? (
             <motion.div key="unlock" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <Unlock />
             </motion.div>
           ) : (
-            <motion.div key="app" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="grid gap-12 lg:grid-cols-[1fr_20rem] lg:gap-16">
-              <div className="space-y-12">
-                <BalanceCard />
+            <motion.div key="app" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="grid gap-5 lg:grid-cols-[1fr_19rem]">
+              <div className="space-y-5">
                 <TransactPanel />
                 <Activity />
               </div>
-              <aside className="space-y-10 lg:pt-1">
+              <aside className="space-y-4">
                 <AddressCard />
                 <AnonymityPanel />
                 <BackupCard />

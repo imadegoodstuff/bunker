@@ -20,35 +20,36 @@ export function AnonymityPanel() {
   const recent = sol ? sol.shields : 0;
   const grade = recent >= 500 ? "strong" : recent >= 50 ? "moderate" : "thin";
   const wait = recent >= 500 ? "a few hours" : recent >= 50 ? "about a day" : "several days";
-  const dot = grade === "strong" ? "bg-ok" : grade === "moderate" ? "bg-warn" : "bg-bad";
+  const color = grade === "strong" ? "text-ok" : grade === "moderate" ? "text-warn" : "text-bad";
+  const pct = Math.min(100, Math.round((Math.log10(recent + 1) / 3) * 100));
 
   return (
-    <section>
+    <section className="glass p-5">
       <div className="flex items-center justify-between">
-        <span className="label">Anonymity set</span>
-        <span className="flex items-center gap-1.5 text-xs text-mute">
-          <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
-          {grade}
-        </span>
+        <span className="label">Privacy set · {ASSETS[0].symbol}</span>
+        <span className={`text-xs ${color}`}>{grade}</span>
       </div>
-      <dl className="mt-3 space-y-1.5 text-xs">
-        <Row k={`${ASSETS[0].symbol} deposits, all time`} v={sol ? sol.shields.toLocaleString() : "—"} />
-        <Row k={`${ASSETS[0].symbol} withdrawals, all time`} v={sol ? sol.unshields.toLocaleString() : "—"} />
-        <Row k="Notes in tree, all assets" v={s ? s.leaves.toLocaleString() : "—"} />
-        {relayer && <Row k="Relayer queue" v={String(relayer.queued)} />}
+      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/5">
+        <div className="h-full rounded-full bg-gradient-to-r from-accent to-accent-2 transition-all" style={{ width: `${Math.max(4, pct)}%` }} />
+      </div>
+      <dl className="mt-4 grid grid-cols-2 gap-3 text-xs">
+        <Stat k="deposits" v={sol ? sol.shields.toLocaleString() : "—"} />
+        <Stat k="withdrawals" v={sol ? sol.unshields.toLocaleString() : "—"} />
+        <Stat k="notes, all assets" v={s ? s.leaves.toLocaleString() : "—"} />
+        <Stat k="relayer queue" v={relayer ? String(relayer.queued) : "—"} />
       </dl>
-      <p className="mt-4 text-xs leading-relaxed text-dim">
-        The asset is public in every transaction, so you hide among {ASSETS[0].symbol} notes only, not the whole tree. Wait {wait} between shielding and withdrawing. Use round amounts. Withdraw to a fresh wallet.
+      <p className="mt-4 text-[11px] leading-relaxed text-dim">
+        You hide among {ASSETS[0].symbol} notes only. Wait {wait} between shielding and withdrawing, use round amounts, withdraw to a fresh wallet.
       </p>
     </section>
   );
 }
 
-function Row({ k, v }: { k: string; v: string }) {
+function Stat({ k, v }: { k: string; v: string }) {
   return (
-    <div className="flex justify-between">
+    <div>
+      <dd className="text-base tabular-nums">{v}</dd>
       <dt className="text-dim">{k}</dt>
-      <dd className="tabular-nums text-mute">{v}</dd>
     </div>
   );
 }

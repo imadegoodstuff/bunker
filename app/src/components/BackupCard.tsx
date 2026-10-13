@@ -13,7 +13,7 @@ export function BackupCard() {
     setTimeout(() => setCopied(false), 1400);
   };
   return (
-    <section>
+    <section className="glass p-5">
       <div className="flex items-center justify-between">
         <span className="label">Backup</span>
         {shown ? (
@@ -24,12 +24,12 @@ export function BackupCard() {
       </div>
       {shown ? (
         <>
-          <button onClick={copy} className="card mt-3 w-full break-all p-4 text-left font-mono text-[12px] leading-5 text-fg hover:border-white/30">{shown}</button>
-          <p className="mt-2 text-xs text-bad">{copied ? "Copied." : "Anyone with this string can spend your balance. Store it offline."}</p>
+          <button onClick={copy} className="mt-3 w-full break-all rounded-xl border border-bad/40 bg-black/30 p-3.5 text-left font-mono text-[12px] leading-5 text-fg hover:border-bad/70">{shown}</button>
+          <p className="mt-2 text-[11px] text-bad">{copied ? "Copied." : "Anyone with this string can spend your balance. Store it offline."}</p>
         </>
       ) : (
-        <p className="mt-3 text-xs leading-relaxed text-dim">
-          Your keys come from your wallet signature and passphrase. Export the raw seed to recover without either, on any device.
+        <p className="mt-3 text-[11px] leading-relaxed text-dim">
+          Your keys come from your wallet signature and passphrase. Export the raw seed to recover on any device, without either.
         </p>
       )}
     </section>

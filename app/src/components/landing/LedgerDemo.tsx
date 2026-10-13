@@ -45,7 +45,7 @@ export function LedgerDemo() {
   const yours = (tick + 4) % all.length;
 
   return (
-    <div className="card overflow-hidden bg-raise">
+    <div className="glass overflow-hidden">
       <div className="flex items-center justify-between border-b border-line px-4 py-3">
         <span className="font-mono text-[11px] text-dim">what the chain stores</span>
         <div className="segment">
@@ -84,7 +84,7 @@ export function LedgerDemo() {
             );
           })}
         </AnimatePresence>
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-raise to-transparent" />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-bg to-transparent" />
       </div>
       <div className="flex items-center justify-between px-4 py-3 text-[11px] text-dim">
         <span className="flex items-center gap-2">

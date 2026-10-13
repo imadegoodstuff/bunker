@@ -86,7 +86,7 @@ export function Anatomy() {
         </div>
       </div>
 
-      <div className="card bg-raise p-5">
+      <div className="glass p-6">
         <div className="flex items-center justify-between font-mono text-[11px] text-dim">
           <span>what {s.who.toLowerCase()} learns</span>
           <span>{String(i + 1).padStart(2, "0")}/{String(steps.length).padStart(2, "0")}</span>

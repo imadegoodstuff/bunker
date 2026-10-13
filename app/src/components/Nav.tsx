@@ -8,18 +8,14 @@ const WalletButton = dynamic(() => import("@solana/wallet-adapter-react-ui").the
 export function Nav({ app = false }: { app?: boolean }) {
   return (
     <>
-    <div className="border-b border-line bg-raise px-6 py-2 text-center text-[12px] text-mute">
-      Pre-release on {CLUSTER}. Unaudited circuits and programs, development proving keys.{" "}
-      <a href="https://github.com/imadegoodstuff/scash/blob/main/SECURITY.md" target="_blank" rel="noreferrer" className="link underline underline-offset-4">Known limitations</a>
-    </div>
-    <header className="sticky top-0 z-40 border-b border-line bg-bg/80 backdrop-blur-md">
-      <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-6">
+    <header className="sticky top-0 z-40">
+      <div className="mx-auto mt-4 flex h-14 w-[calc(100%-2rem)] max-w-6xl items-center justify-between rounded-full border border-line bg-bg/70 px-3 pl-4 backdrop-blur-xl">
         <Link href="/" className="flex items-center gap-2.5">
           <img src="/icon.svg" alt="" className="h-6 w-6 rounded-md" />
           <span className="text-[15px] font-medium tracking-tight">scash</span>
-          <span className="font-mono text-[10px] uppercase tracking-wider text-dim">{CLUSTER === "devnet" ? "devnet" : "beta"}</span>
+          <span className="rounded-full border border-line px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-dim">{CLUSTER === "devnet" ? "devnet" : "beta"}</span>
         </Link>
-        <nav className="flex items-center gap-7 text-sm">
+        <nav className="flex items-center gap-6 text-sm">
           {!app && (
             <>
               <Link href="/#how" className="link hidden md:inline">How it works</Link>
@@ -29,10 +25,16 @@ export function Nav({ app = false }: { app?: boolean }) {
             </>
           )}
           <a href="https://github.com/imadegoodstuff/scash" target="_blank" rel="noreferrer" className="link hidden sm:inline">GitHub</a>
-          {app ? <WalletButton /> : <Link href="/app" className="btn-primary !h-9">Open app</Link>}
+          {app ? <WalletButton /> : <Link href="/app" className="btn-primary !h-10">Open app</Link>}
         </nav>
       </div>
     </header>
+    {CLUSTER === "devnet" && (
+        <p className="mx-auto mt-3 w-fit px-3 text-center text-[11px] text-dim">
+          Devnet pre-release · unaudited · development proving keys ·{" "}
+          <a href="https://github.com/imadegoodstuff/scash/blob/main/SECURITY.md" target="_blank" rel="noreferrer" className="link underline underline-offset-4">known limitations</a>
+        </p>
+      )}
     </>
   );
 }
