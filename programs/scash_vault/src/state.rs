@@ -287,3 +287,181 @@ impl Asp {
         false
     }
 }
+
+#[cfg(test)]
+mod share_invariants {
+    //! Randomised model of the pool's share accounting, mirroring exactly the
+    //! arithmetic `process_transact` and `process_donate` perform. Invariants:
+    //!   1. the pool never pays out more than it holds (solvency);
+    //!   2. rounding always favours the pool, by at most one base unit per
+    //!      operation, and a holder never receives more than their pro-rata
+    //!      share;
+    //!   3. a holder who received shares can always burn them for a non-zero
+    //!      amount unless the shares are worth less than one base unit;
+    //!   4. `total_in - total_out` equals the real vault balance at all times.
+    use super::*;
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            // xorshift64*
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            if n == 0 { 0 } else { self.next() % n }
+        }
+    }
+
+    fn pool() -> Vec<u8> {
+        let mut d = vec![0u8; Pool::LEN];
+        Pool::init(&mut d, 0, 9, true, &Pubkey::default(), &Pubkey::default(), &Pubkey::default(), u64::MAX);
+        d
+    }
+
+    fn mint(d: &mut [u8], vault: &mut u128, shares: u64) -> Option<u64> {
+        // compute everything first: on-chain a failed checked_add reverts the whole instruction
+        let amount = Pool::amount_for_mint(d, shares)?;
+        let ta = Pool::total_assets(d).checked_add(amount)?;
+        let ts = Pool::total_shares(d).checked_add(shares)?;
+        let ti = Pool::total_in(d).checked_add(amount)?;
+        Pool::set_total_assets(d, ta);
+        Pool::set_total_shares(d, ts);
+        Pool::set_total_in(d, ti);
+        *vault += amount as u128;
+        Some(amount)
+    }
+
+    fn burn(d: &mut [u8], vault: &mut u128, shares: u64) -> Option<u64> {
+        let amount = Pool::amount_for_burn(d, shares)?;
+        let new_out = Pool::total_out(d).checked_add(amount)?;
+        assert!(new_out <= Pool::total_in(d), "turnstile would fire on an honest burn");
+        Pool::set_total_out(d, new_out);
+        Pool::set_total_assets(d, Pool::total_assets(d).checked_sub(amount)?);
+        Pool::set_total_shares(d, Pool::total_shares(d).checked_sub(shares)?);
+        assert!(*vault >= amount as u128, "pool paid out more than it holds");
+        *vault -= amount as u128;
+        Some(amount)
+    }
+
+    fn donate(d: &mut [u8], vault: &mut u128, amount: u64) -> Option<()> {
+        if Pool::total_shares(d) == 0 {
+            return None; // process_donate refuses
+        }
+        let ta = Pool::total_assets(d).checked_add(amount)?;
+        let ti = Pool::total_in(d).checked_add(amount)?;
+        Pool::set_total_assets(d, ta);
+        Pool::set_total_in(d, ti);
+        *vault += amount as u128;
+        Some(())
+    }
+
+    #[test]
+    fn interleaved_mints_donations_and_burns_never_break_solvency() {
+        for seed in 1..=64u64 {
+            let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let mut d = pool();
+            let mut vault: u128 = 0;
+            let mut holders: Vec<u64> = Vec::new(); // shares per holder
+
+            for _ in 0..400 {
+                match rng.below(10) {
+                    0..=4 => {
+                        // deposit: dust to large
+                        let shares = match rng.below(4) {
+                            0 => 1 + rng.below(10),
+                            1 => 1 + rng.below(1_000),
+                            2 => 1 + rng.below(1_000_000_000),
+                            _ => 1 + rng.below(1 << 40),
+                        };
+                        if let Some(amount) = mint(&mut d, &mut vault, shares) {
+                            // rounding favours the pool: cost >= exact value, by < 1 unit
+                            let ts = Pool::total_shares(&d) as u128 - shares as u128;
+                            let ta = Pool::total_assets(&d) as u128 - amount as u128;
+                            if ts > 0 {
+                                let exact_num = shares as u128 * ta;
+                                assert!(amount as u128 * ts >= exact_num);
+                                assert!(amount as u128 * ts < exact_num + ts);
+                            }
+                            holders.push(shares);
+                        }
+                    }
+                    5..=6 => {
+                        let amount = 1 + rng.below(1 << 36);
+                        let _ = donate(&mut d, &mut vault, amount);
+                    }
+                    _ => {
+                        if holders.is_empty() {
+                            continue;
+                        }
+                        let i = rng.below(holders.len() as u64) as usize;
+                        let have = holders[i];
+                        let shares = if rng.below(3) == 0 { have } else { 1 + rng.below(have) };
+                        let ts = Pool::total_shares(&d) as u128;
+                        let ta = Pool::total_assets(&d) as u128;
+                        let amount = burn(&mut d, &mut vault, shares).unwrap();
+                        // never more than pro-rata, and short by less than one unit
+                        assert!(amount as u128 * ts <= shares as u128 * ta);
+                        assert!((amount as u128 + 1) * ts > shares as u128 * ta);
+                        // a share worth >= 1 unit always pays something
+                        if shares as u128 * ta >= ts {
+                            assert!(amount > 0, "non-dust burn paid zero");
+                        }
+                        holders[i] -= shares;
+                        if holders[i] == 0 {
+                            holders.swap_remove(i);
+                        }
+                    }
+                }
+                // invariant 4: books match the vault
+                assert_eq!(Pool::total_in(&d) as u128 - Pool::total_out(&d) as u128, vault);
+                assert_eq!(Pool::total_assets(&d) as u128, vault);
+                assert_eq!(holders.iter().map(|&s| s as u128).sum::<u128>(), Pool::total_shares(&d) as u128);
+            }
+
+            // everyone exits: the pool must be able to pay every holder
+            for s in holders.drain(..) {
+                burn(&mut d, &mut vault, s).unwrap();
+            }
+            assert_eq!(Pool::total_shares(&d), 0);
+            // what is left is rounding dust that stayed in the pool (never negative)
+            assert_eq!(Pool::total_assets(&d) as u128, vault);
+        }
+    }
+
+    #[test]
+    fn first_depositor_is_one_to_one_and_donation_needs_shares() {
+        let mut d = pool();
+        let mut vault = 0u128;
+        assert!(donate(&mut d, &mut vault, 1_000).is_none());
+        assert_eq!(mint(&mut d, &mut vault, 5_000).unwrap(), 5_000);
+        donate(&mut d, &mut vault, 5_000).unwrap();
+        // the single holder now owns everything
+        assert_eq!(burn(&mut d, &mut vault, 5_000).unwrap(), 10_000);
+        assert_eq!(vault, 0);
+    }
+
+    #[test]
+    fn share_granularity_can_be_inflated_but_not_stolen_from() {
+        // Known limitation (SECURITY.md §7): a first depositor can mint 1 share
+        // and donate a large amount, making one share expensive. Later
+        // depositors then pay in multiples of that price, but every unit they
+        // pay is backed by shares at the same rate, and the attacker gains
+        // nothing beyond their own deposit back.
+        let mut d = pool();
+        let mut vault = 0u128;
+        mint(&mut d, &mut vault, 1).unwrap();
+        donate(&mut d, &mut vault, 1_000_000_000).unwrap();
+        let price = Pool::amount_for_mint(&d, 1).unwrap();
+        assert_eq!(price, 1_000_000_001);
+        // victim buys 3 shares at that price and gets exactly pro-rata back
+        let paid = mint(&mut d, &mut vault, 3).unwrap();
+        assert_eq!(paid, 3 * price);
+        assert_eq!(burn(&mut d, &mut vault, 3).unwrap(), paid);
+        // attacker exits with exactly what they put in
+        assert_eq!(burn(&mut d, &mut vault, 1).unwrap(), 1_000_000_001);
+        assert_eq!(vault, 0);
+    }
+}

@@ -7,7 +7,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "setup:dev": "node scripts/setup-dev.mjs",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test --test-force-exit test/*.test.mjs"
   },
   "dependencies": {
     "circomlib": "^2.0.5"

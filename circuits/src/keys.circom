@@ -2,6 +2,7 @@ pragma circom 2.1.6;
 
 include "circomlib/circuits/poseidon.circom";
 include "circomlib/circuits/bitify.circom";
+include "circomlib/circuits/comparators.circom";
 include "circomlib/circuits/escalarmulany.circom";
 include "circomlib/circuits/babyjub.circom";
 
@@ -41,15 +42,46 @@ template ViewingKeys() {
     }
 }
 
-// Proves that pk_d = [ivk] g_d on Baby Jubjub and that g_d is on the curve.
+// Asserts that a point is on Baby Jubjub and not of small order (cofactor 8):
+// [8]P must not be the identity (0, 1). Small-order g_d would make
+// pk_d = [ivk] g_d leak ivk mod 8 and makes the Diffie-Hellman in note
+// encryption degenerate; honest addresses never have one (GroupHash clears
+// the cofactor), so this only ever rejects malicious or corrupted inputs.
+template ValidSubgroupPoint() {
+    signal input p[2];
+
+    component onCurve = BabyCheck();
+    onCurve.x <== p[0];
+    onCurve.y <== p[1];
+
+    component d1 = BabyDbl();
+    d1.x <== p[0];
+    d1.y <== p[1];
+    component d2 = BabyDbl();
+    d2.x <== d1.xout;
+    d2.y <== d1.yout;
+    component d3 = BabyDbl();
+    d3.x <== d2.xout;
+    d3.y <== d2.yout;
+
+    // identity is (0, 1): reject iff xout == 0 AND yout == 1
+    component xZero = IsZero();
+    xZero.in <== d3.xout;
+    component yOne = IsZero();
+    yOne.in <== d3.yout - 1;
+    xZero.out * yOne.out === 0;
+}
+
+// Proves that pk_d = [ivk] g_d on Baby Jubjub and that g_d is a valid
+// subgroup point. pk_d is then on the curve by construction.
 template DiversifiedKeyCheck() {
     signal input ivkBits[250];
     signal input gd[2];
     signal input pkd[2];
 
-    component onCurve = BabyCheck();
-    onCurve.x <== gd[0];
-    onCurve.y <== gd[1];
+    component valid = ValidSubgroupPoint();
+    valid.p[0] <== gd[0];
+    valid.p[1] <== gd[1];
 
     component mul = EscalarMulAny(250);
     for (var i = 0; i < 250; i++) {

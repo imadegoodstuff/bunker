@@ -131,11 +131,64 @@ outline. Treat the anonymity numbers in the app as upper bounds.
   attack surface (account constraints, leftover funds, re-entrancy into the
   vault via the exit target) and must be reviewed on its own; none is
   deployed.
+- **Output notes.** The circuit checks that every output `g_d` is on the curve
+  and not of small order and that `pk_d` is on the curve. It cannot check that
+  `pk_d` is *the recipient's* key (it would need the recipient's `ivk`; Sapling
+  has the same limit). The receiver enforces that by recomputing `pk_d` and the
+  commitment before accepting a note, so a wrong `pk_d` is never credited to
+  anyone and is a burn by the sender, not a way to lock or take someone else's
+  funds. `circuits/test/adversarial.test.mjs` tampers a valid witness fourteen
+  ways and asserts each is unsatisfiable; SPEC §6 lists them.
 - **Immutability vs. repair.** With no upgrade authority, a serious bug means a
   new program and a user-driven migration. A migration must not publish a
   link between old and new notes; the planned `scash_migrator` exit target
   moves value inside a proof for that reason. Until it exists, the only
   remedy is to unshield, which is public.
+
+### 7. Throughput, root window, share accounting, indexer, passphrase default
+
+- **One writable tree account.** Every `transact` appends to the same Tree
+  PDA, so shielded transactions of all assets serialise on one write lock.
+  Solana executes conflicting writes sequentially within a slot; with ~200k
+  CU per transact and a 48M CU block limit the ceiling is on the order of a
+  few hundred shielded transactions per slot before the tree becomes the
+  bottleneck, well above anything a pre-release will see, but it is a ceiling
+  and it has not been measured under load. Sharded trees or batched appends
+  would raise it at the cost of per-shard anonymity sets and cross-shard
+  spends; that is a design decision for later, not an incremental fix.
+- **128-root window.** A proof is made against one of the last 128 roots. If
+  more than 127 other transactions land between proving and inclusion, the
+  proof is rejected with `UnknownRoot` and must be regenerated (≈2–3 s on a
+  desktop). The relayer's random delay is bounded so that, at the throughput
+  the ring can sustain, expiry stays rare. The relayer simulates before
+  accepting and rejects a stale root up front rather than queueing it, but the
+  app does not yet re-prove automatically; the user must resubmit. Expiry
+  probability at a given transaction rate and delay has not been measured and
+  should be before mainnet.
+- **Share accounting.** Deposits round the cost *up*, withdrawals round the
+  payout *down*, so rounding can only leave dust in the pool, never pay out
+  more than it holds. `state.rs::share_invariants` runs 64 randomised
+  sequences of deposits, donations and burns (dust to 2^40 shares) and checks
+  solvency, pro-rata bounds, that books equal the vault balance, and that
+  everyone can exit. Known limitation: a first depositor can mint one share
+  and donate a large amount, making one share expensive; later depositors
+  then pay in multiples of that price. Nothing is stolen (the test
+  `share_granularity_can_be_inflated_but_not_stolen_from` shows exact
+  pro-rata), but it degrades usability. A virtual-offset (ERC-4626 style) or
+  a minimum initial deposit would remove it and is planned. `total_in` is a
+  cumulative `u64`; a pool whose lifetime inflow exceeds 2^64 base units
+  would stop accepting deposits with `Overflow`.
+- **Indexer.** It serves commitments and ciphertexts; it never sees keys, but
+  it sees the IP, timing and query pattern of every client. A user who relies
+  on one public indexer leaks when they sync and can be denied service.
+  Mitigations available today: run your own (`indexer/` is one binary), or
+  sync from any RPC (slower). Mitigations not built: oblivious fetching,
+  Tor-friendly defaults.
+- **Passphrase default.** The app enables the passphrase by default and makes
+  turning it off an explicit action with the warning that a stolen signature
+  then equals the key. Signature-only derivation is still permitted because
+  some users will accept that trade for recoverability; the backup format
+  exists so that nobody needs to.
 
 ## Design-level guarantees
 

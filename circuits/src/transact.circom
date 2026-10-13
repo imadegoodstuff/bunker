@@ -143,7 +143,8 @@ template Transact(nIns, nOuts, levels) {
     // 6..7. outputs
     component outCm[nOuts];
     component outValueBits[nOuts];
-    component outOnCurve[nOuts];
+    component outGdValid[nOuts];
+    component outPkdOnCurve[nOuts];
     var outSum = 0;
 
     for (var j = 0; j < nOuts; j++) {
@@ -161,10 +162,19 @@ template Transact(nIns, nOuts, levels) {
         outValueBits[j] = Num2Bits(64);
         outValueBits[j].in <== outValue[j];
 
-        // recipients' g_d must be valid curve points so the note is spendable
-        outOnCurve[j] = BabyCheck();
-        outOnCurve[j].x <== outGd[j][0];
-        outOnCurve[j].y <== outGd[j][1];
+        // Output address validity. The circuit cannot check that pk_d belongs
+        // to the recipient (it has no access to the recipient's ivk; Sapling
+        // has the same limit), and the receiver enforces that by recomputing
+        // pk_d = [ivk] g_d and the commitment before accepting a note. What
+        // the circuit can and does enforce: g_d is on the curve and not of
+        // small order, and pk_d is on the curve, so a note that passes is
+        // structurally spendable by whoever holds the matching ivk.
+        outGdValid[j] = ValidSubgroupPoint();
+        outGdValid[j].p[0] <== outGd[j][0];
+        outGdValid[j].p[1] <== outGd[j][1];
+        outPkdOnCurve[j] = BabyCheck();
+        outPkdOnCurve[j].x <== outPkd[j][0];
+        outPkdOnCurve[j].y <== outPkd[j][1];
 
         outSum += outValue[j];
     }
