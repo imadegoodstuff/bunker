@@ -45,7 +45,8 @@ interface State {
   tx: { stage: TxStage; message?: string; signature?: string };
   connection: Connection;
 
-  unlock: (signMessage: (m: Uint8Array) => Promise<Uint8Array>, passphrase?: string) => Promise<void>;
+  /** `passphrase === null` means the user explicitly chose signature-only (SDK `allowEmpty`). */
+  unlock: (signMessage: (m: Uint8Array) => Promise<Uint8Array>, passphrase: string | null) => Promise<void>;
   unlockFromSeed: (backup: string) => Promise<void>;
   /** Backup string for the current wallet. Anyone holding it can spend. */
   exportSeed: () => string | undefined;
@@ -95,11 +96,12 @@ export const useScash = create<State>((set, get) => {
   tx: { stage: "idle" },
   connection: new Connection(RPC_URL, "confirmed"),
 
-  async unlock(signMessage, passphrase = "") {
+  async unlock(signMessage, passphrase) {
     set({ phase: "deriving", error: undefined });
     try {
       const sig = await signMessage(new TextEncoder().encode(SPENDING_KEY_MESSAGE));
-      await openWithSeed(await seedFromSignature(sig, passphrase));
+      const seed = passphrase === null ? await seedFromSignature(sig, "", { allowEmpty: true }) : await seedFromSignature(sig, passphrase);
+      await openWithSeed(seed);
     } catch (e) {
       set({ phase: "error", error: (e as Error).message });
     }

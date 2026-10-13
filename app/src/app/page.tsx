@@ -28,7 +28,8 @@ const faq = [
   ["Where does the yield come from?", "Creator fees from SCASH trading are harvested and donated into the SCASH pool. Balances there are shares, so every SCASH note grows at once. It only applies to the SCASH pool and depends on trading volume."],
   ["What if this site disappears?", "Your keys come from your wallet signature (plus passphrase), and every ciphertext is on-chain. Any copy of the open-source app recovers the same notes."],
   ["Is it audited?", "Not yet. This is a devnet pre-release with development proving keys. The code, the ceremony transcript and the audit package are public; SECURITY.md lists every known limitation."],
-  ["Can a phishing site steal my keys?", "Any site can ask your wallet to sign the fixed message, which is why the app asks for a passphrase mixed into the key. A stolen signature alone is useless. If another site asks you to sign it, refuse."],
+  ["Can a phishing site steal my keys?", "Any site can ask your wallet to sign the fixed message, which is why the app asks for a passphrase mixed into the key. With a passphrase set, a stolen signature alone is useless; if you turned the passphrase off, it is the whole key. If another site asks you to sign it, refuse."],
+  ["What can the relayer and indexer see?", "Not your notes or keys. They do see your IP address, when you ask and what you ask for: the indexer sees which pages of ciphertext you fetch, the relayer sees when a proof arrives. The relayer's random delay weakens timing correlation; it does not remove it. Use a VPN or Tor and avoid withdrawing right after depositing if that matters to you."],
 ];
 
 export default function Landing() {

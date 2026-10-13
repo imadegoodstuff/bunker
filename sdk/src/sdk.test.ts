@@ -200,7 +200,10 @@ test("nullifier depends on position", async () => {
 
 test("seed derivation: passphrase changes the seed, backup round-trips", async () => {
   const sig = new Uint8Array(64).fill(3);
-  const a = await seedFromSignature(sig);
+  // Signature-only derivation must be an explicit decision, not a default.
+  await assert.rejects(seedFromSignature(sig), /allowEmpty/);
+  await assert.rejects(seedFromSignature(sig, "   "), /allowEmpty/);
+  const a = await seedFromSignature(sig, "", { allowEmpty: true });
   const b = await seedFromSignature(sig, "correct horse");
   const c = await seedFromSignature(sig, "correct horse");
   assert.equal(a.length, 32);

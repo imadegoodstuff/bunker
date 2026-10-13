@@ -69,7 +69,14 @@ signature. Mitigations in place:
   a phrase that means something to the user, and the UI says that too.
   The passphrase is on by default; there is no reset, and the app says so
   next to the field and points at the seed backup as the only recovery path.
-  A user who turns it off accepts the signature-only model.
+  **Signature-only is opt-in at every layer.** `seedFromSignature` throws on
+  an empty or whitespace passphrase unless the caller passes
+  `{ allowEmpty: true }`; the app passes it only after the user switches the
+  passphrase off and types "signature only" into a confirmation field that
+  states, in red, that any site which obtains the signature can then spend
+  everything. Default-on is therefore not the same as mandatory, and this
+  document does not claim every user has a second factor: it claims that no
+  user is without one by accident.
 - **Seed backup is a bearer secret.** `scashseed1…` is the raw 32-byte seed.
   Anyone holding it can spend; it is shown behind a click, with that warning,
   and is never written to storage by the app.
@@ -246,9 +253,12 @@ outline. Treat the anonymity numbers in the app as upper bounds.
   3 tx/s and ≈97 % at 5 tx/s; at 60 s it is 24 % already at 2 tx/s
   (`expiryModel` in the report). The relayer delay must therefore stay well
   under a minute, and a sustained rate above ~2 shielded tx/s needs either a
-  larger ring or automatic re-proving in the app before it is comfortable. The relayer simulates before accepting and
-  rejects a stale root up front rather than queueing it, but the app does not
-  yet re-prove automatically; the user must resubmit.
+  larger ring before it is comfortable. The relayer simulates before accepting and
+  rejects a stale root up front rather than queueing it; since §10 the app
+  re-syncs and re-proves once on `UnknownRoot`/`InvalidProof` and only then
+  reports failure (`app/src/lib/store.ts`, `isStaleRootError`). That removes
+  the manual resubmit, not the window: above ~2 tx/s the second proof can
+  expire too.
 - **Share accounting.** Deposits round the cost *up*, withdrawals round the
   payout *down*, so rounding can only leave dust in the pool, never pay out
   more than it holds. `state.rs::share_invariants` runs 64 randomised
@@ -520,6 +530,44 @@ indexer tests. Looking at the question exposed a bug older than the retry.
 - **Still only a claim:** the commit strings the services return are
   self-reported; §11 lists what evidence exists (ELF hash on-chain vs. CI
   `SHA256SUMS`) and what does not (reproducible, attested service images).
+
+### 13. The documentation itself was drifting, so it is now checked by CI
+
+A ninth review compared this file with the code and found this file behind:
+an earlier revision of §7 still said the app "does not yet re-prove automatically; the user must resubmit"
+three sections after §10 described the re-prove, and the reviewer's copy of
+§1 still carried the 40-bit arithmetic error (fixed in §10 at `ed95a1c`; the
+stale §7 sentence survived until this commit). For a protocol whose security
+argument lives partly in prose, a stale sentence is a defect of the same
+kind as a stale test.
+
+- **Fixed text.** §7 now describes the re-prove and what it does not fix.
+- **Process, made executable.** `scripts/doc-drift-check.mjs` runs in the
+  `audit` CI job and fails on three things: (1) facts with one source of
+  truth in code — passphrase floor and "strong" thresholds, the
+  time-to-crack row for the floor computed from the constants, scrypt `N`,
+  ring size, client transaction format, re-prove, relayer idempotency,
+  indexer `null` handling, devnet status — must appear in the docs with the
+  code's values; (2) a list of phrases that describe superseded behaviour
+  (the manual-resubmit sentence, the denial of a `v1` transaction format,
+  the millennia figure for 40 bits, the 40-bit floor, "skip" semantics for
+  undecodable transactions, the "planned" re-prove; see the `stale` array)
+  may not appear except on a line that acknowledges them as history; (3) every
+  numbered fix section from §9 on must be referenced from
+  `audit/KNOWN_ISSUES.md`. The rule for contributors: a security-relevant
+  change adds or edits a line in that script in the same commit. The check
+  is a floor, not a proof of freshness; it catches the two failures the
+  reviewer found and the shape of failure they represent.
+- **Signature-only is now an explicit decision** (§1): the SDK refuses an
+  empty passphrase without `allowEmpty`, the app requires a typed
+  confirmation. The reviewer's distinction between "default" and
+  "mandatory" stands and is stated in §1 as such.
+- **Privacy boundaries, in the product.** The three the reviewer listed —
+  deposits are public, anonymity sets are per asset, the relayer and indexer
+  see IP, timing and query pattern — were in SPEC §8 and this file; the FAQ
+  now has "What can the relayer and indexer see?" and the phishing answer
+  states what signature-only means. Random relayer delay weakens timing
+  correlation; nothing here removes it, and the FAQ says so.
 
 ## Design-level guarantees
 

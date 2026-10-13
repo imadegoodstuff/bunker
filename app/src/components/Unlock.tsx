@@ -29,8 +29,10 @@ export function Unlock() {
   const [backup, setBackup] = useState("");
   const [showMsg, setShowMsg] = useState(false);
 
+  const [ack, setAck] = useState("");
+  const ACK = "signature only";
   const strength = passphraseStrength(pass);
-  const passOk = !usePass || (strength.bits >= PASSPHRASE_MIN_BITS && pass === pass2);
+  const passOk = usePass ? strength.bits >= PASSPHRASE_MIN_BITS && pass === pass2 : ack.trim().toLowerCase() === ACK;
   const label = phase === "deriving" ? "Deriving keys…" : phase === "syncing" ? `Scanning ${syncedTo.toLocaleString()} / ${(totalLeaves || 0).toLocaleString()}` : "Unlock";
   const step = !connected ? 1 : 2;
 
@@ -82,8 +84,14 @@ export function Unlock() {
                   <p className="mt-1.5 text-xs leading-relaxed text-dim">
                     {usePass
                       ? "If a phishing site ever gets your signature, this is all that stands between it and your balance. There is no reset: losing it loses the balance unless you export a seed backup after unlocking."
-                      : "Off: anyone who gets your wallet to sign the message can spend. Not recommended."}
+                      : "Off means signature-only: any site that gets your wallet to sign the fixed message can spend everything in this account, with no second factor. Nothing in the protocol can undo that later."}
                   </p>
+                  {!usePass && (
+                    <div className="mt-3 space-y-2">
+                      <p className="text-xs text-bad">Type “{ACK}” to confirm you accept this.</p>
+                      <input className="input" placeholder={ACK} value={ack} onChange={(e) => setAck(e.target.value)} autoComplete="off" spellCheck={false} />
+                    </div>
+                  )}
                   {usePass && (
                     <div className="mt-3 space-y-2">
                       <input className="input" type="password" placeholder="Five or more uncommon words, or 14+ mixed characters" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="new-password" />
@@ -109,7 +117,7 @@ export function Unlock() {
                   )}
                 </div>
 
-                <button className="btn-primary w-full" disabled={busy || !signMessage || !passOk} onClick={() => signMessage && unlock(signMessage, usePass ? pass : "")}>
+                <button className="btn-primary w-full" disabled={busy || !signMessage || !passOk} onClick={() => signMessage && unlock(signMessage, usePass ? pass : null)}>
                   {label}
                 </button>
                 {busy && <div className="progress" />}

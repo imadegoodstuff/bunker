@@ -71,12 +71,17 @@ export function spendingKeyFromSeed(sk: Uint8Array): SpendingKey {
  *
  * The signature alone is high-entropy, so scrypt is not there to stretch it;
  * it is there so that an attacker who phished the signature still has to
- * grind the passphrase at ~100 ms per guess. An empty passphrase is allowed
- * (and is what "sign only" means), but the UI recommends setting one.
+ * grind the passphrase at ~100 ms per guess. An empty passphrase means
+ * "signature only": anyone who gets the wallet to sign the message can spend.
+ * It is refused unless the caller passes `{ allowEmpty: true }`, so that
+ * mode is a decision taken in code, never a default or a forgotten argument.
  * ~100 ms on a laptop, ~0.5 s on a phone.
  */
-export async function seedFromSignature(signature: Uint8Array, passphrase = ""): Promise<Uint8Array> {
+export async function seedFromSignature(signature: Uint8Array, passphrase = "", opts: { allowEmpty?: boolean } = {}): Promise<Uint8Array> {
   if (signature.length < 32) throw new Error("signature too short");
+  if (passphrase.normalize("NFKC").trim().length === 0 && !opts.allowEmpty) {
+    throw new Error("empty passphrase: pass { allowEmpty: true } to derive a signature-only key");
+  }
   const pw = concatBytes(signature, new TextEncoder().encode(passphrase.normalize("NFKC")));
   return scryptAsync(pw, SEED_SALT, { N: 2 ** 15, r: 8, p: 1, dkLen: 32 });
 }

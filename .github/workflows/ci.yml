@@ -110,6 +110,8 @@ jobs:
         run: node scripts/audit.mjs
       - name: audit package (every test reference in audit/INVARIANTS.md resolves)
         run: node scripts/audit-package-check.mjs
+      - name: doc drift (SECURITY/SPEC/KNOWN_ISSUES state what the code does)
+        run: node scripts/doc-drift-check.mjs
 
   e2e:
     name: end-to-end on a local validator
