@@ -168,10 +168,12 @@ outline. Treat the anonymity numbers in the app as upper bounds.
   bottleneck. Measured (`scripts/bench.mjs`, run in CI on every push, numbers
   in the `bench-report` artifact; the run below is a 2-vCPU GitHub runner,
   `solana-test-validator`, 139 `transact2x2` shields fired at once):
-  **36 transacts landed per slot** (25 in the partial first slot), **CU per
-  transact 189k–205k, mean 193k**, **39 tx/s end-to-end** including
-  confirmation; proving `transact2x2` in Node on that runner took **p50 4.8 s,
-  p90 5.2 s** (a desktop browser is ~3 s). Per-slot numbers are bounded by the
+  **61 transacts landed per full slot**, **CU per transact 189k–211k, mean
+  194k**, **79 tx/s end-to-end** including confirmation (an earlier run with
+  the per-leaf ring measured 36/slot and 39 tx/s; the lock, not the ring,
+  sets the ceiling, and the two runs bracket it); proving `transact2x2` in
+  Node on that runner took **p50 4.8 s, p90 5.2 s** (a desktop browser is
+  ~3 s). Per-slot numbers are bounded by the
   validator's single-threaded write lock on the Tree account, so they are a
   floor for mainnet, not a ceiling. Sharded trees or batched appends would
   raise it at the cost of per-shard anonymity sets and cross-shard spends;
@@ -180,8 +182,12 @@ outline. Treat the anonymity numbers in the app as upper bounds.
   The first bench run found the ring advancing **per leaf**, so a 2-output
   transaction consumed two slots and a proof survived only 64 later
   transactions, not 128; the vault now writes one ring slot per transaction
-  (`tree::record_root`) and the bench fails if a stale proof is rejected
-  before 128 landed or accepted after. A stale root is reported as
+  (`tree::record_root`). The bench now computes the exact window for the
+  slot its proofs reference (`128 − distance from the head`) and fails
+  unless exactly that many of the 139 concurrent transacts land and the
+  140th is rejected: the first run after the fix landed 125 against a root 3
+  slots behind the head, as predicted. (That run also revealed that the bench
+  step's exit code was masked by `| tee`; CI now sets `pipefail`.) A stale root is reported as
   `InvalidProof` (the ring slot named by `root_index` holds a newer root, so
   the public input no longer matches), not `UnknownRoot`; the SDK and relayer
   treat both as "re-sync and re-prove". Regenerating takes ≈3–5 s. The
@@ -218,6 +224,64 @@ outline. Treat the anonymity numbers in the app as upper bounds.
   then equals the key. Signature-only derivation is still permitted because
   some users will accept that trade for recoverability; the backup format
   exists so that nobody needs to.
+
+### 8. Subgroup checks, key agreement, no-op transactions, relayer economics, version correspondence
+
+A fourth review asked what `ValidSubgroupPoint` actually proves, whether
+all-dummy transactions are abusable, whether the turnstile is being
+oversold, and how anyone can tell which source the site is running.
+
+- **`[8]P ≠ O` is not `[l]P = O`, and that is deliberate.** The circuit
+  proves output and input `g_d` are on the curve and not of order 1, 2, 4
+  or 8, which is what the Sapling Spend statement proves about `g_d`. It does
+  not prove prime-subgroup membership; `g_d + T` for a torsion `T` passes.
+  SPEC §6 now gives the argument why that is sufficient: torsion only matters
+  where a secret scalar multiplies an attacker-chosen point, and the only such
+  place in this protocol is key agreement on `epk`. `sdk.test.ts` constructs
+  `g_d + T`, shows it satisfies the circuit's condition and is outside the
+  subgroup, and shows the receiver refuses the note (it re-derives `g_d` from
+  the diversifier). The identity, the order-2 point and off-curve points are
+  rejected by the circuit itself (`adversarial.test.mjs`).
+- **Key agreement did not clear the cofactor; it does now.** The review's
+  question led to a real finding in the SDK, not the circuit: the receiver
+  computed `[ivk]·epk` on a sender-supplied `epk`. A sender could add an
+  order-8 point to `epk` and derive the key for a guessed `ivk mod 8`; the
+  recipient would accept the note only when the guess was right, leaking
+  three bits of `ivk` per note the recipient later spent. Key agreement is now
+  `[8·sk]·P` on both sides (Sapling `KA.Agree`). `sdk.test.ts` checks that
+  `epk + T` yields the same shared point for every residue of `ivk` and that
+  the tampered ciphertext fails the AEAD. Existing devnet ciphertexts no
+  longer decrypt; there was no value in them. This is exactly the kind of
+  finding an independent audit is for.
+- **All-dummy no-ops are allowed by the circuit and priced by the chain and
+  the relayer.** A `transact` with zero inputs, zero outputs and
+  `public_amount = 0` is a valid proof. It costs its payer two leaves, two
+  rent-exempt nullifier PDAs (dummy inputs still produce unique random
+  nullifiers, ≈0.0018 SOL) and the signature fee. The relayer refuses it: the
+  fee policy requires at least the per-asset minimum for *every* relayed
+  transaction, including private sends, and a zero-value transaction cannot
+  pay a fee. Filling the tree this way would cost ≈64,000 SOL.
+- **The relayer was under-pricing itself.** The relayer is `payer` and funds
+  the nullifier rent, so a relayed 2-input transaction costs it ≈1.79 M
+  lamports plus fees while the default minimum fee was 1.5 M. Every relayed
+  SOL transaction was a small loss; a 4-input one twice that. The relayer now
+  computes its cost (`rent × nullifiers + signature + priority`) per request,
+  requires `cost + 20 %` for SOL regardless of policy, advertises the
+  effective minimum in `/info` so the app never builds a fee it will refuse,
+  and logs the cost at startup so operators can price SPL fees above it.
+- **Turnstile.** It bounds the damage of a forged proof to what honest users
+  deposited into that asset's pool; it does not protect the ownership of any
+  particular note. It never claimed to; `audit/THREAT_MODEL.md` lists it as a
+  bound, not a guarantee, and circuit soundness, nullifier uniqueness and
+  share accounting are the first three items in `audit/README.md`.
+- **Which source is the site running?** The app footer shows the commit it
+  was built from and the program id it talks to; the relayer's `/info` and
+  the indexer's `/health` return `commit`. Fly images are built with
+  `--build-arg GIT_SHA=$(git rev-parse HEAD)`. `README.md`, `SPEC.md` and
+  the app were already aligned on 250-bit scalars, v2 key derivation,
+  per-asset anonymity sets and the seed backup when this review was written;
+  the reviewer's GitHub view showed a one-commit snapshot that no longer
+  exists.
 
 ## Design-level guarantees
 

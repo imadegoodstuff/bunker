@@ -36,6 +36,23 @@ function loadKeypair(): Keypair {
   return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(raw)));
 }
 
+/** What one relayed transact costs the relayer in lamports: nullifier rent + signature + priority fee. */
+const COST_MARGIN_BPS = Number(process.env.COST_MARGIN_BPS ?? 2_000); // 20 % over cost by default
+let rentPerNullifier: bigint | undefined;
+async function relayCostLamports(nNullifiers: number): Promise<bigint> {
+  rentPerNullifier ??= BigInt(await conn.getMinimumBalanceForRentExemption(1));
+  const signature = 5_000n;
+  const priority = (BigInt(queue.opts.cuPriceMicroLamports) * BigInt(queue.opts.cuLimit)) / 1_000_000n;
+  return rentPerNullifier * BigInt(nNullifiers) + signature + priority;
+}
+{
+  const c2 = await relayCostLamports(2), c4 = await relayCostLamports(4);
+  console.log(`[relayer] cost per relayed transact: 2-in ${c2} lamports, 4-in ${c4} lamports; SOL fee floor = cost + ${COST_MARGIN_BPS} bps`);
+  for (const f of policy.list()) {
+    if (f.mint !== SystemProgram.programId.toBase58()) console.log(`[relayer] ${f.mint}: min ${f.min} base units — make sure this exceeds ~${c4} lamports at market rate`);
+  }
+}
+
 interface RelayBody {
   /** base64 of the Transact instruction data (built by the SDK) */
   data: string;
@@ -63,10 +80,18 @@ await app.register(cors, { origin: true });
 await app.register(rateLimit, { max: 60, timeWindow: "1 minute" });
 
 app.get("/info", async () => ({
+  commit: process.env.GIT_SHA ?? "unknown",
   relayer: signer.publicKey.toBase58(),
   program: PROGRAM.toBase58(),
   cluster: RPC.includes("devnet") ? "devnet" : RPC.includes("mainnet") ? "mainnet-beta" : "custom",
-  fees: policy.list(),
+  // For SOL, advertise the effective minimum (policy or 4-input cost floor,
+  // whichever is higher) so clients never build a fee the relayer refuses.
+  fees: await Promise.all(policy.list().map(async (f) => {
+    if (f.mint !== SystemProgram.programId.toBase58()) return f;
+    const cost = await relayCostLamports(4);
+    const floor = cost + (cost * BigInt(COST_MARGIN_BPS)) / 10_000n;
+    return { ...f, min: (floor > BigInt(f.min) ? floor : BigInt(f.min)).toString(), costLamports: cost.toString() };
+  })),
   delay: { minMs: queue.opts.minDelayMs, maxMs: queue.opts.maxDelayMs },
   lookupTable: process.env.LOOKUP_TABLE ?? null,
   queued: queue.size(),
@@ -114,8 +139,22 @@ app.post<{ Body: RelayBody }>("/relay", async (req, reply) => {
     const shares = -parsed.signedShares;
     amount = pool.totalShares === 0n ? 0n : (shares * pool.totalAssets) / pool.totalShares;
   }
-  const required = policy.required(mint.toBase58(), amount);
-  if (parsed.ext.relayerFee < required) return reply.code(402).send({ error: "fee too low", required: required.toString() });
+  // The relayer is `payer`: it funds one rent-exempt 1-byte PDA per nullifier
+  // (dummy inputs included, so a 2-in tx costs 2 rents, a 4-in tx 4), the
+  // signature fee and any priority fee. For SOL the fee must cover that cost
+  // plus a margin; a policy minimum below cost would make every relayed
+  // transaction a loss, and a zero-value "no-op" transact can never pay it.
+  // For SPL assets the fee is in tokens, so the operator must price FEE_POLICY
+  // above the SOL cost themselves (we log the cost at startup).
+  const costLamports = await relayCostLamports(parsed.nNf);
+  let required = policy.required(mint.toBase58(), amount);
+  if (mint.equals(SystemProgram.programId)) {
+    const floor = costLamports + (costLamports * BigInt(COST_MARGIN_BPS)) / 10_000n;
+    if (floor > required) required = floor;
+  }
+  if (parsed.ext.relayerFee < required) {
+    return reply.code(402).send({ error: "fee too low", required: required.toString(), relayerCostLamports: costLamports.toString() });
+  }
 
   // --- simulate before accepting (catches bad proofs / stale roots / spent notes)
   const ix = new TransactionInstruction({ programId: PROGRAM, keys, data: Buffer.from(data) });

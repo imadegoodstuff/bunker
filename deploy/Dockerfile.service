@@ -16,7 +16,8 @@ RUN npm run -w sdk build && npm run -w relayer build && npm run -w indexer build
 
 FROM node:22-bookworm-slim AS runner
 ARG SERVICE
-ENV NODE_ENV=production SERVICE=${SERVICE}
+ARG GIT_SHA=unknown
+ENV NODE_ENV=production SERVICE=${SERVICE} GIT_SHA=${GIT_SHA}
 WORKDIR /repo
 RUN groupadd -r app && useradd -r -g app app && mkdir -p /data && chown app:app /data
 COPY --from=build --chown=app:app /repo/node_modules node_modules

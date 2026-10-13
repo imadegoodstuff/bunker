@@ -8,6 +8,7 @@ import { transactIx } from "./program.js";
 import { staticAddresses, buildV0, ataFor } from "./lookup.js";
 import { noteCommitment, nullifier, assetId, freshRandomness, noteRandomness } from "./note.js";
 import { MerkleTree, verifyPath } from "./merkle.js";
+import { ShieldedWallet } from "./wallet.js";
 import { extDataHash, serializeExtData, deserializeExtData, NO_EXIT } from "./extdata.js";
 import { encodePublicAmount, decodePublicAmount, P, randomField, BJJ_SUBGROUP_ORDER } from "./field.js";
 
@@ -87,6 +88,70 @@ test("note encryption: receiver decrypts with ivk, strangers cannot, sender reco
   const small = encryptNote(bjj, to, note, undefined, false);
   assert.equal(small.ciphertext.length, NOTE_CIPHERTEXT_LEN_NO_MEMO);
   assert.ok(tryDecryptNote(bjj, receiver.ivk, small.ciphertext));
+});
+
+test("a g_d with a torsion component passes the circuit's small-order check but is never credited by the receiver", async () => {
+  // The circuit checks [8]·g_d ≠ O (not of small order), the same as Sapling;
+  // it does not prove g_d ∈ prime-order subgroup. A point g_d' = g_d + T with
+  // T of order 8 therefore satisfies the circuit. This test shows why that is
+  // acceptable: the receiver re-derives g_d from the diversifier and
+  // recomputes the commitment, so a note built on g_d' is refused and the
+  // sender has only burned their own funds.
+  const bjj = await BabyJub.load();
+  const T = bjj.mulScalar(bjj.generator, BJJ_SUBGROUP_ORDER);
+  assert.ok(bjj.inCurve(T) && !bjj.isIdentity(T) && bjj.isIdentity(bjj.mulScalar(T, 8n)), "T has order dividing 8");
+  const receiverSk = spendingKeyFromSeed(new Uint8Array(32).fill(9));
+  const receiver = await ShieldedWallet.fromSeed(new Uint8Array(32).fill(9));
+  const fvk = await fullViewingKey(receiverSk);
+  const to = receiver.address();
+  const gd = groupHash(bjj, to.d)!;
+  const gdTorsion = bjj.add(gd, T);
+  assert.ok(bjj.inCurve(gdTorsion));
+  assert.ok(!bjj.isIdentity(bjj.mulScalar(gdTorsion, 8n)), "passes the circuit's [8]P ≠ O check");
+  assert.ok(!bjj.inSubgroup(gdTorsion), "but is not in the prime-order subgroup");
+  const asset = assetId(SystemProgram.programId);
+
+  const honest = { asset, value: 500n, gd, pkd: to.pkd, ...freshRandomness() };
+  const honestCt = encryptNote(bjj, to, honest, undefined, false).ciphertext;
+  assert.ok(await receiver.scan({ index: 0, commitment: await noteCommitment(honest), ciphertext: honestCt }, asset), "honest note is credited");
+
+  const bad = { ...honest, gd: gdTorsion, ...freshRandomness() };
+  const badCt = encryptNote(bjj, to, bad, undefined, false).ciphertext;
+  assert.equal(await receiver.scan({ index: 1, commitment: await noteCommitment(bad), ciphertext: badCt }, asset), null, "torsion g_d is refused");
+  // and the same with a pk_d that is not [ivk]·g_d (a wrong recipient key)
+  const wrongPkd = { ...honest, pkd: bjj.mulScalar(gd, fvk.ivk + 1n), ...freshRandomness() };
+  const wrongCt = encryptNote(bjj, to, wrongPkd, undefined, false).ciphertext;
+  assert.equal(await receiver.scan({ index: 2, commitment: await noteCommitment(wrongPkd), ciphertext: wrongCt }, asset), null, "wrong pk_d is refused");
+});
+
+test("a torsion component in epk cannot probe ivk mod 8 (cofactor-cleared key agreement)", async () => {
+  // Attack without cofactor clearing: epk' = epk + T, key from [esk]pk_d + [k]T.
+  // The recipient decrypts iff ivk ≡ k (mod 8), leaking three bits of ivk per
+  // accepted note. With shared = [8·sk]·P the torsion vanishes on both sides,
+  // so every such ciphertext decrypts to the same key as the honest one and
+  // the sender learns nothing (and the tampered epk still fails the AEAD).
+  const bjj = await BabyJub.load();
+  const T = bjj.mulScalar(bjj.generator, BJJ_SUBGROUP_ORDER);
+  const receiver = await fullViewingKey(spendingKeyFromSeed(new Uint8Array(32).fill(11)));
+  const to = newAddress(bjj, receiver.ivk);
+  const gd = groupHash(bjj, to.d)!;
+  const note = { asset: assetId(SystemProgram.programId), value: 7n, gd, pkd: to.pkd, ...freshRandomness() };
+  const { ciphertext, epk } = encryptNote(bjj, to, note, undefined, false);
+  assert.ok(tryDecryptNote(bjj, receiver.ivk, ciphertext));
+  // Replace epk by epk + T. If the receiver's shared secret depended on the
+  // torsion part, some k in 0..7 would make a crafted ciphertext decrypt.
+  const epkT = bjj.add(epk, T);
+  const tampered = new Uint8Array(ciphertext);
+  tampered.set(bjj.compress(epkT), 0);
+  // The receiver derives its key from [8·ivk]·(epk+T) = [8·ivk]·epk: identical
+  // secret, but the key also commits to the encoded epk, so the AEAD fails.
+  assert.equal(tryDecryptNote(bjj, receiver.ivk, tampered), null);
+  // Independent of ivk mod 8: the shared point computed from epk+T equals the
+  // one from epk for *every* ivk residue, so there is no residue to learn.
+  for (let k = 0n; k < 8n; k++) {
+    const ivkK = (receiver.ivk & ~7n) | k;
+    assert.deepEqual(bjj.mulScalar(epkT, ivkK * 8n), bjj.mulScalar(epk, ivkK * 8n));
+  }
 });
 
 test("merkle tree paths verify and dummy path is well-formed", async () => {

@@ -154,6 +154,13 @@ export default function Landing() {
             <div>
               <div className="font-medium">scash</div>
               <p className="mt-2 max-w-xs text-xs leading-relaxed text-dim">Shielded notes on Solana. Pre-release: not audited, development proving keys. MIT licensed.</p>
+              <p className="mt-3 font-mono text-[11px] text-dim">
+                build{" "}
+                <a className="underline-offset-2 hover:underline" href={`${GH}/commit/${process.env.NEXT_PUBLIC_GIT_SHA ?? "main"}`}>
+                  {(process.env.NEXT_PUBLIC_GIT_SHA ?? "unknown").slice(0, 12)}
+                </a>
+                {" · "}program {process.env.NEXT_PUBLIC_PROGRAM_ID?.slice(0, 8) ?? "default"}…
+              </p>
             </div>
             <Col title="Product" links={[["App", "/app"], ["Spec", `${GH}/blob/main/SPEC.md`]]} />
             <Col title="Security" links={[["Policy", `${GH}/blob/main/SECURITY.md`], ["Ceremony", `${GH}/blob/main/ceremony/README.md`]]} />

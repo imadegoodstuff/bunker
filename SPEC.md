@@ -158,6 +158,8 @@ Constraints:
 7. All `value_i < 2^64`.
 
 **What the circuit does and does not prove about an output address.** Inputs and outputs are deliberately asymmetric. For a spend the prover holds `ivk`, so the circuit proves `pk_d = [ivk] g_d`. For an output the prover is the *sender*, who does not and must not know the recipient's `ivk`, so no circuit can prove that `pk_d_j` is the recipient's key for `g_d_j` (Sapling has the same limit). The circuit proves the output is *structurally* a valid address: both points on the curve, `g_d` outside the small-order subgroup. Whether it is *the recipient's* address is enforced at receive time: `ShieldedWallet.scan` decrypts `d`, recomputes `g_d = GroupHash(d)` and `pk_d = [ivk] g_d` from its own `ivk`, recomputes the commitment, and accepts the note only if it equals the on-chain `cm` (which binds `pk_d`). A note with a `pk_d` that does not match any `ivk` is therefore never credited to anyone and can never be spent: it is value destroyed by the sender, exactly like a transfer to a random public address, and it cannot be used to take or lock anyone else's funds. `circuits/test/adversarial.test.mjs` takes a valid witness and applies one tampering at a time (off-curve `pk_d`, off-curve `g_d`, small-order and identity `g_d`, wrong commitment, value ≥ 2^64, minting, wrong public amount, foreign note, wrong root, tampered path, wrong nullifier, double spend inside one transaction, dummy input carrying value, ASP root without membership) and asserts each is unsatisfiable; it runs in CI against the freshly compiled circuit.
+**Why `[8]P ≠ O` and not `[l]P = O`.** `ValidSubgroupPoint` proves a point is on the curve and not of order 1, 2, 4 or 8. It does *not* prove membership in the prime-order subgroup: a point `g_d' = g_d + T` with `T` of order 8 passes. This is the same check the Sapling Spend statement makes on `g_d` ("`g_d` is not of small order", Zcash protocol specification) and it is sufficient here for the following reason. The only attack a small-order or torsion component enables is key leakage through a scalar multiplication by a secret: `[ivk]·T` reveals `ivk mod 8`. In this protocol the sender never multiplies anything by the recipient's secret, and the recipient multiplies a sender-supplied point by `ivk` in exactly one place, key agreement on `epk`, which clears the cofactor first (§12). For the note's `g_d` the receiver does not use the sender's point at all: `scan` computes `g_d = GroupHash(d)` from the diversifier (cofactor cleared), so a torsion `g_d'` in the note never reaches `[ivk]·g_d'`, and the commitment check then refuses the note. On the input side the point being multiplied by `ivk` is the prover's own `g_d`, and a prover who adds torsion to their own address leaks bits only of their own key. A full `[l]P = O` check would cost ≈2,500 constraints per point (four points per transaction) to defend against a leak that has no path. `sdk/src/sdk.test.ts` constructs `g_d + T`, confirms it satisfies the circuit's condition and is not in the subgroup, and confirms `scan` refuses it; `circuits/test/adversarial.test.mjs` confirms the identity, the order-2 point and off-curve points are rejected by the circuit itself.
+
 8. `sum(value_i) + public_amount == sum(value_j)` in `F_p`. Because all values are 64-bit and `nIns, nOuts <= 4`, no wraparound is possible unless `public_amount` is outside `[-2^66, 2^66]`, which the program rejects before verification.
 9. `ext_data_hash` is bound by being a public input. The circuit squares it into a dummy constraint so it cannot be optimized away.
 
@@ -239,7 +241,7 @@ For each output note the sender samples `esk` (a Baby Jubjub scalar) and compute
 
 ```
 epk          = [esk] g_d
-shared       = [esk] pk_d                 = [ivk] epk on the receiver side
+shared       = [8·esk] pk_d               = [8·ivk] epk on the receiver side   (cofactor-cleared, Sapling KA.Agree)
 K_enc        = H_blake("scash_NoteEncKey", compress(shared) || compress(epk))
 ciphertext   = compress(epk) || ChaCha20-Poly1305(K_enc, nonce = 0, plaintext)
 plaintext    = d || value (8 LE) || rseed (32) || memo
@@ -248,6 +250,8 @@ plaintext    = d || value (8 LE) || rseed (32) || memo
 The memo is optional. When present it is zero-padded to the next multiple of
 64 bytes (max 64, see §15) so that only a length bucket leaks. A ciphertext
 without a memo is `32 + 16 + 11 + 8 + 32 = 99` bytes; with a memo, 163.
+
+The factor 8 is the curve cofactor. `epk` is chosen by the sender, so without it a receiver computing `[ivk]·(epk + T)` for a torsion point `T` would accept the note only when `ivk ≡ k (mod 8)` for the `k` the sender guessed, leaking three bits of `ivk` per accepted note. With the cofactor the torsion vanishes on both sides; `sdk.test.ts` checks that `epk + T` yields the same shared point for every residue of `ivk` and that the tampered ciphertext still fails the AEAD (the key commits to the encoded `epk`).
 
 The receiver trial-decrypts every ciphertext in every `transact` with `ivk`, recomputes `g_d = GroupHash(d)`, `pk_d = [ivk] g_d`, `cm`, and accepts the note only if `cm` matches the on-chain commitment at that leaf.
 

@@ -149,7 +149,7 @@ jobs:
       - name: e2e (shield → private send → unshield → donate → replay rejected)
         run: node scripts/e2e.mjs
       - name: bench (proving latency, concurrent transacts on one tree, 128-root window)
-        run: node scripts/bench.mjs --n 140 --out bench.json | tee bench.log
+        run: set -o pipefail; node scripts/bench.mjs --n 140 --out bench.json | tee bench.log
       - uses: actions/upload-artifact@v4
         with:
           name: bench-report

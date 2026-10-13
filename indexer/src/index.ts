@@ -19,7 +19,7 @@ await app.register(cors, { origin: true });
 
 const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64");
 
-app.get("/health", async () => ({ ok: true, program: PROGRAM.toBase58(), commitments: db.count(), rpc: RPC.replace(/\/\/.*@/, "//") }));
+app.get("/health", async () => ({ ok: true, commit: process.env.GIT_SHA ?? "unknown", program: PROGRAM.toBase58(), commitments: db.count(), rpc: RPC.replace(/\/\/.*@/, "//") }));
 
 /** Leaves and their note ciphertexts, paginated by leaf index. Wallets trial-decrypt these. */
 app.get<{ Querystring: { from?: string; limit?: string } }>("/commitments", async (req) => {

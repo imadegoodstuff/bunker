@@ -71,6 +71,16 @@ check passes. "manual" means no automated test yet (see `TEST_MATRIX.md`).
 | S6 | `ext_data` hashes to a field element and round-trips | `sdk/src/program.ts` | `sdk/src/sdk.test.ts::ext data serialization round-trips and hashes into the field` |
 | S7 | A relayed 2-in/2-out with the maximum memo fits one 1,232-byte packet | lookup table + v0 tx | `sdk/src/sdk.test.ts::a relayed 2-in/2-out send with the maximum memo fits in one packet` |
 | S8 | The receiver recomputes `pk_d` and the commitment before crediting a note | `sdk/src/wallet.ts` scan | `scripts/e2e.mjs::bob received note` |
+| S9 | A `g_d` with a torsion component (passes the circuit's `[8]P ≠ O`) is refused by the receiver; so is a `pk_d ≠ [ivk]·g_d` | `wallet.ts` scan re-derives `g_d` from `d` | `sdk/src/sdk.test.ts::a g_d with a torsion component passes the circuit's small-order check but is never credited by the receiver` |
+| S10 | Key agreement clears the cofactor: a torsion component in `epk` yields the same shared secret for every `ivk mod 8` and cannot probe the key | `sdk/src/encryption.ts` `agree` | `sdk/src/sdk.test.ts::a torsion component in epk cannot probe ivk mod 8 (cofactor-cleared key agreement)` |
+
+## Relayer
+
+| id | invariant | enforced in | test |
+|---|---|---|---|
+| R1 | The relayer cannot change recipient, amount, fee or ciphertexts (all under `ext_data_hash`) | vault `process_transact` ext binding | `programs/scash_vault/tests/verify_fixture.rs::spend_proof_verifies_and_tampering_fails` |
+| R2 | The relayer never accepts a fee below its own cost (nullifier rent × inputs + signature + priority + margin) for SOL, and never relays a zero-fee transaction for any asset | `relayer/src/index.ts` `relayCostLamports` | manual (fee floor is pure arithmetic; e2e exercises the accept path with a fee above the floor) |
+| R3 | The relayer simulates before queueing, so stale roots and spent notes are rejected up front | `relayer/src/index.ts` | manual (e2e signs with a relayer key directly; the HTTP service has no automated test yet) |
 
 ## Ceremony
 

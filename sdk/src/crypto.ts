@@ -40,6 +40,11 @@ export class BabyJub {
     return [this.fromF(this.bj.Base8[0]), this.fromF(this.bj.Base8[1])];
   }
 
+  /** Generator of the full curve group (order 8·l); `[l]·generator` has order 8. */
+  get generator(): Point {
+    return [this.fromF(this.bj.Generator[0]), this.fromF(this.bj.Generator[1])];
+  }
+
   mulScalar(p: Point, s: bigint): Point {
     const r = this.bj.mulPointEscalar([this.toF(p[0]), this.toF(p[1])], s);
     return [this.fromF(r[0]), this.fromF(r[1])];

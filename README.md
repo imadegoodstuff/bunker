@@ -80,7 +80,7 @@ Programs: `.github/workflows/ci.yml` builds SBF artifacts and deploys to devnet 
 `DEVNET_DEPLOYER_KEYPAIR` / `*_PROGRAM_KEYPAIR` secrets are present.
 
 Services: `fly deploy -c deploy/fly.indexer.toml`, `fly deploy -c deploy/fly.relayer.toml`,
-`fly deploy -c deploy/fly.app.toml` from the repo root. Set `RELAYER_KEYPAIR` as a Fly secret.
+`fly deploy -c deploy/fly.app.toml` from the repo root, each with `--build-arg GIT_SHA=$(git rev-parse HEAD)` so the app footer, relayer `/info` and indexer `/health` report the commit they were built from. Set `RELAYER_KEYPAIR` as a Fly secret.
 
 ## Program IDs (devnet)
 

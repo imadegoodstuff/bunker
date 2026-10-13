@@ -47,6 +47,18 @@ function randomScalar(): bigint {
   }
 }
 
+/**
+ * Key agreement with cofactor clearing (Sapling KA.Agree): shared = [8·sk]·P.
+ * The receiver multiplies a *sender-supplied* epk by its secret ivk; without
+ * the cofactor a torsion component in epk (epk' = epk + T, T of order 8) would
+ * let the sender learn ivk mod 8 from whether the recipient accepts the note.
+ * Multiplying by 8 first kills T on both sides and costs three doublings.
+ */
+export const KA_COFACTOR = 8n;
+function agree(bjj: BabyJub, point: Point, sk: bigint): Point {
+  return bjj.mulScalar(point, sk * KA_COFACTOR);
+}
+
 function encKey(bjj: BabyJub, shared: Point, epk: Point): Uint8Array {
   return blake2b(concatBytes(bjj.compress(shared), bjj.compress(epk)), { dkLen: 32, personalization: PERSON_ENC });
 }
@@ -61,7 +73,7 @@ export function encryptNote(
 ): { ciphertext: Uint8Array; esk: bigint; epk: Point } {
   const gd = note.gd;
   const epk = bjj.mulScalar(gd, esk);
-  const shared = bjj.mulScalar(to.pkd, esk);
+  const shared = agree(bjj, to.pkd, esk);
   const key = encKey(bjj, shared, epk);
   const memoBuf = new Uint8Array(includeMemo ? memoBucketLen(memo.length) : 0);
   if (includeMemo) memoBuf.set(memo.slice(0, MEMO_MAX));
@@ -76,7 +88,7 @@ export function tryDecryptNote(bjj: BabyJub, ivk: bigint, ciphertext: Uint8Array
   if (extra < 0 || extra > MEMO_MAX || extra % MEMO_BUCKET !== 0) return null;
   const epk = bjj.decompress(ciphertext.slice(0, 32));
   if (!epk || !bjj.inCurve(epk)) return null;
-  const shared = bjj.mulScalar(epk, ivk);
+  const shared = agree(bjj, epk, ivk);
   const key = encKey(bjj, shared, epk);
   let pt: Uint8Array;
   try {
@@ -119,7 +131,7 @@ export function decryptOutgoing(bjj: BabyJub, ovk: Uint8Array, cm: bigint, ct: U
 export function decryptNoteAsSender(bjj: BabyJub, pkd: Point, esk: bigint, ciphertext: Uint8Array): NotePlaintext | null {
   const epk = bjj.decompress(ciphertext.slice(0, 32));
   if (!epk) return null;
-  const shared = bjj.mulScalar(pkd, esk);
+  const shared = agree(bjj, pkd, esk);
   const key = encKey(bjj, shared, epk);
   try {
     return parsePlaintext(chacha20poly1305(key, NONCE).decrypt(ciphertext.slice(32)));

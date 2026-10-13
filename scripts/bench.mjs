@@ -107,6 +107,14 @@ report.buildMs = stats(buildMs);
 
 // a stale-root candidate: same root R0, submitted only after the ring has moved on
 const staleProbe = built.pop();
+// The proofs reference the root at ring slot built[0].rootIndex (the local
+// mirror's root, which may be older than the chain head). That slot is
+// overwritten after ROOT_HISTORY - distance more transactions, where
+// distance = how far the head already was from it.
+const rootSlot = built[0].rootIndex;
+const rootDistance = (Number(ct0.rootIndex) - rootSlot + ROOT_HISTORY) % ROOT_HISTORY;
+const windowLeft = ROOT_HISTORY - rootDistance;
+log(`proofs reference ring slot ${rootSlot}; head at ${ct0.rootIndex}; R0 survives ${windowLeft} more transacts`);
 const freshProbeIndex = built.length - 1; // submitted last in the burst, while R0 is still in the ring
 
 // --- 3. fire everything at once
@@ -167,19 +175,24 @@ log(`ring advanced ${report.ringAdvanced} roots (ROOT_HISTORY=${ROOT_HISTORY}), 
   const custom = sim.value.err?.InstructionError?.[1]?.Custom;
   const asInvalidProof = custom === 7;
   // The ring records one root per transaction, so R0 is evicted after exactly
-  // ROOT_HISTORY later transactions landed (the concurrent batch itself).
+  // windowLeft later transactions landed (the concurrent batch itself).
   report.rootWindow = {
+    rootSlot, headSlotAtBuild: Number(ct0.rootIndex), windowLeft,
     transactsLandedSinceR0: ok.length,
-    expectedEvicted: ok.length >= ROOT_HISTORY,
+    expectedEvicted: ok.length >= windowLeft,
     rejected,
     rejectedAsInvalidProof: asInvalidProof,
     simulationError: sim.value.err ?? null,
     freshProbeLanded: results.find((r) => r.i === freshProbeIndex)?.ok ?? false,
-    landedCapEqualsRootHistory: ok.length === ROOT_HISTORY,
+    landedEqualsWindow: ok.length === windowLeft,
   };
   log("root window:", JSON.stringify(report.rootWindow));
-  if (ok.length >= ROOT_HISTORY && !rejected) throw new Error("stale root was accepted after the ring moved past it");
-  if (ok.length < ROOT_HISTORY && rejected) throw new Error(`root evicted after only ${ok.length} transacts (< ROOT_HISTORY)`);
+  if (ok.length >= windowLeft && !rejected) throw new Error("stale root was accepted after the ring moved past it");
+  if (ok.length < windowLeft && rejected) throw new Error(`root evicted after only ${ok.length} transacts (window was ${windowLeft})`);
+  // With more proofs than the window, exactly windowLeft can land: the rest
+  // are rejected the moment the slot is reused. Anything else means a tx was
+  // lost for an unrelated reason (or the ring moved when it should not have).
+  if (built.length > windowLeft && ok.length !== windowLeft) throw new Error(`${ok.length} landed, expected exactly ${windowLeft}`);
 }
 
 // --- 5. a model the reader can apply: expiry probability vs rate and delay
@@ -201,5 +214,5 @@ console.log("\n## bench summary\n");
 console.log(`- prove transact2x2 (Node): p50 ${Math.round(report.proveMs.transact2x2.p50)} ms, p90 ${Math.round(report.proveMs.transact2x2.p90)} ms`);
 console.log(`- ${report.throughput.landed}/${report.throughput.submitted} concurrent transacts landed in ${report.throughput.slotsSpanned} slots; per-slot p50 ${report.throughput.perSlot.p50}, max ${report.throughput.perSlot.max}; CU mean ${Math.round(report.throughput.cu.mean)}`);
 console.log(`- observed ${report.throughput.txPerSecondObserved} tx/s end-to-end on a single test validator (tree lock serialises every transact)`);
-console.log(`- root window: ${report.rootWindow.transactsLandedSinceR0} transacts landed against R0 (ROOT_HISTORY=${ROOT_HISTORY}); stale proof afterwards ${report.rootWindow.rejected ? `rejected (${report.rootWindow.rejectedAsInvalidProof ? "InvalidProof: ring slot reused" : JSON.stringify(report.rootWindow.simulationError)})` : "still accepted"}; fresh probe landed: ${report.rootWindow.freshProbeLanded}`);
+console.log(`- root window: ${report.rootWindow.transactsLandedSinceR0} transacts landed against R0 (ROOT_HISTORY=${ROOT_HISTORY}, R0 was ${rootDistance} slots behind the head → window ${windowLeft}); stale proof afterwards ${report.rootWindow.rejected ? `rejected (${report.rootWindow.rejectedAsInvalidProof ? "InvalidProof: ring slot reused" : JSON.stringify(report.rootWindow.simulationError)})` : "still accepted"}; fresh probe landed: ${report.rootWindow.freshProbeLanded}`);
 process.exit(0);

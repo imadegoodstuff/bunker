@@ -33,6 +33,7 @@ What each suite covers, how to run it, and what nothing covers yet.
 - **Multi-input spends in e2e.** `transact4x2` is covered by the fixture and
   the circuit build; the e2e script spends at most two inputs.
 - **Browser proving on low-memory devices.** No mobile budget measured.
+- **Relayer HTTP service.** Fee floor, policy and simulate-before-queue are not covered by an automated test; e2e signs with a relayer key directly.
 - **Relayer under adversarial load.** Rate limiting and queue behaviour are
   not load-tested; the relayer simulates each transaction before accepting.
 - **Indexer correctness under reorgs.** The indexer follows `confirmed`
