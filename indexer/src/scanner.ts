@@ -11,6 +11,7 @@ function u64le(b: Uint8Array): bigint {
   return x;
 }
 const pk = (b: Uint8Array) => new PublicKey(b).toBase58();
+const u16le = (b: Uint8Array) => b[0] | (b[1] << 8);
 function hex(b: Uint8Array): string {
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 }
@@ -37,7 +38,9 @@ export class Scanner {
     conn: Connection | Connection[],
     readonly db: Db,
     readonly programId: PublicKey,
-    readonly intervalMs = 4000
+    readonly intervalMs = 4000,
+    /** the launchpad program, whose own history carries the agents' fee votes; undefined disables */
+    readonly launchProgramId?: PublicKey
   ) {
     this.conns = Array.isArray(conn) ? conn : [conn];
     if (this.conns.length === 0) throw new Error("scanner needs at least one RPC connection");
@@ -74,13 +77,13 @@ export class Scanner {
     this.running = false;
   }
 
-  /** Walk backwards from the newest signature until we hit the last one we processed. */
-  async tick() {
-    const last = this.db.getMeta("last_signature");
+  /** Walk backwards from the newest signature of `address` until we hit the last one we processed under `metaKey`. */
+  private async newSignatures(address: PublicKey, metaKey: string): Promise<ConfirmedSignatureInfo[]> {
+    const last = this.db.getMeta(metaKey);
     const batch: ConfirmedSignatureInfo[] = [];
     let before: string | undefined;
     outer: for (;;) {
-      const page = await this.withFailover("getSignaturesForAddress", (c) => c.getSignaturesForAddress(this.programId, { before, limit: 1000 }, "confirmed"));
+      const page = await this.withFailover("getSignaturesForAddress", (c) => c.getSignaturesForAddress(address, { before, limit: 1000 }, "confirmed"));
       if (page.length === 0) break;
       for (const s of page) {
         if (s.signature === last) break outer;
@@ -89,9 +92,21 @@ export class Scanner {
       before = page[page.length - 1].signature;
       if (page.length < 1000) break;
     }
+    return batch;
+  }
+
+  async tick() {
+    // The vault's history covers every shield, send, unshield and every launchpad
+    // trade (they are CPIs from the vault). Agent fee votes touch only the launch
+    // program, so its history is walked too; `ingest` is idempotent per signature,
+    // so a transaction present in both lists is harmless.
+    const vault = await this.newSignatures(this.programId, "last_signature");
+    const launch = this.launchProgramId ? await this.newSignatures(this.launchProgramId, "last_signature_launch") : [];
     await this.retrySkipped();
-    if (batch.length === 0) return;
-    batch.reverse(); // oldest first
+    if (vault.length === 0 && launch.length === 0) return;
+    const seen = new Set<string>();
+    const batch = [...vault, ...launch].reverse().filter((s) => !seen.has(s.signature) && seen.add(s.signature)); // oldest first
+    batch.sort((a, b) => a.slot - b.slot);
     for (let i = 0; i < batch.length; i += 50) {
       const chunk = batch.slice(i, i + 50);
       const txs = await this.fetchParsed(chunk.map((s) => s.signature));
@@ -102,8 +117,9 @@ export class Scanner {
         if (tx === undefined || tx === null) this.defer(chunk[j].signature, tx === null ? "rpc returned null" : "rpc error");
         else if (!tx.meta?.err) this.ingest(chunk[j].signature, tx);
       });
-      this.db.setMeta("last_signature", chunk[chunk.length - 1].signature);
     }
+    if (vault.length) this.db.setMeta("last_signature", vault[0].signature);
+    if (launch.length) this.db.setMeta("last_signature_launch", launch[0].signature);
     console.log(`[scanner] ingested ${batch.length} tx, commitments=${this.db.count()}, deferred=${this.deferred().length}`);
   }
 
@@ -292,6 +308,13 @@ export class Scanner {
           break;
         case "graduate":
           if (parts.length >= 4) this.db.markGraduated(pk(parts[1]), u64le(parts[2]).toString(), u64le(parts[3]).toString());
+          break;
+        // --- fee policy: an agent's vote, and the epoch roll that moved the effective fee
+        case "fee_vote":
+          if (parts.length >= 6) this.db.insertFeeEvent({ signature, mint: pk(parts[1]), kind: "vote", agent: parts[2][0], feeBps: u16le(parts[3]), holderBps: u16le(parts[4]), slot: Number(u64le(parts[5])), blockTime: bt });
+          break;
+        case "fee_roll":
+          if (parts.length >= 5) this.db.insertFeeEvent({ signature, mint: pk(parts[1]), kind: "roll", agent: null, feeBps: u16le(parts[2]), holderBps: u16le(parts[3]), slot, blockTime: bt, epoch: Number(u64le(parts[4])) });
           break;
       }
     }

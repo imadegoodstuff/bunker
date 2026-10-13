@@ -25,12 +25,13 @@ export interface LaunchRow {
   real_sol: string; real_token: string; virtual_token: string; graduated: number; buys: number; sells: number; sol_volume: string;
   fees_to_treasury: string; tokens_donated: string; signature: string; slot: number; block_time: number | null;
 }
+export interface FeeEventRow { signature: string; mint: string; kind: "vote" | "roll"; agent: number | null; fee_bps: number; holder_bps: number; epoch: number | null; slot: number; block_time: number | null }
 export interface TradeRow { signature: string; side: "buy" | "sell"; sol: string; fee: string; tokens: string; private: number; slot: number; block_time: number | null }
 
 export const indexer = {
   health: () => j<{ ok: boolean; commitments: number; program: string }>(`${INDEXER_URL}/health`),
   launches: (limit = 50) => j<LaunchRow[]>(`${INDEXER_URL}/launches?limit=${limit}`),
-  launch: (mint: string) => j<LaunchRow & { trades: TradeRow[] }>(`${INDEXER_URL}/launches/${mint}`),
+  launch: (mint: string) => j<LaunchRow & { trades: TradeRow[]; feeEvents: FeeEventRow[] }>(`${INDEXER_URL}/launches/${mint}`),
   commitments: (from: number, limit = 1000) => j<CommitmentsPage>(`${INDEXER_URL}/commitments?from=${from}&limit=${limit}`),
   nullifiers: (sinceSlot: number) => j<{ nullifier: string; slot: number }[]>(`${INDEXER_URL}/nullifiers?sinceSlot=${sinceSlot}&limit=5000`),
   roots: () => j<{ root: string; next_index: number; slot: number }[]>(`${INDEXER_URL}/roots?n=32`),

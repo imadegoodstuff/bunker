@@ -9,6 +9,7 @@
     "sdk",
     "relayer",
     "indexer",
+    "agents",
     "app"
   ],
   "scripts": {
@@ -18,6 +19,7 @@
     "sdk:test": "npm -w sdk test",
     "relayer:dev": "npm -w relayer run dev",
     "indexer:dev": "npm -w indexer run dev",
+    "agents:dev": "npm -w agents run dev",
     "app:dev": "npm -w app run dev",
     "test": "npm run circuits:test && npm run sdk:test",
     "audit": "node scripts/audit.mjs"

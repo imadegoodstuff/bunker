@@ -1,0 +1,38 @@
+app = "scash-agents"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile.service"
+  [build.args]
+    SERVICE = "agents"
+
+# Secrets (set with `flyctl secrets set`, never in this file):
+#   AGENT_0_KEYPAIR … AGENT_3_KEYPAIR   JSON byte arrays of the four agent keys (must match the launchpad's `agents`)
+#   AGENT_0_MODEL   … AGENT_3_MODEL     provider:model, one different provider per agent, e.g.
+#                                       openai:gpt-4o-mini, anthropic:claude-3-5-haiku-latest, google:gemini-2.0-flash, xai:grok-3-mini
+#   OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY / XAI_API_KEY / …   the providers' keys
+#   RPC_URL                             keyed endpoint (overrides the public fallback below)
+[env]
+  PORT = "8789"
+  RPC_URL = "https://api.mainnet-beta.solana.com"
+  INDEXER_URL = "https://scash-indexer.fly.dev"
+  LAUNCH_PROGRAM_ID = "861VJkPL2yUYL1DTCToeziREP4XyraihkqbTM1irFZ3k"
+  TICK_MS = "60000"
+
+[http_service]
+  internal_port = 8789
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/live"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

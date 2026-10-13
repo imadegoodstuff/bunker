@@ -36,6 +36,7 @@
 //! appreciate), at percentages fixed when the launchpad was initialised.
 
 pub mod curve;
+pub mod policy;
 pub mod processor;
 pub mod state;
 pub mod token;
@@ -85,6 +86,8 @@ pub enum LaunchError {
     BadParams,
     #[error("claim account must be a plain system account")]
     BadClaimAccount,
+    #[error("signer is not one of the launchpad's agents")]
+    NotAgent,
 }
 impl From<LaunchError> for ProgramError {
     fn from(e: LaunchError) -> Self {

@@ -45,6 +45,8 @@ export function claimKeypair(seed: Uint8Array, nonce: bigint): Keypair {
 
 export interface LaunchpadParams {
   protocolTreasury: PublicKey;
+  /** the four agent keys whose votes set every curve's fee (see `policy`) */
+  agents: PublicKey[];
   tradeFeeBps: number;
   holderShareBps: number;
   virtualSol: bigint;
@@ -56,9 +58,11 @@ export interface LaunchpadParams {
 }
 
 /** 1 % fee, half of it donated to holders; 1e9 supply at 6 decimals, ~79 % on the curve; graduation at 85 SOL. */
-export function defaultLaunchpadParams(protocolTreasury: PublicKey): LaunchpadParams {
+export function defaultLaunchpadParams(protocolTreasury: PublicKey, agents: PublicKey[]): LaunchpadParams {
+  if (agents.length !== policy.AGENTS) throw new Error(`exactly ${policy.AGENTS} agent keys`);
   return {
     protocolTreasury,
+    agents,
     tradeFeeBps: 100,
     holderShareBps: 5_000,
     virtualSol: 30_000_000_000n,
@@ -96,6 +100,91 @@ export interface CurveState {
   solVolume: bigint;
   /** frozen per-token address lookup table (hint; verify with `lookupTableCovers`) */
   lookupTable: PublicKey;
+  /** fee epoch `tradeFeeBps` / `holderShareBps` were last settled for; see `rolled` */
+  settledEpoch: bigint;
+  /** latest vote per agent, indexed like `LaunchpadState.agents`; `slot === 0n` means none */
+  votes: Vote[];
+}
+
+export interface Vote {
+  feeBps: number;
+  holderBps: number;
+  slot: bigint;
+}
+
+// ---- fee policy (mirror of programs/scash_launch/src/policy.rs)
+
+/**
+ * Hard limits of the agent-driven fee policy. They are constants in the
+ * program; nobody, agents included, can change them. Four keys vote per
+ * curve, the curve moves toward the median of the fresh votes by at most one
+ * step per epoch, and only votes cast before an epoch began count for it, so
+ * the fee of the epoch a trade lands in is known when its proof is made.
+ */
+export const policy = {
+  AGENTS: 4,
+  EPOCH_SLOTS: 900n,
+  VOTE_TTL_SLOTS: 3600n,
+  QUORUM: 2,
+  MAX_CATCHUP_EPOCHS: 4n,
+  FEE_MIN_BPS: 50,
+  FEE_MAX_BPS: 300,
+  FEE_STEP_BPS: 100,
+  HOLDER_MIN_BPS: 5000,
+  HOLDER_MAX_BPS: 10000,
+  HOLDER_STEP_BPS: 1000,
+} as const;
+
+export function epochOf(slot: bigint): bigint {
+  return slot / policy.EPOCH_SLOTS;
+}
+export function voteInBounds(feeBps: number, holderBps: number): boolean {
+  return Number.isInteger(feeBps) && Number.isInteger(holderBps)
+    && feeBps >= policy.FEE_MIN_BPS && feeBps <= policy.FEE_MAX_BPS
+    && holderBps >= policy.HOLDER_MIN_BPS && holderBps <= policy.HOLDER_MAX_BPS;
+}
+const stepTowards = (cur: number, target: number, step: number) => (target > cur ? Math.min(cur + step, target) : Math.max(cur - step, target));
+const median = (v: number[]) => {
+  const s = [...v].sort((a, b) => a - b);
+  const n = s.length;
+  return n % 2 === 1 ? s[(n - 1) / 2] : Math.floor((s[n / 2 - 1] + s[n / 2]) / 2);
+};
+const clamp = (x: number, lo: number, hi: number) => Math.min(Math.max(x, lo), hi);
+
+/** Fresh votes for the epoch starting at `start`: cast before it and not expired. */
+export function freshVotes(votes: Vote[], start: bigint): Vote[] {
+  return votes.filter((v) => v.slot !== 0n && v.slot < start && v.slot + policy.VOTE_TTL_SLOTS > start);
+}
+
+/** The (fee, holder share) the curve is moving toward at the epoch starting at `start`. */
+export function policyTargets(votes: Vote[], start: bigint, curFee: number, curHolder: number): { feeBps: number; holderBps: number } {
+  const f = freshVotes(votes, start);
+  if (f.length < policy.QUORUM) return { feeBps: curFee, holderBps: curHolder };
+  return {
+    feeBps: clamp(median(f.map((v) => v.feeBps)), policy.FEE_MIN_BPS, policy.FEE_MAX_BPS),
+    holderBps: clamp(median(f.map((v) => v.holderBps)), policy.HOLDER_MIN_BPS, policy.HOLDER_MAX_BPS),
+  };
+}
+
+/** The curve as the program will see it at `slot`: fee policy advanced to that slot's epoch. Pure. */
+export function rolled(c: CurveState, slot: bigint): CurveState {
+  const epoch = epochOf(slot);
+  if (epoch <= c.settledEpoch) return c;
+  const elapsed = epoch - c.settledEpoch < policy.MAX_CATCHUP_EPOCHS ? epoch - c.settledEpoch : policy.MAX_CATCHUP_EPOCHS;
+  const t = policyTargets(c.votes, epoch * policy.EPOCH_SLOTS, c.tradeFeeBps, c.holderShareBps);
+  let fee = c.tradeFeeBps, holder = c.holderShareBps;
+  for (let i = 0n; i < elapsed; i++) {
+    fee = stepTowards(fee, t.feeBps, policy.FEE_STEP_BPS);
+    holder = stepTowards(holder, t.holderBps, policy.HOLDER_STEP_BPS);
+  }
+  return { ...c, tradeFeeBps: fee, holderShareBps: holder, settledEpoch: epoch };
+}
+
+/** The fee a trade will pay if it lands anywhere in `[slot, slot + horizon]`: the worst case over the epochs that window touches. */
+export function worstFeeBps(c: CurveState, slot: bigint, horizon = 300n): number {
+  let worst = rolled(c, slot).tradeFeeBps;
+  for (let s = (epochOf(slot) + 1n) * policy.EPOCH_SLOTS; s <= slot + horizon; s += policy.EPOCH_SLOTS) worst = Math.max(worst, rolled(c, s).tradeFeeBps);
+  return worst;
 }
 
 function readU64(d: Uint8Array, off: number): bigint {
@@ -107,7 +196,7 @@ function readU16(d: Uint8Array, off: number): number {
   return d[off] | (d[off + 1] << 8);
 }
 
-export const CURVE_LEN = 264;
+export const CURVE_LEN = 320;
 
 export function decodeCurve(d: Uint8Array): CurveState {
   if (d[0] !== 2 || d.length < CURVE_LEN) throw new Error("not a curve account");
@@ -127,13 +216,21 @@ export function decodeCurve(d: Uint8Array): CurveState {
   const vaultProgram = new PublicKey(d.slice(o, o + 32)); o += 32;
   const buys = u64(), sells = u64(), solVolume = u64();
   const lookupTable = new PublicKey(d.slice(o, o + 32)); o += 32;
-  return { bump, intakeBump, mint, tokenVault, virtualSol, virtualToken, realSol, realToken, feesAccrued, graduated, createdSlot, totalSupply, curveSupply, tradeFeeBps, holderShareBps, graduationLamports, protocolTreasury, vaultProgram, buys, sells, solVolume, lookupTable };
+  const settledEpoch = u64();
+  const votes: Vote[] = [];
+  for (let i = 0; i < policy.AGENTS; i++) {
+    const feeBps = readU16(d, o); o += 2;
+    const holderBps = readU16(d, o); o += 2;
+    votes.push({ feeBps, holderBps, slot: u64() });
+  }
+  return { bump, intakeBump, mint, tokenVault, virtualSol, virtualToken, realSol, realToken, feesAccrued, graduated, createdSlot, totalSupply, curveSupply, tradeFeeBps, holderShareBps, graduationLamports, protocolTreasury, vaultProgram, buys, sells, solVolume, lookupTable, settledEpoch, votes };
 }
 
 export interface LaunchpadState extends LaunchpadParams {
   bump: number;
   vaultProgram: PublicKey;
 }
+export const LAUNCHPAD_LEN = 111 + 32 * policy.AGENTS;
 export function decodeLaunchpad(d: Uint8Array): LaunchpadState {
   if (d[0] !== 1) throw new Error("not a launchpad account");
   let o = 1;
@@ -144,8 +241,10 @@ export function decodeLaunchpad(d: Uint8Array): LaunchpadState {
   const holderShareBps = readU16(d, o); o += 2;
   const u64 = () => { const v = readU64(d, o); o += 8; return v; };
   const virtualSol = u64(), virtualToken = u64(), curveSupply = u64(), totalSupply = u64(), graduationLamports = u64();
-  const decimals = d[o];
-  return { bump, vaultProgram, protocolTreasury, tradeFeeBps, holderShareBps, virtualSol, virtualToken, curveSupply, totalSupply, graduationLamports, decimals };
+  const decimals = d[o++];
+  const agents: PublicKey[] = [];
+  for (let i = 0; i < policy.AGENTS; i++) { agents.push(new PublicKey(d.slice(o, o + 32))); o += 32; }
+  return { bump, vaultProgram, protocolTreasury, tradeFeeBps, holderShareBps, virtualSol, virtualToken, curveSupply, totalSupply, graduationLamports, decimals, agents };
 }
 
 /** Name / symbol / uri from a Token-2022 mint that carries the TokenMetadata extension (type 19). */
@@ -317,7 +416,22 @@ export function initLaunchpadIx(payer: PublicKey, p: LaunchpadParams, vaultProgr
     data: Buffer.from(concatBytes(
       new Uint8Array([0]), p.protocolTreasury.toBytes(), u16(p.tradeFeeBps), u16(p.holderShareBps),
       u64(p.virtualSol), u64(p.virtualToken), u64(p.curveSupply), u64(p.totalSupply), u64(p.graduationLamports), new Uint8Array([p.decimals]),
+      ...p.agents.map((a) => a.toBytes()),
     )),
+  });
+}
+
+/** An agent's vote for `mint`'s fee policy. Refused by the program unless `voteInBounds` and `agent` is one of the launchpad's four keys. */
+export function voteIx(agent: PublicKey, mint: PublicKey, feeBps: number, holderBps: number, programId = LAUNCH_PROGRAM_ID): TransactionInstruction {
+  if (!voteInBounds(feeBps, holderBps)) throw new Error("vote outside the policy bounds");
+  return new TransactionInstruction({
+    programId,
+    keys: [
+      { pubkey: launchpadPda(programId), isSigner: false, isWritable: false },
+      { pubkey: curvePda(mint, programId), isSigner: false, isWritable: true },
+      { pubkey: agent, isSigner: true, isWritable: false },
+    ],
+    data: Buffer.from(concatBytes(new Uint8Array([7]), u16(feeBps), u16(holderBps))),
   });
 }
 

@@ -1,11 +1,12 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import { amountForBurn, sharesForWithdraw, quotePrivateBuy, quotePrivateSell, type CurveState, type PoolState } from "@scash/sdk";
+import { amountForBurn, sharesForWithdraw, quotePrivateBuy, quotePrivateSell, rolled, worstFeeBps, type CurveState, type PoolState } from "@scash/sdk";
+import { FeePolicy } from "@/components/launch/FeePolicy";
 import { LaunchShell, Row } from "@/components/launch/LaunchShell";
 import { useLaunchpad, priceLamportsPerToken, CLAIM_BUDGET, SLIPPAGE_BPS, SOL, type ClaimRecord } from "@/lib/launchpad";
 import { useScash } from "@/lib/store";
-import { indexer, type LaunchRow, type TradeRow } from "@/lib/api";
+import { indexer, type LaunchRow, type TradeRow, type FeeEventRow } from "@/lib/api";
 import { fmtAmount, short, timeAgo } from "@/lib/format";
 import { explorerTx, explorerAddr } from "@/lib/config";
 
@@ -22,9 +23,12 @@ export default function TokenPage() {
 }
 
 function Token({ mint }: { mint: string }) {
-  const { curves, tokenPools, refresh, launches, rents } = useLaunchpad();
-  const [row, setRow] = useState<(LaunchRow & { trades: TradeRow[] }) | null>(null);
-  const curve = curves[mint];
+  const { curves, slots, tokenPools, refresh, launches, rents } = useLaunchpad();
+  const [row, setRow] = useState<(LaunchRow & { trades: TradeRow[]; feeEvents: FeeEventRow[] }) | null>(null);
+  const stored = curves[mint];
+  const slot = slots[mint] ?? 0n;
+  // what the program will charge if a trade lands now: the fee policy rolled to this slot's epoch
+  const curve = stored ? rolled(stored, slot) : undefined;
   const pool = tokenPools[mint];
   const meta = row ?? launches.find((l) => l.mint === mint);
   const load = useCallback(async () => {
@@ -72,7 +76,8 @@ function Token({ mint }: { mint: string }) {
           </dl>
         </section>
 
-        <TradePanel mint={mint} curve={curve} symbol={symbol} decimals={decimals} />
+        <TradePanel mint={mint} curve={curve} worstFee={worstFeeBps(stored, slot)} symbol={symbol} decimals={decimals} />
+        <FeePolicy curve={curve} slot={slot} events={row?.feeEvents ?? []} />
         <Trades trades={row?.trades ?? []} symbol={symbol} decimals={decimals} />
       </div>
       <aside className="space-y-4">
@@ -97,7 +102,7 @@ function Token({ mint }: { mint: string }) {
   );
 }
 
-function TradePanel({ mint, curve, symbol, decimals }: { mint: string; curve: CurveState; symbol: string; decimals: number }) {
+function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string; curve: CurveState; worstFee: number; symbol: string; decimals: number }) {
   const { buy, sell, busy, rents, tokenPools } = useLaunchpad();
   const { balances, pools, tokenBalances, relayer } = useScash();
   const [side, setSide] = useState<"buy" | "sell">("buy");
@@ -124,7 +129,9 @@ function TradePanel({ mint, curve, symbol, decimals }: { mint: string; curve: Cu
         const fee = pct > BigInt(feePolicy.min) ? pct : BigInt(feePolicy.min);
         const delivered = amountForBurn(solPool, sharesForWithdraw(solPool, lamports)) - fee;
         const q = quotePrivateBuy(curve, delivered, rents, CLAIM_BUDGET);
-        return { amount: lamports, relayerFee: fee, curveFee: q.fee, out: q.out, minOut: q.out - (q.out * SLIPPAGE_BPS) / 10_000n };
+        // min_out assumes the worst fee an epoch boundary inside the next few minutes can bring
+        const w = quotePrivateBuy({ ...curve, tradeFeeBps: worstFee }, delivered, rents, CLAIM_BUDGET);
+        return { amount: lamports, relayerFee: fee, curveFee: q.fee, out: q.out, minOut: w.out - (w.out * SLIPPAGE_BPS) / 10_000n };
       }
       if (!tokenPool) return null;
       const tokens = (tokAvail * sellPart) / 100n;
@@ -132,11 +139,12 @@ function TradePanel({ mint, curve, symbol, decimals }: { mint: string; curve: Cu
       const tip = BigInt(feePolicy.min);
       const delivered = amountForBurn(tokenPool, sharesForWithdraw(tokenPool, tokens));
       const q = quotePrivateSell(curve, delivered, tip);
-      return { amount: tokens, relayerFee: tip, curveFee: q.fee, out: q.out, minOut: q.out - (q.out * SLIPPAGE_BPS) / 10_000n };
+      const w = quotePrivateSell({ ...curve, tradeFeeBps: worstFee }, delivered, tip);
+      return { amount: tokens, relayerFee: tip, curveFee: q.fee, out: q.out, minOut: w.out - (w.out * SLIPPAGE_BPS) / 10_000n };
     } catch (e) {
       return { error: (e as Error).message } as const;
     }
-  }, [side, buySize, sellPart, solPool, tokenPool, tokAvail, curve, rents, feePolicy]);
+  }, [side, buySize, sellPart, solPool, tokenPool, tokAvail, curve, worstFee, rents, feePolicy]);
 
   const submit = async () => {
     setErr(null); setDone(null);
@@ -182,9 +190,9 @@ function TradePanel({ mint, curve, symbol, decimals }: { mint: string; curve: Cu
           <>
             <Row k={side === "buy" ? "You spend" : "You sell"} v={side === "buy" ? `${fmtAmount(quote.amount, 9, 3)} SOL` : `${fmtAmount(quote.amount, decimals, 0)} ${symbol}`} />
             <Row k="Relayer" v={`${fmtAmount(quote.relayerFee, 9, 4)} SOL${side === "sell" ? " (tipped from the proceeds)" : ""}`} />
-            <Row k="Curve fee (1%)" v={`${fmtAmount(quote.curveFee, 9, 4)} SOL · half back to holders`} />
+            <Row k={`Curve fee (${(curve.tradeFeeBps / 100).toFixed(1)}%)`} v={`${fmtAmount(quote.curveFee, 9, 4)} SOL · ${curve.holderShareBps / 100}% back to holders`} />
             <Row k="You receive" v={side === "buy" ? `≈ ${fmtAmount(quote.out, decimals, 0)} ${symbol}` : `≈ ${fmtAmount(quote.out, 9, 4)} SOL`} strong />
-            <Row k="Minimum" v={side === "buy" ? `${fmtAmount(quote.minOut, decimals, 0)} ${symbol}` : `${fmtAmount(quote.minOut, 9, 4)} SOL`} />
+            <Row k={worstFee > curve.tradeFeeBps ? `Minimum (if the fee steps to ${(worstFee / 100).toFixed(1)}%)` : "Minimum"} v={side === "buy" ? `${fmtAmount(quote.minOut, decimals, 0)} ${symbol}` : `${fmtAmount(quote.minOut, 9, 4)} SOL`} />
           </>
         ) : (
           <Row k="Quote" v={quote && "error" in quote ? quote.error : side === "sell" && tokAvail === 0n ? `no shielded ${symbol} yet` : "—"} />

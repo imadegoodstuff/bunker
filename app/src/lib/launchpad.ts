@@ -8,7 +8,7 @@ import { create } from "zustand";
 import { Keypair, PublicKey, SystemProgram, type AddressLookupTableAccount, type VersionedTransaction } from "@solana/web3.js";
 import {
   LAUNCH_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, assetId, poolPda, decodePool, decodeCurve, curvePda, intakePda, intakeAta, claimAta,
-  claimKeypair, claimShieldAccounts, closeTokenAccountIx, exitData, exitAccounts, EXIT_BUY, EXIT_SELL, fetchClaimRents, quotePrivateBuy, quotePrivateSell,
+  claimKeypair, claimShieldAccounts, closeTokenAccountIx, exitData, exitAccounts, EXIT_BUY, EXIT_SELL, fetchClaimRents, quotePrivateBuy, quotePrivateSell, rolled, worstFeeBps,
   amountForBurn, amountForMint, sharesForDeposit, sharesForWithdraw, buildV0, fetchLookupTable, launchIx, launchLookupTableIxs, lookupTableCovers,
   decodeTree, treePda, type CurveState, type PoolState, type ClaimRents,
 } from "@scash/sdk";
@@ -37,7 +37,10 @@ export const SOL = SystemProgram.programId;
 
 interface LaunchpadState {
   launches: LaunchRow[];
+  /** curve accounts exactly as stored on chain (fee policy not yet rolled to the current epoch) */
   curves: Record<string, CurveState>;
+  /** the slot at which each curve was last read */
+  slots: Record<string, bigint>;
   tokenPools: Record<string, PoolState>;
   rents?: ClaimRents;
   claims: ClaimRecord[];
@@ -46,7 +49,7 @@ interface LaunchpadState {
   busy?: string;
 
   load: () => Promise<void>;
-  refresh: (mint: string) => Promise<{ curve: CurveState; pool?: PoolState }>;
+  refresh: (mint: string) => Promise<{ curve: CurveState; pool?: PoolState; slot: bigint }>;
   /** Create a token: two wallet transactions (frozen lookup table, then the launch). Returns the mint. */
   launch: (meta: { name: string; symbol: string; uri: string }, owner: PublicKey, sendTx: (tx: VersionedTransaction) => Promise<string>) => Promise<PublicKey>;
   buy: (mint: string, lamports: bigint) => Promise<void>;
@@ -164,6 +167,7 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
     tokenPools: {},
     claims: [],
     nextNonce: 0,
+    slots: {},
     loaded: false,
 
     async load() {
@@ -175,12 +179,13 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
 
     async refresh(mint) {
       const m = new PublicKey(mint);
-      const [ci, pi] = await conn().getMultipleAccountsInfo([curvePda(m), poolPda(m, PROGRAM_ID)]);
+      const { context, value: [ci, pi] } = await conn().getMultipleAccountsInfoAndContext([curvePda(m), poolPda(m, PROGRAM_ID)]);
       if (!ci) throw new Error("curve not found");
       const curve = decodeCurve(new Uint8Array(ci.data));
       const pool = pi ? decodePool(new Uint8Array(pi.data)) : undefined;
-      set((s) => ({ curves: { ...s.curves, [mint]: curve }, tokenPools: pool ? { ...s.tokenPools, [mint]: pool } : s.tokenPools }));
-      return { curve, pool };
+      const slot = BigInt(context.slot);
+      set((s) => ({ curves: { ...s.curves, [mint]: curve }, slots: { ...s.slots, [mint]: slot }, tokenPools: pool ? { ...s.tokenPools, [mint]: pool } : s.tokenPools }));
+      return { curve, pool, slot };
     },
 
     async launch(meta, owner, sendTx) {
@@ -216,7 +221,10 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
       const solPool = scash.pools.SOL;
       if (!solPool) throw new Error("SOL pool missing");
       const mint = new PublicKey(mintStr);
-      const { curve } = await get().refresh(mintStr);
+      const { curve: stored, slot } = await get().refresh(mintStr);
+      // quote at the fee the program will charge now; protect min_out with the worst fee the next ~300 slots can bring
+      const curve = rolled(stored, slot);
+      const worst = { ...curve, tradeFeeBps: worstFeeBps(stored, slot) };
       if (curve.graduated) throw new Error("this curve has graduated; trade it publicly");
       const rents = get().rents ?? (await fetchClaimRents(conn()));
       const feePolicy = rl.fees.find((f) => f.mint === SOL.toBase58());
@@ -224,7 +232,7 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
       const pct = (lamports * BigInt(feePolicy.bps)) / 10_000n;
       const fee = pct > BigInt(feePolicy.min) ? pct : BigInt(feePolicy.min);
       const delivered = amountForBurn(solPool, sharesForWithdraw(solPool, lamports)) - fee;
-      const q = quotePrivateBuy(curve, delivered, rents, CLAIM_BUDGET);
+      const q = quotePrivateBuy(worst, delivered, rents, CLAIM_BUDGET);
       const minOut = q.out - (q.out * SLIPPAGE_BPS) / 10_000n;
       const nonce = get().nextNonce;
       const key = claimKeypair(seed(), BigInt(nonce));
@@ -253,7 +261,9 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
       if (!rl) throw new Error("relayer unavailable");
       if (!rl.launchProgram) throw new Error("this relayer does not forward launchpad trades");
       const mint = new PublicKey(mintStr);
-      const { curve, pool } = await get().refresh(mintStr);
+      const { curve: stored, pool, slot } = await get().refresh(mintStr);
+      const curve = rolled(stored, slot);
+      const worst = { ...curve, tradeFeeBps: worstFeeBps(stored, slot) };
       if (!pool) throw new Error("token pool missing");
       if (curve.graduated) throw new Error("this curve has graduated; trade it publicly");
       const feePolicy = rl.fees.find((f) => f.mint === SOL.toBase58());
@@ -261,7 +271,7 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
       // the relayer is tipped in SOL out of the proceeds: its SOL minimum, which already covers its costs
       const tip = BigInt(feePolicy.min);
       const delivered = amountForBurn(pool, sharesForWithdraw(pool, tokens));
-      const q = quotePrivateSell(curve, delivered, tip);
+      const q = quotePrivateSell(worst, delivered, tip);
       const minOut = q.out - (q.out * SLIPPAGE_BPS) / 10_000n;
       const nonce = get().nextNonce;
       const key = claimKeypair(seed(), BigInt(nonce));

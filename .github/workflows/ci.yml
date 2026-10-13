@@ -68,6 +68,8 @@ jobs:
       - run: npm run -w sdk test
       - name: indexer scanner (deferred v1 transactions, contiguous paging)
         run: npm run -w indexer test
+      - name: agents tests
+        run: npm run -w agents test
       - name: relayer queue (nullifier idempotency)
         run: npm run -w relayer test
       - name: compile circuits (constraint counts)
@@ -192,9 +194,11 @@ jobs:
           solana-test-validator --reset --quiet \
             --bpf-program 89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR target/deploy/scash_vault.so \
             --bpf-program 861VJkPL2yUYL1DTCToeziREP4XyraihkqbTM1irFZ3k target/deploy/scash_launch.so \
+            --ticks-per-slot 16 \
             --mint "$(solana-keygen pubkey keypairs/deployer.json)" &
           for i in $(seq 1 60); do solana cluster-version -u http://127.0.0.1:8899 >/dev/null 2>&1 && break; sleep 1; done
-      - name: launchpad e2e (launch → private buy → claim → harvest → private sell → claim; buyer wallet never appears)
+      # --ticks-per-slot 16 makes a slot ≈ 100 ms so the 900-slot fee epoch passes in about 90 s
+      - name: launchpad e2e (launch → agent votes → private buy → claim → harvest → private sell → claim → fee epoch rolls; buyer wallet never appears)
         run: node scripts/launch-e2e.mjs
 
   deploy-devnet:
@@ -320,6 +324,7 @@ jobs:
           RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
           RELAYER_PUBKEY: ${{ vars.MAINNET_RELAYER_PUBKEY }}
           TREASURY_PUBKEY: ${{ vars.MAINNET_TREASURY_PUBKEY }}
+          AGENT_PUBKEYS: ${{ vars.MAINNET_AGENT_PUBKEYS }}
           LOOKUP_TABLE: ${{ vars.MAINNET_LOOKUP_TABLE }}
           TVL_CAP_SOL: ${{ vars.MAINNET_TVL_CAP_SOL }}
         run: |
@@ -327,6 +332,7 @@ jobs:
           set -- --keypair keypairs/deployer.json --rpc "$RPC" --tvl-cap-sol "${TVL_CAP_SOL:-1000}"
           [ -n "$RELAYER_PUBKEY" ] && set -- "$@" --relayer "$RELAYER_PUBKEY"
           [ -n "$TREASURY_PUBKEY" ] && set -- "$@" --treasury "$TREASURY_PUBKEY"
+          [ -n "$AGENT_PUBKEYS" ] && set -- "$@" --agents "$AGENT_PUBKEYS"
           [ -n "$LOOKUP_TABLE" ] && set -- "$@" --lookup-table "$LOOKUP_TABLE"
           node scripts/init.mjs "$@"
       - name: scrub keypairs

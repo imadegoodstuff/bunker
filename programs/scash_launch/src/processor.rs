@@ -1,7 +1,7 @@
 use crate::{
-    curve,
+    curve, policy,
     seeds,
-    state::{Curve, Launchpad, DISC_CURVE, DISC_LAUNCHPAD},
+    state::{Curve, Launchpad, Vote, DISC_CURVE, DISC_LAUNCHPAD},
     token, LaunchError,
 };
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -50,6 +50,13 @@ pub struct InitLaunchpadArgs {
     pub total_supply: u64,
     pub graduation_lamports: u64,
     pub decimals: u8,
+    pub agents: [Pubkey; policy::AGENTS],
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+pub struct VoteArgs {
+    pub fee_bps: u16,
+    pub holder_bps: u16,
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
@@ -73,6 +80,7 @@ pub const IX_HARVEST: u8 = 3;
 pub const IX_GRADUATE: u8 = 4;
 pub const IX_PUBLIC_BUY: u8 = 5;
 pub const IX_PUBLIC_SELL: u8 = 6;
+pub const IX_VOTE: u8 = 7;
 
 pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     // The vault's exit call is the only way this program is ever invoked by
@@ -89,6 +97,7 @@ pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Pr
         IX_GRADUATE => process_graduate(program_id, accounts),
         IX_PUBLIC_BUY => process_public_buy(program_id, accounts, SwapArgs::try_from_slice(rest).map_err(|_| LaunchError::InvalidInstruction)?),
         IX_PUBLIC_SELL => process_public_sell(program_id, accounts, SwapArgs::try_from_slice(rest).map_err(|_| LaunchError::InvalidInstruction)?),
+        IX_VOTE => process_vote(program_id, accounts, VoteArgs::try_from_slice(rest).map_err(|_| LaunchError::InvalidInstruction)?),
         _ => Err(LaunchError::InvalidInstruction.into()),
     }
 }
@@ -122,6 +131,17 @@ fn load_curve(curve: &AccountInfo, program_id: &Pubkey) -> Result<Curve, Program
         return Err(ProgramError::IncorrectProgramId);
     }
     Curve::load(&curve.try_borrow_data()?)
+}
+
+/// Load the curve and bring its fee policy up to the current epoch. Every
+/// instruction that charges or splits a fee goes through here, so the fee a
+/// trade pays is the one the SDK computed from the same votes and slot.
+fn load_curve_rolled(curve: &AccountInfo, program_id: &Pubkey) -> Result<Curve, ProgramError> {
+    let mut c = load_curve(curve, program_id)?;
+    if policy::roll(&mut c, Clock::get()?.slot) {
+        sol_log_data(&[b"fee_roll", c.mint.as_ref(), &c.trade_fee_bps.to_le_bytes(), &c.holder_share_bps.to_le_bytes(), &c.settled_epoch.to_le_bytes()]);
+    }
+    Ok(c)
 }
 
 /// Lamports held by a program-owned account that may be moved without the system program.
@@ -194,6 +214,7 @@ fn process_init_launchpad(program_id: &Pubkey, accounts: &[AccountInfo], a: Init
         total_supply: a.total_supply,
         graduation_lamports: a.graduation_lamports,
         decimals: a.decimals,
+        agents: a.agents,
     };
     state.validate()?;
     let rent = Rent::get()?.minimum_balance(Launchpad::LEN);
@@ -238,6 +259,7 @@ fn process_launch(program_id: &Pubkey, accounts: &[AccountInfo], a: LaunchArgs) 
         return Err(ProgramError::IncorrectProgramId);
     }
     let lp = Launchpad::load(&launchpad.try_borrow_data()?)?;
+    let slot = Clock::get()?.slot;
     expect_key(vault_program, &lp.vault_program)?;
     expect_key(token_program, &token::TOKEN_2022_PROGRAM_ID)?;
     expect_key(ata_program, &token::ASSOCIATED_TOKEN_PROGRAM_ID)?;
@@ -327,7 +349,7 @@ fn process_launch(program_id: &Pubkey, accounts: &[AccountInfo], a: LaunchArgs) 
         real_token: lp.curve_supply,
         fees_accrued: 0,
         graduated: 0,
-        created_slot: Clock::get()?.slot,
+        created_slot: slot,
         total_supply: lp.total_supply,
         curve_supply: lp.curve_supply,
         trade_fee_bps: lp.trade_fee_bps,
@@ -339,6 +361,8 @@ fn process_launch(program_id: &Pubkey, accounts: &[AccountInfo], a: LaunchArgs) 
         sells: 0,
         sol_volume: 0,
         lookup_table: *lookup_table.key,
+        settled_epoch: policy::epoch_of(slot),
+        votes: [Vote::default(); policy::AGENTS],
     };
     c.store(&mut curve.try_borrow_mut_data()?)?;
     sol_log_data(&[
@@ -396,7 +420,7 @@ fn process_exit(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> P
     let system = next_account_info(it)?;
     let sysvar = next_account_info(it)?;
 
-    let mut c = load_curve(curve, program_id)?;
+    let mut c = load_curve_rolled(curve, program_id)?;
     expect_key(mint, &c.mint)?;
     expect_key(curve_vault, &c.token_vault)?;
     expect_key(token_program, &token::TOKEN_2022_PROGRAM_ID)?;
@@ -565,7 +589,7 @@ fn process_harvest(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResu
     let token_program = next_account_info(it)?;
     let system = next_account_info(it)?;
 
-    let mut c = load_curve(curve, program_id)?;
+    let mut c = load_curve_rolled(curve, program_id)?;
     expect_key(mint, &c.mint)?;
     expect_key(curve_vault, &c.token_vault)?;
     expect_key(treasury, &c.protocol_treasury)?;
@@ -638,6 +662,35 @@ fn process_graduate(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramRes
     c.store(&mut curve.try_borrow_mut_data()?)
 }
 
+// ----------------------------------------------------------------- vote
+
+/// One of the four agents records its vote for this curve's fee and holder
+/// share. Accounts: `[launchpad, curve w, agent s]`. The vote is bounded by
+/// policy.rs and takes effect from the next epoch through `roll`; nothing else
+/// in the program can move the fee.
+fn process_vote(program_id: &Pubkey, accounts: &[AccountInfo], a: VoteArgs) -> ProgramResult {
+    let it = &mut accounts.iter();
+    let launchpad = next_account_info(it)?;
+    let curve = next_account_info(it)?;
+    let agent = next_account_info(it)?;
+    if launchpad.owner != program_id {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+    expect_key(launchpad, &launchpad_pda(program_id).0)?;
+    expect_signer(agent)?;
+    let lp = Launchpad::load(&launchpad.try_borrow_data()?)?;
+    let idx = lp.agents.iter().position(|k| k == agent.key).ok_or(LaunchError::NotAgent)?;
+    if !policy::vote_in_bounds(a.fee_bps, a.holder_bps) {
+        return Err(LaunchError::BadParams.into());
+    }
+    let mut c = load_curve_rolled(curve, program_id)?;
+    let slot = Clock::get()?.slot;
+    c.votes[idx] = Vote { fee_bps: a.fee_bps, holder_bps: a.holder_bps, slot };
+    c.store(&mut curve.try_borrow_mut_data()?)?;
+    sol_log_data(&[b"fee_vote", c.mint.as_ref(), &[idx as u8], &a.fee_bps.to_le_bytes(), &a.holder_bps.to_le_bytes(), &slot.to_le_bytes()]);
+    Ok(())
+}
+
 // ------------------------------------------------------- public trading
 
 /// After graduation anyone may trade on the curve directly.
@@ -653,7 +706,7 @@ fn process_public_buy(program_id: &Pubkey, accounts: &[AccountInfo], a: SwapArgs
     let ata_program = next_account_info(it)?;
     let system = next_account_info(it)?;
 
-    let mut c = load_curve(curve, program_id)?;
+    let mut c = load_curve_rolled(curve, program_id)?;
     if c.graduated == 0 {
         return Err(LaunchError::NotGraduated.into());
     }
@@ -707,7 +760,7 @@ fn process_public_sell(program_id: &Pubkey, accounts: &[AccountInfo], a: SwapArg
     let token_program = next_account_info(it)?;
     let _system = next_account_info(it)?;
 
-    let mut c = load_curve(curve, program_id)?;
+    let mut c = load_curve_rolled(curve, program_id)?;
     if c.graduated == 0 {
         return Err(LaunchError::NotGraduated.into());
     }

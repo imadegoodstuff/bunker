@@ -314,3 +314,22 @@ test("launchpad events: a launch row is created and every trade/harvest/graduate
   assert.equal(trades[0].private, 1);
   assert.equal(db.launches(10, 0).length, 1);
 });
+test("fee policy events: agent votes and epoch rolls are recorded per token and replays are idempotent", () => {
+  const db = new Db(":memory:");
+  const scanner = new Scanner([fakeConnection([], new Set()).conn], db, PROGRAM, 0, new PublicKey(bytes32(9)));
+  const u64 = (n: bigint) => { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, n, true); return b; };
+  const u16 = (n: number) => new Uint8Array([n & 0xff, n >> 8]);
+  const te = new TextEncoder();
+  const mint = bytes32(7);
+  const mintB58 = new PublicKey(mint).toBase58();
+  const line = (parts: Uint8Array[]) => `Program data: ${parts.map(b64).join(" ")}`;
+  const tx = (slot: number, logs: string[]) => ({ slot, blockTime: 1_700_000_000 + slot, meta: { err: null, logMessages: logs }, transaction: { message: { instructions: [] } } });
+  const vote = (agent: number, fee: number, holder: number, slot: bigint) => line([te.encode("fee_vote"), mint, new Uint8Array([agent]), u16(fee), u16(holder), u64(slot)]);
+  const roll = line([te.encode("fee_roll"), mint, u16(200), u16(6000), u64(3n)]);
+  scanner.ingest("V0", tx(100, [vote(0, 150, 6000, 100n)]) as never);
+  scanner.ingest("V1", tx(101, [vote(1, 300, 10000, 101n)]) as never);
+  scanner.ingest("V1", tx(101, [vote(1, 300, 10000, 101n)]) as never); // replay
+  scanner.ingest("R", tx(2700, [roll, vote(3, 50, 5000, 2700n)]) as never); // a vote that rolled the epoch first logs both
+  const ev = db.feeEvents(mintB58, 10);
+  assert.deepEqual(ev.map((e) => [e.kind, e.agent, e.fee_bps, e.holder_bps, e.epoch]), [["roll", null, 200, 6000, 3], ["vote", 3, 50, 5000, null], ["vote", 1, 300, 10000, null], ["vote", 0, 150, 6000, null]]);
+});

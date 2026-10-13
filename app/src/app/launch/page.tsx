@@ -112,7 +112,7 @@ function CreateCard() {
         <Row k="Supply" v="1,000,000,000 · 6 decimals" />
         <Row k="On the curve" v="793,100,000 (79.3%)" />
         <Row k="Graduates at" v="85 SOL raised" />
-        <Row k="Trading fee" v="1% · half to holders, half to the protocol" />
+        <Row k="Trading fee" v="0.5–3%, set per token by four AI agents each epoch · 50–100% of it to holders" />
         <Row k="Your privileges" v="none" strong />
       </dl>
       {err && <p className="mt-3 text-sm text-bad">{err}</p>}

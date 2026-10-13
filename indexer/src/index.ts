@@ -8,6 +8,8 @@ import { inspectProgram, type ProgramInfo } from "./program.js";
 
 const RPC = process.env.RPC_URL ?? "https://api.mainnet-beta.solana.com";
 const PROGRAM = new PublicKey(process.env.PROGRAM_ID ?? "89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR");
+// The launchpad program; its own history carries the agents' fee votes. "" disables.
+const LAUNCH = process.env.LAUNCH_PROGRAM_ID === "" ? undefined : new PublicKey(process.env.LAUNCH_PROGRAM_ID ?? "861VJkPL2yUYL1DTCToeziREP4XyraihkqbTM1irFZ3k");
 const DB_PATH = process.env.DB_PATH ?? "./scash-indexer.sqlite";
 const PORT = Number(process.env.PORT ?? 8788);
 
@@ -19,7 +21,7 @@ const redact = (u: string) => u.replace(/\/\/.*@/, "//").replace(/(api[-_]?key|t
 const db = new Db(DB_PATH);
 const conns = RPC_LIST.map((u) => new Connection(u, "confirmed"));
 const conn = conns[0];
-const scanner = new Scanner(conns, db, PROGRAM, Number(process.env.SCAN_INTERVAL_MS ?? 4000));
+const scanner = new Scanner(conns, db, PROGRAM, Number(process.env.SCAN_INTERVAL_MS ?? 4000), LAUNCH);
 console.log(`[indexer] rpc endpoints: ${RPC_LIST.map(redact).join(", ")}`);
 void scanner.start();
 
@@ -109,7 +111,8 @@ app.get<{ Params: { mint: string }; Querystring: { limit?: string; beforeSlot?: 
   const l = db.launch(req.params.mint);
   if (!l) return reply.code(404).send({ error: "unknown launch" });
   const trades = db.trades(req.params.mint, Math.min(Number(req.query.limit ?? 50), 500), req.query.beforeSlot ? Number(req.query.beforeSlot) : undefined);
-  return { ...l, trades };
+  const feeEvents = db.feeEvents(req.params.mint, 100);
+  return { ...l, trades, feeEvents };
 });
 
 await app.listen({ port: PORT, host: "0.0.0.0" });

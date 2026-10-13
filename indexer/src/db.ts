@@ -82,7 +82,30 @@ export class Db {
         PRIMARY KEY (signature, mint, side)
       );
       CREATE INDEX IF NOT EXISTS trades_mint_slot ON trades(mint, slot);
+      -- fee policy: agent votes ("vote", agent 0-3) and epoch rolls ("roll") per launched token
+      CREATE TABLE IF NOT EXISTS fee_events (
+        signature TEXT NOT NULL,
+        mint TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        agent INTEGER,
+        fee_bps INTEGER NOT NULL,
+        holder_bps INTEGER NOT NULL,
+        epoch INTEGER,
+        slot INTEGER NOT NULL,
+        block_time INTEGER,
+        PRIMARY KEY (signature, mint, kind)
+      );
+      CREATE INDEX IF NOT EXISTS fee_events_mint_slot ON fee_events(mint, slot);
     `);
+  }
+
+  insertFeeEvent(e: { signature: string; mint: string; kind: "vote" | "roll"; agent: number | null; feeBps: number; holderBps: number; slot: number; blockTime: number | null; epoch?: number }) {
+    this.db
+      .prepare("INSERT OR IGNORE INTO fee_events(signature, mint, kind, agent, fee_bps, holder_bps, epoch, slot, block_time) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run(e.signature, e.mint, e.kind, e.agent, e.feeBps, e.holderBps, e.epoch ?? null, e.slot, e.blockTime);
+  }
+  feeEvents(mint: string, limit: number) {
+    return this.db.prepare("SELECT * FROM fee_events WHERE mint = ? ORDER BY slot DESC, kind LIMIT ?").all(mint, limit) as Record<string, unknown>[];
   }
 
   getMeta(k: string): string | undefined {

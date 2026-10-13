@@ -1,6 +1,7 @@
 // One-time protocol initialization: config + tree, a SOL pool, the launchpad, and the relayer's lookup table.
 //   node scripts/init.mjs --keypair keypairs/deployer.json --relayer RELAYER_PUBKEY [--rpc URL] [--guardian PUBKEY]
-//                         [--tvl-cap-sol 1000] [--treasury PUBKEY] [--lookup-table EXISTING_TABLE] [--no-launchpad]
+//                         [--tvl-cap-sol 1000] [--treasury PUBKEY] [--agents A,B,C,D] [--lookup-table EXISTING_TABLE] [--no-launchpad]
+// --agents: the four fee-policy voter keys (one model each); required to initialise the launchpad, fixed forever once set.
 // Every step is idempotent: accounts that already exist are reported and skipped, and an existing
 // lookup table (the relayer's LOOKUP_TABLE) is reused when it already covers the static addresses.
 // The relayer's key (and its token accounts for SPL pools) go into the lookup table; without them an
@@ -23,6 +24,7 @@ const { values } = parseArgs({
     "launch-program": { type: "string" },
     relayer: { type: "string" },
     treasury: { type: "string" },
+    agents: { type: "string" },
     "lookup-table": { type: "string" },
     "no-launchpad": { type: "boolean", default: false },
   },
@@ -34,6 +36,7 @@ if (!relayerPubkey) console.warn("warning: no --relayer given; SPL sends with me
 const payer = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(values.keypair, "utf8"))));
 const guardian = values.guardian ? new PublicKey(values.guardian) : payer.publicKey;
 const treasury = values.treasury ? new PublicKey(values.treasury) : payer.publicKey;
+const agents = values.agents ? values.agents.split(",").map((k) => new PublicKey(k.trim())) : [];
 const conn = new Connection(values.rpc, "confirmed");
 
 console.log("program  ", programId.toBase58());
@@ -41,6 +44,7 @@ console.log("launchpad", launchProgramId.toBase58());
 console.log("payer    ", payer.publicKey.toBase58(), (await conn.getBalance(payer.publicKey)) / 1e9, "SOL");
 console.log("guardian ", guardian.toBase58());
 console.log("treasury ", treasury.toBase58());
+console.log("agents   ", agents.map((a) => a.toBase58()).join(" ") || "(none: the launchpad will not be initialised)");
 console.log("tree size", TREE_ACCOUNT_LEN, "bytes; rent", (await conn.getMinimumBalanceForRentExemption(TREE_ACCOUNT_LEN)) / 1e9, "SOL");
 
 if (!(await conn.getAccountInfo(configPda(programId)))) {
@@ -64,8 +68,12 @@ if (!values["no-launchpad"]) {
   if (!(await conn.getAccountInfo(launchProgramId))) {
     console.log("launch program not deployed on this cluster; skipping launchpad initialisation");
   } else if (!(await conn.getAccountInfo(pad))) {
-    const sig = await sendAndConfirmTransaction(conn, new Transaction().add(initLaunchpadIx(payer.publicKey, defaultLaunchpadParams(treasury), programId, launchProgramId)), [payer]);
-    console.log("initialise launchpad", sig);
+    if (agents.length !== 4) {
+      console.log("launchpad not initialised: pass --agents with exactly four keys");
+    } else {
+      const sig = await sendAndConfirmTransaction(conn, new Transaction().add(initLaunchpadIx(payer.publicKey, defaultLaunchpadParams(treasury, agents), programId, launchProgramId)), [payer]);
+      console.log("initialise launchpad", sig);
+    }
   } else {
     console.log("launchpad exists", pad.toBase58());
   }

@@ -738,6 +738,60 @@ exactly what that means so nobody has to infer it.
   anyone who funds it, but the hosted services, the SDK defaults and the app
   all point at mainnet-beta; addresses use the `scash` HRP.
 
+### 17. The fee policy: four agent keys, no brake, by the owner's decision
+
+Every launched token's trading fee and holders' share are moved by four keys
+recorded in the `Launchpad` account and held by four model-driven agents
+(SPEC §16, "Fee policy"). The owner asked for this exactly: *no proposer, no
+guardian, no pause*. This section says what that buys and what it costs.
+
+- **What the program enforces, and all it enforces.** A vote is accepted only
+  from one of the four keys and only inside the bounds (fee 0.5–3 %, holders'
+  share 50–100 %). The fee moves at most one step (1 % / 10 points) per
+  ~6-minute epoch toward the median of the fresh votes, needs two fresh votes
+  to move at all, and catches up at most four steps after idle time. Votes
+  cast in an epoch apply from the next one, so nothing a trader does in the
+  same block as a vote can change the fee under them. Those bounds are the
+  whole safety envelope: the worst the four keys can do together is take the
+  fee to 3 % and the holders' share to 50 %, one step at a time, or to 0.5 %
+  and 100 %. They cannot drain, pause, freeze or redirect anything; the
+  treasury share still goes to the fixed treasury, the holders' share is
+  still bought back and donated.
+- **What nobody can do.** Replace an agent key, add a fifth voter, veto a
+  roll, or hold the fee still. The launchpad's `agents` are set once at
+  initialisation and have no update instruction; the roll runs inside every
+  trade and cannot be skipped. If all four keys were lost, the last votes
+  would expire after 24 minutes and the fee would stay wherever it was,
+  forever. If all four were stolen, the thief gets the envelope above and
+  nothing else. There is deliberately no key that can fix either case short
+  of a program upgrade (§16: that authority exists today and is slated for
+  revocation).
+- **What the agents are.** Four processes in one service (`agents/`), each
+  with its own key and its own model provider (`AGENT_i_MODEL`,
+  `provider:model`), given the same public view of a token — curve state,
+  recent trades, the other agents' standing votes — and asked for a JSON vote
+  once per epoch per live token. The service logs every decision, skip and
+  failure at `GET /log` and attaches the model's one-line reason as a memo to
+  the vote transaction, so the on-chain record and the stated reason are side
+  by side. The keys are Fly secrets; the model API keys are Fly secrets; the
+  service holds no other key and talks to nothing but the RPC, the indexer
+  and the model providers.
+- **Failure modes, stated plainly.** A provider outage means that agent casts
+  no vote; with two or more down, the fee stops moving until they return. A
+  model that answers nonsense (unparseable, out of bounds) is treated as
+  silent. A compromised provider or prompt injection through a token's name
+  or symbol can at most move that agent's vote within the envelope; the
+  median of four with a quorum of two means two captured agents can steer
+  the target. The agents' prompt therefore includes only numeric state and
+  the symbol, and the symbol is the one injection surface we accept. The
+  policy is exactly as good as the four models' judgement; the program is
+  only the fence.
+- **For traders.** The app quotes at the fee the program will charge now and
+  sets `min_out` from the highest fee an epoch boundary within the next ~2
+  minutes can bring, so a trade is never failed by a roll and never pays more
+  than one step above its quote. The token page shows the fee now, each
+  agent's standing vote, the next epoch's fee and the vote log.
+
 ## Design-level guarantees
 
 - **Immutability**: the vault program is deployed without an upgrade authority

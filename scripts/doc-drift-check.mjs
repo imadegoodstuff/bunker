@@ -52,7 +52,25 @@ const graduationSol = (() => {
   if (!m) throw new Error("graduationLamports default not found in sdk/src/launch.ts");
   return Number(m[1].replace(/_/g, "")) / 1e9;
 })();
+// fee policy constants (programs/scash_launch/src/policy.rs)
+const policyConst = (name) => {
+  const m = read("programs/scash_launch/src/policy.rs").match(new RegExp(`pub const ${name}: u(?:size|\\d+) = ([0-9_]+(?: \\* EPOCH_SLOTS)?);`));
+  if (!m) throw new Error(`${name} not found in policy.rs`);
+  const expr = m[1].replace("EPOCH_SLOTS", "E").replace(/_/g, "");
+  return eval(expr.includes("E") ? expr.replace("E", String(policyConst("EPOCH_SLOTS"))) : expr);
+};
+const epochSlots = policyConst("EPOCH_SLOTS");
+const voteTtl = policyConst("VOTE_TTL_SLOTS");
+const quorum = policyConst("QUORUM");
+const feeMin = policyConst("FEE_MIN_BPS");
+const feeMax = policyConst("FEE_MAX_BPS");
 const facts = [
+  { doc: "SPEC.md", re: new RegExp(`EPOCH_SLOTS = ${epochSlots} `), what: `fee epoch ${epochSlots} slots` },
+  { doc: "SPEC.md", re: new RegExp(`VOTE_TTL_SLOTS = ${voteTtl} `), what: `vote TTL ${voteTtl} slots` },
+  { doc: "SPEC.md", re: new RegExp(`QUORUM = ${quorum} `), what: `fee quorum ${quorum}` },
+  { doc: "SPEC.md", re: new RegExp(`fee_bps\\s+∈ \\[${feeMin}, ${feeMax}\\]`), what: `fee bounds ${feeMin}–${feeMax} bps` },
+  { doc: "SECURITY.md", re: new RegExp(`fee ${feeMin / 100}–${feeMax / 100} %`), what: `fee bounds in SECURITY §17` },
+  { doc: "audit/KNOWN_ISSUES.md", re: /Fee policy is four agent keys with no brake/, what: "fee policy accepted risk" },
   { doc: "SPEC.md", re: new RegExp(`\\+ ${exitDataLen} of exit data`), what: `exit data is ${exitDataLen} bytes` },
   { doc: "SPEC.md", re: new RegExp(`graduation at ${graduationSol} SOL`), what: `graduation threshold ${graduationSol} SOL` },
   { doc: "SPEC.md", re: /empty dummy ciphertext and outgoing record/, what: "unshield omits dummy ciphertext and outgoing record" },

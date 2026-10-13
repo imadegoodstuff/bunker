@@ -363,3 +363,48 @@ test("a relayed 2-in/2-out send with the maximum memo fits in one packet", async
   const over = sizeFor(mint, payer, [bigger, c1.ciphertext]);
   assert.ok(over > 1232, `a ${MEMO_MAX + MEMO_BUCKET}-byte memo would still fit (${over}); MEMO_MAX can be raised`);
 });
+
+test("fee policy mirror: median, quorum, one bounded step per epoch, votes count from the next epoch and expire", async () => {
+  const { rolled, policy, worstFeeBps, voteInBounds, CURVE_LEN } = await import("./launch.js");
+  const E = policy.EPOCH_SLOTS;
+  const base = (fee: number, holder: number, settledEpoch: bigint) => ({
+    bump: 0, intakeBump: 0, mint: PublicKey.default, tokenVault: PublicKey.default, virtualSol: 1n, virtualToken: 1n, realSol: 0n, realToken: 1n,
+    feesAccrued: 0n, graduated: false, createdSlot: 0n, totalSupply: 1n, curveSupply: 1n, tradeFeeBps: fee, holderShareBps: holder, graduationLamports: 1n,
+    protocolTreasury: PublicKey.default, vaultProgram: PublicKey.default, buys: 0n, sells: 0n, solVolume: 0n, lookupTable: PublicKey.default,
+    settledEpoch, votes: [0, 1, 2, 3].map(() => ({ feeBps: 0, holderBps: 0, slot: 0n })),
+  });
+  const v = (feeBps: number, holderBps: number, slot: bigint) => ({ feeBps, holderBps, slot });
+  assert.equal(CURVE_LEN, 320);
+  // no quorum: nothing moves
+  let c = base(100, 5000, 0n);
+  c.votes[0] = v(300, 10000, 10n);
+  assert.deepEqual([rolled(c, E + 1n).tradeFeeBps, rolled(c, E + 1n).settledEpoch], [100, 1n]);
+  // same cases as programs/scash_launch/src/policy.rs
+  c = base(100, 5000, 0n);
+  c.votes[0] = v(300, 10000, 10n); c.votes[1] = v(300, 9000, 20n); c.votes[2] = v(250, 8000, 30n);
+  let r = rolled(c, E);
+  assert.deepEqual([r.tradeFeeBps, r.holderShareBps], [200, 6000]);
+  r = rolled(r, E + 500n);
+  assert.deepEqual([r.tradeFeeBps, r.holderShareBps], [200, 6000]);
+  r = rolled(r, 2n * E);
+  assert.deepEqual([r.tradeFeeBps, r.holderShareBps], [300, 7000]);
+  // votes cast inside an epoch count from the next one; expired votes freeze the fee
+  c = base(100, 5000, 1n);
+  c.votes[0] = v(300, 5000, 2n * E + 1n); c.votes[1] = v(300, 5000, 2n * E + 2n);
+  r = rolled(c, 2n * E + 10n);
+  assert.equal(r.tradeFeeBps, 100);
+  assert.equal(rolled(r, 3n * E).tradeFeeBps, 200);
+  c = base(100, 5000, 1n);
+  c.votes[0] = v(300, 5000, 10n); c.votes[1] = v(300, 5000, 20n);
+  assert.equal(rolled(c, 100n * E).tradeFeeBps, 100);
+  // catch-up capped at 4 steps
+  c = base(50, 5000, 0n);
+  c.votes[0] = v(300, 5000, 10n); c.votes[1] = v(300, 5000, 20n);
+  assert.equal(rolled(c, 3n * E).tradeFeeBps, 300);
+  // worst case over a horizon that crosses an epoch boundary
+  c = base(100, 5000, 0n);
+  c.votes[0] = v(300, 5000, 10n); c.votes[1] = v(300, 5000, 20n);
+  assert.equal(worstFeeBps(c, E - 10n, 300n), 200);
+  assert.equal(worstFeeBps(c, 10n, 300n), 100);
+  assert.ok(voteInBounds(50, 5000) && voteInBounds(300, 10000) && !voteInBounds(301, 5000) && !voteInBounds(100, 4999) && !voteInBounds(100.5, 5000));
+});

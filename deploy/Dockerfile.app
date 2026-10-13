@@ -10,6 +10,7 @@ COPY app/package.json app/
 COPY circuits/package.json circuits/
 COPY relayer/package.json relayer/
 COPY indexer/package.json indexer/
+COPY agents/package.json agents/
 RUN npm ci --no-audit --no-fund --ignore-scripts
 
 FROM deps AS build

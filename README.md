@@ -15,7 +15,7 @@ on-chain, relayer-paid transactions, and a vault bounded by a per-asset turnstil
 | **Send** | Pay any `scash1…` address privately. Amount, sender, recipient: all hidden. Relayer pays the fee. |
 | **Unshield** | Withdraw to any public address from a relayer-signed transaction. Your public wallet never appears. |
 | **Swap** | Exit through a CPI adapter bound inside the proof (adapter program in review). |
-| **Launch** | A token launchpad whose primary market exists only inside the pool: buys and sells are unshields whose exit target is the curve, proceeds land at a one-use key derived from your seed and are shielded straight back. Each token gets its own shielded pool at launch, the mint has no authorities, and half the trading fee is donated to that pool's holders. Until graduation there is no public route in. [SPEC §16](SPEC.md#16-the-launchpad). |
+| **Launch** | A token launchpad whose primary market exists only inside the pool: buys and sells are unshields whose exit target is the curve, proceeds land at a one-use key derived from your seed and are shielded straight back. Each token gets its own shielded pool at launch, the mint has no authorities, and 50–100 % of the trading fee is donated to that pool's holders. The fee (0.5–3 %) and the holders' share are set per token by four model-driven agents voting every ~6-minute epoch, with no proposer, guardian or pause anywhere. Until graduation there is no public route in. [SPEC §16](SPEC.md#16-the-launchpad). |
 | **Yield** | Notes hold shares; `donate()` raises a pool's share rate. SCASH creator fees are donated to the **SCASH pool only**: SOL or USDC notes do not earn from it. The share rate measures tokens per share, not fiat value. |
 
 ## Why it is different
@@ -40,7 +40,8 @@ crates/       scash-core: shared instruction & state layouts
 programs/     scash_vault (pool, verifier, tree, turnstile, exits) · scash_harvester (SCASH fee router) · scash_migrator (old vault → new vault without a public hop) · scash_launch (shielded-only bonding-curve launchpad behind the vault's exit target)
 sdk/          TypeScript: keys, addresses, notes, encryption, Merkle, proving, tx building, wallet
 relayer/      Fee-paying relayer with policy checks, simulation, randomized delay queue
-indexer/      Event scanner → SQLite, HTTP API for commitments / nullifiers / roots / stats
+indexer/      Event scanner → SQLite, HTTP API for commitments / nullifiers / roots / stats / launches
+agents/       Four AI agents (one key, one model provider each) that vote the launchpad fee policy; public decision log
 app/          Next.js shielded wallet with in-browser proving
 deploy/       Dockerfiles and Fly.io manifests
 ceremony/     Phase-2 ceremony: transcript, attestations, tooling (circuits/scripts/ceremony.mjs)
@@ -82,11 +83,11 @@ Programs: `.github/workflows/ci.yml` builds SBF artifacts on every push. The man
 (Actions → ci → Run workflow → `deploy_mainnet`) deploys them to mainnet-beta from the `mainnet` environment’s
 secrets (`MAINNET_DEPLOYER_KEYPAIR`, `MAINNET_RPC_URL`, `*_PROGRAM_KEYPAIR`), verifies the on-chain bytecode
 against the artifact it just built, and runs `scripts/init.mjs` (idempotent) using the variables
-`MAINNET_RELAYER_PUBKEY`, `MAINNET_TREASURY_PUBKEY`, `MAINNET_LOOKUP_TABLE`, `MAINNET_TVL_CAP_SOL`. The older
+`MAINNET_RELAYER_PUBKEY`, `MAINNET_TREASURY_PUBKEY`, `MAINNET_AGENT_PUBKEYS` (four comma-separated keys), `MAINNET_LOOKUP_TABLE`, `MAINNET_TVL_CAP_SOL`. The older
 `deploy-devnet` job runs on pushes to `main` only when `DEVNET_DEPLOYER_KEYPAIR` is present.
 
 Services: `fly deploy -c deploy/fly.indexer.toml`, `fly deploy -c deploy/fly.relayer.toml`,
-`fly deploy -c deploy/fly.app.toml` from the repo root, each with `--build-arg GIT_SHA=$(git rev-parse HEAD)` so the app footer, relayer `/info` and indexer `/health` report the commit they were built from. Set `RELAYER_KEYPAIR`, `RPC_URL` (keyed endpoint) and, after `init.mjs`, `LOOKUP_TABLE` as Fly secrets on the relayer; `RPC_URL` on the indexer; pass the keyed endpoint to the app build as `--build-arg NEXT_PUBLIC_RPC_URL=…`.
+`fly deploy -c deploy/fly.agents.toml`, `fly deploy -c deploy/fly.app.toml` from the repo root, each with `--build-arg GIT_SHA=$(git rev-parse HEAD)` so the app footer, relayer `/info` and indexer `/health` report the commit they were built from. Set `RELAYER_KEYPAIR`, `RPC_URL` (keyed endpoint) and, after `init.mjs`, `LOOKUP_TABLE` as Fly secrets on the relayer; `RPC_URL` on the indexer; on the agents, `AGENT_0..3_KEYPAIR` (the four keys passed to `init.mjs`), `AGENT_0..3_MODEL` (`provider:model`) and the providers' API keys; pass the keyed endpoint to the app build as `--build-arg NEXT_PUBLIC_RPC_URL=…`.
 
 ## Program IDs (mainnet-beta; the same keypairs are used on devnet when that job is funded)
 

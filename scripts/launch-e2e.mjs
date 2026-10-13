@@ -11,6 +11,7 @@ import {
   LAUNCH_PROGRAM_ID, launchpadPda, curvePda, intakePda, intakeAta, claimAta, claimKeypair, decodeCurve, decodeLaunchpad, decodeTokenMetadata,
   defaultLaunchpadParams, initLaunchpadIx, launchIx, harvestIx, publicBuyIx, exitData, exitAccounts, EXIT_BUY, EXIT_SELL,
   fetchClaimRents, quotePrivateBuy, quotePrivateSell, buyReserve, claimShieldAccounts, closeTokenAccountIx, launchLookupTableIxs, lookupTableCovers, spotPrice,
+  voteIx, rolled, policy, epochOf,
 } from "../sdk/dist/index.js";
 
 const { values } = parseArgs({ options: { rpc: { type: "string", default: "http://127.0.0.1:8899" }, keypair: { type: "string", default: "keypairs/deployer.json" } } });
@@ -58,7 +59,8 @@ const expectFail = async (p, re, label) => {
 const alice = Keypair.generate(); // funds her shielded balance publicly once; never touches the token
 const relayer = Keypair.generate();
 const treasury = Keypair.generate();
-for (const k of [alice, relayer]) {
+const agents = [0, 1, 2, 3].map(() => Keypair.generate()); // four fee-policy voters, one model each in production
+for (const k of [alice, relayer, ...agents]) {
   await sendAndConfirmTransaction(conn, new Transaction().add(SystemProgram.transfer({ fromPubkey: payer.publicKey, toPubkey: k.publicKey, lamports: 20 * LAMPORTS_PER_SOL })), [payer]);
 }
 const seed = new Uint8Array(32).fill(42);
@@ -67,10 +69,11 @@ const aliceW = await ShieldedWallet.fromSeed(seed);
 // --- vault + launchpad
 if (!(await conn.getAccountInfo(configPda()))) await send([initializeIx(payer.publicKey, payer.publicKey)], [payer], "vault: initialize");
 if (!(await conn.getAccountInfo(poolPda(SOL)))) await send([createPoolIx(payer.publicKey, SOL, 100_000n * BigInt(LAMPORTS_PER_SOL))], [payer], "vault: create SOL pool");
-const params = defaultLaunchpadParams(treasury.publicKey);
+const params = defaultLaunchpadParams(treasury.publicKey, agents.map((a) => a.publicKey));
 if (!(await conn.getAccountInfo(launchpadPda()))) await send([initLaunchpadIx(payer.publicKey, params)], [payer], "launchpad: initialise");
 const lp = decodeLaunchpad(new Uint8Array((await conn.getAccountInfo(launchpadPda())).data));
 assert(lp.tradeFeeBps === 100 && lp.vaultProgram.equals(PROGRAM_ID) && lp.curveSupply === params.curveSupply, "launchpad decoded");
+assert(lp.agents.every((a, i) => a.equals(agents[i].publicKey)), "launchpad records the four agent keys");
 await expectFail(send([initLaunchpadIx(payer.publicKey, params)], [payer], "launchpad: second initialise"), /0x2\b|AlreadyInitialized/, "launchpad is write-once");
 
 // --- 1. launch: the frozen lookup table in one transaction, then mint + curve + shielded pool in a second, paid by a public wallet (the creator)
@@ -93,6 +96,22 @@ assert(c.realToken === params.curveSupply && c.virtualToken === params.virtualTo
 assert((await tokenPool()).totalShares === 0n, "token pool exists and is empty");
 assert(c.lookupTable.equals(alt.table), "curve records its lookup table");
 log(`curve: ${fmtT(c.realToken)} ${meta.symbol} for sale, spot ${(spotPrice(c, 6) / LAMPORTS_PER_SOL).toExponential(3)} SOL/token`);
+
+// --- 1b. fee policy: three agents vote (median 200 bps / 7000), a stranger and an out-of-bounds vote are refused
+const voteEpoch = epochOf(BigInt(await conn.getSlot("confirmed")));
+await send([voteIx(agents[0].publicKey, mint.publicKey, 150, 6000)], [agents[0]], "agent 0 votes 1.5 % / 60 %");
+await send([voteIx(agents[1].publicKey, mint.publicKey, 200, 7000)], [agents[1]], "agent 1 votes 2.0 % / 70 %");
+await send([voteIx(agents[2].publicKey, mint.publicKey, 300, 10000)], [agents[2]], "agent 2 votes 3.0 % / 100 %");
+await expectFail(send([voteIx(relayer.publicKey, mint.publicKey, 200, 7000)], [relayer], "stranger votes"), /0x10\b|NotAgent/, "only the four agents can vote");
+await expectFail(
+  send([{ programId: LAUNCH_PROGRAM_ID, keys: voteIx(agents[3].publicKey, mint.publicKey, 100, 5000).keys, data: Buffer.from(new Uint8Array([7, 0x2d, 0x01, 0x88, 0x13])) }], [agents[3]], "agent 3 votes 3.01 %"),
+  /0xe\b|BadParams/, "a vote above the hard cap is refused",
+);
+c = await curve();
+assert(c.votes[0].feeBps === 150 && c.votes[1].holderBps === 7000 && c.votes[2].feeBps === 300 && c.votes[3].slot === 0n, "votes recorded per agent");
+assert(c.tradeFeeBps === 100 && c.holderShareBps === 5000, "votes do not move the fee inside the epoch they were cast");
+const slotNow = BigInt(await conn.getSlot("confirmed"));
+log(`fee now ${c.tradeFeeBps} bps; the epoch after ${voteEpoch} will step to ${rolled(c, (voteEpoch + 1n) * policy.EPOCH_SLOTS).tradeFeeBps} bps (slot ${slotNow}, epoch ${epochOf(slotNow)})`);
 
 // --- lookup tables: the relayer's (vault statics, SOL pool) and the token's own frozen one, found via the curve
 const relayerTable = await fetchLookupTable(conn, await createLookupTable(conn, payer, staticAddresses([{ mint: SOL }], undefined, relayer.publicKey)));
@@ -135,7 +154,8 @@ const buyAmount = 2n * BigInt(LAMPORTS_PER_SOL);
 const sp0 = await solPool();
 const delivered = amountForBurn(sp0, sharesForWithdraw(sp0, buyAmount)) - relayerFee;
 const claim1 = claimKeypair(seed, 0n);
-const q = quotePrivateBuy(c, delivered, rents, claimBudget);
+// quote against the fee the program will charge in the slot the trade lands in (the SDK mirrors `roll`)
+const q = quotePrivateBuy(rolled(c, BigInt(await conn.getSlot("confirmed"))), delivered, rents, claimBudget);
 log(`quote: ${fmt(delivered)} delivered → reserve ${fmt(q.reserve)}, fee ${fmt(q.fee)}, net ${fmt(q.net)} → ${fmtT(q.out)} ${meta.symbol}`);
 built = await aliceW.buildTransact({
   asset: solAsset, mint: SOL, pool: await solPool(), tree, chainTree: await chainTree(), artifacts, kind: "unshield", amount: buyAmount,
@@ -194,7 +214,7 @@ const sellAmount = amountForBurn(tp, sellShares);
 const sellDelivered = amountForBurn(tp, sharesForWithdraw(tp, sellAmount));
 // the vault's own fee would be in SHT, which no relayer prices: the relayer is tipped in SOL out of the proceeds instead
 const relayerTip = 2_000_000n;
-const sq = quotePrivateSell(c, sellDelivered, relayerTip);
+const sq = quotePrivateSell(rolled(c, BigInt(await conn.getSlot("confirmed"))), sellDelivered, relayerTip);
 log(`sell quote: ${fmtT(sellDelivered)} ${meta.symbol} -> ${fmt(sq.out)} after fee ${fmt(sq.fee)} and tip ${fmt(relayerTip)}`);
 built = await aliceW.buildTransact({
   asset: tokenAsset, mint: mint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID, pool: tp, tree, chainTree: await chainTree(), artifacts, kind: "unshield", amount: sellAmount,
@@ -232,8 +252,26 @@ await expectFail(
   /error: 0x0(?![0-9a-f])|InvalidInstruction/, "exit path is CPI-only",
 );
 
-// --- 10. what is public
-const sigs = await conn.getSignaturesForAddress(LAUNCH_PROGRAM_ID, { limit: 20 });
+// --- 10. the fee policy rolls at the epoch boundary exactly as the SDK predicts
+{
+  const before = await curve();
+  const boundary = (voteEpoch + 1n) * policy.EPOCH_SLOTS;
+  let slot = BigInt(await conn.getSlot("confirmed"));
+  const waitMs = Number(boundary - slot) * 100; // CI runs this validator with short slots; locally this may take a few minutes
+  if (slot < boundary) log(`waiting for fee epoch ${voteEpoch + 1n} (slot ${boundary}, ≈${Math.ceil(waitMs / 1000)} s)`);
+  while (slot < boundary) { await new Promise((r) => setTimeout(r, 1000)); slot = BigInt(await conn.getSlot("confirmed")); }
+  await send([voteIx(agents[3].publicKey, mint.publicKey, 50, 5000)], [agents[3]], "agent 3 votes 0.5 % / 50 % (rolls the epoch first)");
+  const after = await curve();
+  const expected = rolled(before, slot);
+  assert(after.tradeFeeBps === expected.tradeFeeBps && after.holderShareBps === expected.holderShareBps, `program and SDK agree after the roll: ${after.tradeFeeBps}/${after.holderShareBps} vs ${expected.tradeFeeBps}/${expected.holderShareBps}`);
+  // one bounded step per epoch towards the medians (200 bps / 7000): the fee can only be 200 or, if two boundaries passed, the median itself
+  assert([200, 300].includes(after.tradeFeeBps) && [6000, 7000].includes(after.holderShareBps) && after.tradeFeeBps - before.tradeFeeBps <= policy.FEE_STEP_BPS * Number(after.settledEpoch - before.settledEpoch), `bounded steps towards the median: fee ${after.tradeFeeBps} bps, holder share ${after.holderShareBps}`);
+  assert(after.votes[3].feeBps === 50, "the late vote is recorded for the next epoch");
+  log(`fee policy rolled: ${before.tradeFeeBps} → ${after.tradeFeeBps} bps, holder share ${before.holderShareBps} → ${after.holderShareBps} (epoch ${after.settledEpoch})`);
+}
+
+// --- 11. what is public
+const sigs = await conn.getSignaturesForAddress(LAUNCH_PROGRAM_ID, { limit: 30 });
 const buyers = new Set();
 for (const s of sigs) {
   const tx = await conn.getTransaction(s.signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
