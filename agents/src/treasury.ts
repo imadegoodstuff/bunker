@@ -25,7 +25,7 @@ const ATA_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 export interface TreasuryConfig {
   /** the scash token to buy back; undefined disables buybacks (gas top-ups still run) */
   scashMint?: PublicKey;
-  /** lamports always kept in the treasury (migrations cost 0.25 SOL each, votes and harvests a few thousand lamports) */
+  /** lamports kept back from buybacks (migrations cost 0.25 SOL each, votes and harvests a few thousand lamports) */
   reserveLamports: bigint;
   /** every funded key is topped up to this when it falls under half of it */
   floatLamports: bigint;
@@ -145,8 +145,9 @@ export class Treasury {
   private async fuel(): Promise<void> {
     if (this.cfg.funded.length === 0) return;
     const [mine, ...others] = await this.conn.getMultipleAccountsInfo([this.payer.publicKey, ...this.cfg.funded]);
+    // gas comes before the buyback reserve: the treasury keeps only its own float back when fuelling the others
     const balance = BigInt(mine?.lamports ?? 0);
-    const spare = balance - this.cfg.reserveLamports;
+    const spare = balance - this.cfg.floatLamports;
     if (spare <= 0n) return;
     const ups = topUps(this.cfg.funded.map((key, i) => ({ key, lamports: BigInt(others[i]?.lamports ?? 0) })), this.cfg.floatLamports, spare);
     if (ups.length === 0) return;
