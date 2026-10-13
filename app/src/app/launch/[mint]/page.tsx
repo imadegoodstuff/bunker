@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { amountForBurn, sharesForWithdraw, quotePrivateBuy, quotePrivateSell, rolled, worstFeeBps, type CurveState, type PoolState } from "@scash/sdk";
 import { FeePolicy } from "@/components/launch/FeePolicy";
+import { Unlock } from "@/components/Unlock";
 import { LaunchShell, Row } from "@/components/launch/LaunchShell";
 import { useLaunchpad, priceLamportsPerToken, CLAIM_BUDGET, SLIPPAGE_BPS, SOL, type ClaimRecord } from "@/lib/launchpad";
 import { useScash } from "@/lib/store";
@@ -24,6 +25,7 @@ export default function TokenPage() {
 
 function Token({ mint }: { mint: string }) {
   const { curves, slots, tokenPools, refresh, launches, rents } = useLaunchpad();
+  const ready = useScash((s) => s.phase === "ready");
   const [row, setRow] = useState<(LaunchRow & { trades: TradeRow[]; feeEvents: FeeEventRow[] }) | null>(null);
   const stored = curves[mint];
   const slot = slots[mint] ?? 0n;
@@ -76,13 +78,13 @@ function Token({ mint }: { mint: string }) {
           </dl>
         </section>
 
-        <TradePanel mint={mint} curve={curve} worstFee={worstFeeBps(stored, slot)} symbol={symbol} decimals={decimals} />
+        {ready ? <TradePanel mint={mint} curve={curve} worstFee={worstFeeBps(stored, slot)} symbol={symbol} decimals={decimals} /> : <UnlockToTrade symbol={symbol} />}
         <FeePolicy curve={curve} slot={slot} events={row?.feeEvents ?? []} />
         <Trades trades={row?.trades ?? []} symbol={symbol} decimals={decimals} />
       </div>
       <aside className="space-y-4">
-        <Holdings mint={mint} symbol={symbol} decimals={decimals} pool={pool} />
-        <Claims mint={mint} />
+        {ready && <Holdings mint={mint} symbol={symbol} decimals={decimals} pool={pool} />}
+        {ready && <Claims mint={mint} />}
         <section className="glass p-5 text-xs leading-relaxed text-mute">
           <div className="label">How a private buy works</div>
           <ol className="mt-3 list-decimal space-y-2 pl-4">
@@ -99,6 +101,17 @@ function Token({ mint }: { mint: string }) {
         </section>
       </aside>
     </div>
+  );
+}
+
+/** Trading spends shielded notes, so it is the one thing on this page that needs the shielded wallet open. */
+function UnlockToTrade({ symbol }: { symbol: string }) {
+  return (
+    <section className="glass px-7 py-6">
+      <div className="label">Buy or sell {symbol} privately</div>
+      <p className="mt-2 text-sm text-mute">Trades are paid from shielded notes and the proceeds go back into them. Open your shielded wallet to trade; everything else on this page is public.</p>
+      <Unlock />
+    </section>
   );
 }
 

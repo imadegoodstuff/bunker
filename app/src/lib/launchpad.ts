@@ -171,7 +171,10 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
     loaded: false,
 
     async load() {
-      const [launches, rents] = await Promise.all([indexer.launches(100), get().rents ? Promise.resolve(get().rents!) : fetchClaimRents(conn())]);
+      const [indexed, rents] = await Promise.all([indexer.launches(100), get().rents ? Promise.resolve(get().rents!) : fetchClaimRents(conn())]);
+      // a token launched from this browser is listed at once; the indexer's row replaces it as soon as it exists
+      const known = new Set(indexed.map((l) => l.mint));
+      const launches = [...get().launches.filter((l) => l.slot === 0 && !known.has(l.mint)), ...indexed];
       set({ launches, rents, loaded: true });
       useScash.getState().addLaunchAssets(launches.map(assetOf));
       await restore();
@@ -204,7 +207,15 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
         const s2 = await sendTx(t2);
         await c.confirmTransaction({ signature: s2, ...bh }, "confirmed");
         useScash.getState().pushActivity({ id: crypto.randomUUID(), kind: "launch", asset: meta.symbol, amount: 0n, at: Date.now(), status: "confirmed", signature: s2 });
-        await get().refresh(mint.publicKey.toBase58());
+        const { curve } = await get().refresh(mint.publicKey.toBase58());
+        // show it in the list now, from the curve we just read; `slot: 0` marks it as not yet indexed
+        const row: LaunchRow = {
+          mint: mint.publicKey.toBase58(), name: meta.name, symbol: meta.symbol, uri: meta.uri, decimals: 6,
+          virtual_sol: curve.virtualSol.toString(), virtual_token0: curve.virtualToken.toString(), curve_supply: curve.curveSupply.toString(), total_supply: curve.totalSupply.toString(),
+          graduation_lamports: curve.graduationLamports.toString(), real_sol: curve.realSol.toString(), real_token: curve.realToken.toString(), virtual_token: curve.virtualToken.toString(),
+          graduated: 0, buys: 0, sells: 0, sol_volume: "0", fees_to_treasury: "0", tokens_donated: "0", signature: s2, slot: 0, block_time: Math.floor(Date.now() / 1000),
+        };
+        set((s) => ({ launches: [row, ...s.launches.filter((l) => l.mint !== row.mint)] }));
         useScash.getState().addLaunchAssets([{ symbol: meta.symbol, name: meta.name, mint: mint.publicKey, decimals: 6, tokenProgram: TOKEN_2022_PROGRAM_ID, denominations: [] }]);
         setTimeout(() => void get().load(), 8000);
         return mint.publicKey;

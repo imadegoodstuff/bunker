@@ -1,12 +1,15 @@
 "use client";
 import { useState } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { useRouter } from "next/navigation";
 import { LaunchShell, Row } from "@/components/launch/LaunchShell";
 import { useLaunchpad } from "@/lib/launchpad";
 import { fmtAmount, timeAgo } from "@/lib/format";
 import type { LaunchRow } from "@/lib/api";
+
+const WalletButton = dynamic(() => import("@solana/wallet-adapter-react-ui").then((m) => m.WalletMultiButton), { ssr: false });
 
 export default function LaunchListPage() {
   return (
@@ -43,7 +46,7 @@ function LaunchList() {
       </div>
       <div className="mt-6 divide-y divide-line border-t border-line">
         {!loaded && <p className="px-7 py-6 text-sm text-dim">Loading…</p>}
-        {loaded && launches.length === 0 && <p className="px-7 py-6 text-sm text-dim">Nothing launched yet on this cluster. Be the first — the form is on the right.</p>}
+        {loaded && launches.length === 0 && <p className="px-7 py-6 text-sm text-dim">Nothing launched yet. Be the first — the form is on the right; any wallet can launch.</p>}
         {launches.map((l) => {
           const p = progress(l);
           return (
@@ -74,7 +77,7 @@ function LaunchList() {
 }
 
 function CreateCard() {
-  const { publicKey, sendTransaction } = useWallet();
+  const { publicKey, connected, sendTransaction } = useWallet();
   const { connection } = useConnection();
   const launch = useLaunchpad((s) => s.launch);
   const busy = useLaunchpad((s) => s.busy);
@@ -101,7 +104,8 @@ function CreateCard() {
     <section className="glass p-5">
       <div className="label">Launch a token</div>
       <p className="mt-2 text-xs leading-relaxed text-mute">
-        Two wallet signatures. You pay the rent (about 0.02 SOL) and get nothing else: no allocation, no mint or freeze authority, no fee switch.
+        Anyone with a wallet. Two signatures; you pay the rent (about 0.02 SOL) and get nothing else: no allocation, no mint or freeze authority, no fee switch.
+        No shielded wallet is needed to launch — only to trade.
       </p>
       <div className="mt-4 space-y-3">
         <input className="input" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} maxLength={32} />
@@ -116,9 +120,13 @@ function CreateCard() {
         <Row k="Your privileges" v="none" strong />
       </dl>
       {err && <p className="mt-3 text-sm text-bad">{err}</p>}
-      <button className="btn-primary mt-4 h-11 w-full" disabled={busy === "launch"} onClick={submit}>
-        {busy === "launch" ? "Launching…" : "Launch"}
-      </button>
+      {connected ? (
+        <button className="btn-primary mt-4 h-11 w-full" disabled={busy === "launch"} onClick={submit}>
+          {busy === "launch" ? "Launching…" : "Launch"}
+        </button>
+      ) : (
+        <div className="mt-4 flex justify-center"><WalletButton /></div>
+      )}
     </section>
   );
 }
