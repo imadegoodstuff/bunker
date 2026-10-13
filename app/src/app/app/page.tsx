@@ -23,23 +23,23 @@ export default function AppPage() {
   return (
     <>
       <Nav app />
-      <main className="mx-auto max-w-7xl px-6 pb-24 pt-10">
+      <main className="mx-auto max-w-5xl px-6 pb-24 pt-8">
         <AnimatePresence mode="wait">
           {phase !== "ready" ? (
-            <motion.div key="unlock" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+            <motion.div key="unlock" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <Unlock />
             </motion.div>
           ) : (
-            <motion.div key="app" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="grid gap-6 lg:grid-cols-[1.35fr_1fr]">
-              <div className="space-y-6">
+            <motion.div key="app" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="grid gap-12 lg:grid-cols-[1fr_20rem] lg:gap-16">
+              <div className="space-y-12">
                 <BalanceCard />
                 <TransactPanel />
                 <Activity />
               </div>
-              <div className="space-y-6">
+              <aside className="space-y-10 lg:pt-1">
                 <AddressCard />
                 <AnonymityPanel />
-              </div>
+              </aside>
             </motion.div>
           )}
         </AnimatePresence>

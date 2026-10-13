@@ -7,7 +7,7 @@ import { useScash } from "@/lib/store";
 import { fmtAmount, parseAmount } from "@/lib/format";
 import { amountForBurn } from "@scash/sdk";
 
-type Mode = "shield" | "send" | "unshield" | "swap";
+type Mode = "shield" | "send" | "unshield";
 
 export function TransactPanel() {
   const { publicKey, sendTransaction } = useWallet();
@@ -18,6 +18,7 @@ export function TransactPanel() {
   const [amount, setAmount] = useState("");
   const [to, setTo] = useState("");
   const [memo, setMemo] = useState("");
+  const [toOther, setToOther] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -36,18 +37,20 @@ export function TransactPanel() {
     return pct > BigInt(feePolicy.min) ? pct : BigInt(feePolicy.min);
   }, [feePolicy, parsed, mode]);
 
+  const switchMode = (m: Mode) => { setMode(m); setErr(null); setTo(""); setToOther(false); };
+
   const submit = async () => {
     setErr(null);
     if (!parsed || parsed <= 0n) return setErr("Enter an amount");
     setBusy(true);
     try {
       if (mode === "shield") {
-        if (!publicKey) throw new Error("connect a wallet");
-        await shield(asset, parsed, publicKey, (tx) => sendTransaction(tx, connection), to || undefined);
+        if (!publicKey) throw new Error("Connect a wallet");
+        await shield(asset, parsed, publicKey, (tx) => sendTransaction(tx, connection), toOther && to ? to : undefined);
       } else if (mode === "send") {
-        if (!to.startsWith("scash1") && !to.startsWith("tscash1")) throw new Error("enter a shielded address");
+        if (!to.startsWith("scash1") && !to.startsWith("tscash1")) throw new Error("Enter a shielded address");
         await send(asset, parsed, to, memo || undefined);
-      } else if (mode === "unshield") {
+      } else {
         await unshield(asset, parsed, new PublicKey(to));
       }
       setAmount(""); setMemo("");
@@ -58,96 +61,90 @@ export function TransactPanel() {
     }
   };
 
+  const needsRecipient = mode !== "shield" || toOther;
+  const cta = busy ? "Working…" : mode === "shield" ? "Shield" : mode === "send" ? "Send privately" : "Unshield";
+
   return (
-    <div className="panel p-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex gap-1 rounded-xl bg-ink-900 p-1">
-          {(["shield", "send", "unshield", "swap"] as Mode[]).map((m) => (
-            <button key={m} className="tab capitalize" data-active={mode === m} onClick={() => { setMode(m); setErr(null); }}>{m}</button>
-          ))}
-        </div>
-        <select className="input !w-auto !py-2" value={asset.symbol} onChange={(e) => setAsset(ASSETS.find((a) => a.symbol === e.target.value)!)}>
-          {ASSETS.map((a) => <option key={a.symbol} value={a.symbol}>{a.symbol}</option>)}
-        </select>
+    <section>
+      <div className="tabs">
+        {(["shield", "send", "unshield"] as Mode[]).map((m) => (
+          <button key={m} className="tab" data-active={mode === m} onClick={() => switchMode(m)}>{m}</button>
+        ))}
       </div>
 
-      {mode === "swap" ? (
-        <div className="mt-6 rounded-xl border border-dashed border-white/10 p-8 text-center">
-          <div className="font-mono text-xs text-mint-400">exit_target → adapter</div>
-          <h3 className="mt-2 text-lg font-semibold">Private swaps ship with the exit adapter</h3>
-          <p className="mx-auto mt-2 max-w-md text-sm text-ink-200">
-            The vault already supports CPI exits bound inside the proof. The Jupiter/Meteora adapter program is under review and will
-            appear here once deployed; no change to your notes is needed.
-          </p>
+      <div className="mt-7 space-y-6">
+        <div>
+          <div className="flex items-baseline justify-between">
+            <span className="label">Amount</span>
+            <span className="text-xs text-dim">
+              {mode === "shield" ? "from your public wallet" : `available ${fmtAmount(shieldedAmount, asset.decimals)} ${asset.symbol}`}
+            </span>
+          </div>
+          <div className="mt-2 flex items-center gap-3 border-b border-line-strong pb-2 focus-within:border-white/50">
+            <input
+              className="w-full bg-transparent text-4xl tracking-[-0.02em] tabular-nums outline-none placeholder:text-dim"
+              placeholder="0"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              inputMode="decimal"
+            />
+            {ASSETS.length > 1 ? (
+              <select className="bg-transparent text-sm text-mute outline-none" value={asset.symbol} onChange={(e) => setAsset(ASSETS.find((a) => a.symbol === e.target.value)!)}>
+                {ASSETS.map((a) => <option key={a.symbol} value={a.symbol}>{a.symbol}</option>)}
+              </select>
+            ) : (
+              <span className="text-sm text-mute">{asset.symbol}</span>
+            )}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {asset.denominations.map((d) => (
+              <button key={d} className="chip" onClick={() => setAmount(String(d))}>{d}</button>
+            ))}
+            {mode !== "shield" && (
+              <button className="chip" onClick={() => setAmount(fmtAmount(shieldedAmount, asset.decimals, asset.decimals).replace(/,/g, ""))}>max</button>
+            )}
+          </div>
         </div>
-      ) : (
-        <div className="mt-6 space-y-4">
+
+        {needsRecipient ? (
           <div>
-            <div className="mb-1.5 flex justify-between text-xs text-ink-400">
-              <span>Amount</span>
-              <span>
-                {mode === "shield" ? "from your public wallet" : `shielded: ${fmtAmount(shieldedAmount, asset.decimals)} ${asset.symbol}`}
-              </span>
+            <div className="flex items-baseline justify-between">
+              <span className="label">{mode === "unshield" ? "To Solana address" : "To shielded address"}</span>
+              {mode === "shield" && <button className="link text-xs" onClick={() => { setToOther(false); setTo(""); }}>to myself</button>}
             </div>
-            <div className="relative">
-              <input className="input pr-20 text-lg" placeholder="0.00" value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" />
-              <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-sm text-ink-200">{asset.symbol}</span>
-            </div>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {asset.denominations.map((d) => (
-                <button key={d} className="rounded-lg border border-white/10 px-2.5 py-1 font-mono text-xs text-ink-200 hover:border-mint-500/40 hover:text-ink-100" onClick={() => setAmount(String(d))}>
-                  {d}
-                </button>
-              ))}
-              {mode !== "shield" && (
-                <button className="rounded-lg border border-white/10 px-2.5 py-1 font-mono text-xs text-ink-200 hover:border-mint-500/40" onClick={() => setAmount(fmtAmount(shieldedAmount, asset.decimals, asset.decimals).replace(/,/g, ""))}>
-                  max
-                </button>
-              )}
-              <span className="ml-auto self-center text-[11px] text-ink-400">Standard denominations blend in better.</span>
-            </div>
+            <input className="input mt-2 font-mono text-[13px]" placeholder={mode === "unshield" ? "…" : "scash1…"} value={to} onChange={(e) => setTo(e.target.value.trim())} />
           </div>
+        ) : (
+          <button className="link text-xs" onClick={() => setToOther(true)}>Shield to someone else →</button>
+        )}
 
-          {mode !== "shield" || to ? (
-            <div>
-              <div className="mb-1.5 text-xs text-ink-400">
-                {mode === "unshield" ? "Public recipient (Solana address)" : "Shielded recipient (scash1…)"}
-              </div>
-              <input className="input" placeholder={mode === "unshield" ? "Solana address" : "scash1…"} value={to} onChange={(e) => setTo(e.target.value.trim())} />
-            </div>
-          ) : (
-            <button className="text-xs text-mint-400 hover:text-mint-300" onClick={() => setTo(" ")}>Shield directly to someone else&apos;s address →</button>
-          )}
-
-          {mode === "send" && (
-            <div>
-              <div className="mb-1.5 text-xs text-ink-400">Encrypted memo (optional, 512 bytes, only the recipient can read it)</div>
-              <input className="input" placeholder="invoice #1234" value={memo} onChange={(e) => setMemo(e.target.value)} maxLength={512} />
-            </div>
-          )}
-
-          <div className="rounded-xl border border-white/5 bg-ink-900/60 p-4 font-mono text-xs text-ink-200">
-            <Row k="network fee" v={mode === "shield" ? "paid by you" : "paid by relayer"} />
-            <Row k="relayer fee" v={mode === "shield" ? "0" : feePolicy ? `${fmtAmount(fee, asset.decimals)} ${asset.symbol}` : "relayer offline"} />
-            <Row k="proof" v="Groth16 · transact2x2 · in-browser" />
-            <Row k="timing privacy" v={mode === "shield" ? "n/a" : relayer ? `${relayer.delay.minMs / 1000}-${relayer.delay.maxMs / 1000}s random delay` : "—"} />
+        {mode === "send" && (
+          <div>
+            <span className="label">Memo <span className="text-dim">· encrypted, optional</span></span>
+            <input className="input mt-2" placeholder="" value={memo} onChange={(e) => setMemo(e.target.value)} maxLength={512} />
           </div>
+        )}
 
-          {err && <p className="text-sm text-rose-400">{err}</p>}
-          <button className="btn-primary w-full" disabled={busy || !pool || (mode !== "shield" && !relayer)} onClick={submit}>
-            {busy ? "Working…" : mode === "shield" ? `Shield ${asset.symbol}` : mode === "send" ? "Send privately" : `Unshield ${asset.symbol}`}
-          </button>
-        </div>
-      )}
-    </div>
+        <dl className="space-y-1.5 text-xs">
+          <Row k="Network fee" v={mode === "shield" ? "you" : "relayer"} />
+          <Row k="Relayer fee" v={mode === "shield" ? "—" : feePolicy ? `${fmtAmount(fee, asset.decimals)} ${asset.symbol}` : "relayer offline"} />
+          {mode !== "shield" && <Row k="Delay" v={relayer ? `${relayer.delay.minMs / 1000}–${relayer.delay.maxMs / 1000}s, random` : "—"} />}
+        </dl>
+
+        {err && <p className="text-sm text-bad">{err}</p>}
+        <button className="btn-primary w-full" disabled={busy || !pool || (mode !== "shield" && !relayer)} onClick={submit}>
+          {cta}
+        </button>
+      </div>
+    </section>
   );
 }
 
 function Row({ k, v }: { k: string; v: string }) {
   return (
-    <div className="flex justify-between py-0.5">
-      <span className="text-ink-400">{k}</span>
-      <span>{v}</span>
+    <div className="flex justify-between">
+      <dt className="text-dim">{k}</dt>
+      <dd className="text-mute">{v}</dd>
     </div>
   );
 }
