@@ -165,6 +165,11 @@ fn process_create_pool(program_id: &Pubkey, accounts: &[AccountInfo], tvl_cap: u
             return Err(VaultError::AccountMismatch.into());
         }
         let decimals = token::mint_decimals(mint).ok_or(VaultError::AccountMismatch)?;
+        if *token_program.key == token::TOKEN_2022_PROGRAM_ID
+            && token::mint_has_rejected_extension(mint).ok_or(VaultError::AccountMismatch)?
+        {
+            return Err(VaultError::UnsupportedMintExtension.into());
+        }
         if vault.data_is_empty() {
             let ata_program = ata_program.ok_or(ProgramError::NotEnoughAccountKeys)?;
             token::create_associated_token_account(ata_program, payer, vault, pool, mint, system, token_program)?;
@@ -412,7 +417,17 @@ fn move_in<'a>(
             &[from_authority.clone(), vault.clone(), system.clone()],
         )
     } else {
-        token::transfer_checked(token_program, source, mint, vault, from_authority, amount, decimals, &[])
+        // The pool credits `amount` to its books before this call, so the
+        // vault must receive exactly `amount`. Defence in depth behind the
+        // extension check in `create_pool`: a short delivery would mint shares
+        // against assets that never arrived.
+        let before = token::token_account_amount(vault).ok_or(VaultError::AccountMismatch)?;
+        token::transfer_checked(token_program, source, mint, vault, from_authority, amount, decimals, &[])?;
+        let after = token::token_account_amount(vault).ok_or(VaultError::AccountMismatch)?;
+        if after.checked_sub(before) != Some(amount) {
+            return Err(VaultError::ShortDelivery.into());
+        }
+        Ok(())
     }
 }
 

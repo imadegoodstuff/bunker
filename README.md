@@ -10,16 +10,16 @@ on-chain, relayer-paid transactions, and an immutable vault bounded by a per-ass
 
 | | |
 |---|---|
-| **Shield** | Move SOL or any SPL / Token-2022 asset into the pool. You receive a *note* holding pool shares. |
+| **Shield** | Move SOL, an SPL token, or a Token-2022 token without fee / hook / permanent-delegate extensions into the pool. You receive a *note* holding pool shares. |
 | **Send** | Pay any `scash1…` address privately. Amount, sender, recipient: all hidden. Relayer pays the fee. |
 | **Unshield** | Withdraw to any public address from a relayer-signed transaction. Your public wallet never appears. |
 | **Swap** | Exit through a CPI adapter bound inside the proof (adapter program in review). |
-| **Yield** | Notes hold shares; `donate()` raises the share rate. SCASH creator fees are routed here. |
+| **Yield** | Notes hold shares; `donate()` raises a pool's share rate. SCASH creator fees are donated to the **SCASH pool only**: SOL or USDC notes do not earn from it. The share rate measures tokens per share, not fiat value. |
 
 ## Why it is different
 
 - **Diversified addresses** (`pk_d = [ivk]·GroupHash(d)` on Baby Jubjub): unlimited unlinkable addresses per viewing key.
-- **Wallet-signature keys**: the spending key is `BLAKE2b(sign("scash:v1:spending-key"))`. No seed phrase, no backup.
+- **Wallet-derived keys with a second factor**: the seed is `scrypt(sign(SPENDING_KEY_MESSAGE) ‖ passphrase)`. A phished signature alone does not yield the spending key. The seed can be exported as a `scashseed1…` backup and restored without the wallet.
 - **Client-side trial decryption**: the indexer serves ciphertexts; only your browser knows which are yours.
 - **Nullifier = Poseidon(nk, ρ, position)**: bound to the leaf, immune to duplicate-commitment attacks.
 - **One tree for all assets**, depth 26, 128-root ring. Note that the asset id is a public input, so the anonymity set of a transaction is the unspent notes *of that asset*, not every leaf; the app reports it per asset.

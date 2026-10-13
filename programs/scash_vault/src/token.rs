@@ -29,6 +29,63 @@ pub fn mint_decimals(mint: &AccountInfo) -> Option<u8> {
     Some(d[44])
 }
 
+/// Token-2022 mint extensions that would break the pool's accounting or let a
+/// third party move or freeze pooled funds. `create_pool` refuses these mints.
+///
+/// * TransferFeeConfig (1): the vault receives less than the credited amount.
+/// * DefaultAccountState (6): the vault ATA would be created frozen.
+/// * NonTransferable (9): unshield could never move tokens out.
+/// * PermanentDelegate (12): the mint authority can pull tokens out of the vault.
+/// * TransferHook (14): transfers need extra accounts and run foreign code.
+/// * Pausable (26): the mint authority can halt every unshield.
+///
+/// Everything else (metadata, confidential transfer, interest-bearing display,
+/// close authority, memo-required, CPI guard, scaled UI amount) is harmless to
+/// the pool. Note that a plain *freeze authority* on the base mint is not an
+/// extension and is not rejected: USDC has one, and it is a documented risk.
+const REJECTED_MINT_EXTENSIONS: [u16; 6] = [1, 6, 9, 12, 14, 26];
+
+/// Walks the Token-2022 TLV extension list on a mint. Returns `None` if the
+/// layout is malformed, `Some(true)` if an extension from
+/// `REJECTED_MINT_EXTENSIONS` is present.
+pub fn mint_has_rejected_extension(mint: &AccountInfo) -> Option<bool> {
+    let d = mint.try_borrow_data().ok()?;
+    mint_bytes_have_rejected_extension(&d)
+}
+
+pub fn mint_bytes_have_rejected_extension(d: &[u8]) -> Option<bool> {
+    if d.len() <= 165 {
+        // Base mint (82) or padded without extensions: nothing to reject.
+        return Some(false);
+    }
+    // 165 bytes of base + padding, then the account type byte (1 = Mint).
+    if d[165] != 1 {
+        return None;
+    }
+    let mut off = 166;
+    while off + 4 <= d.len() {
+        let ty = u16::from_le_bytes([d[off], d[off + 1]]);
+        let len = u16::from_le_bytes([d[off + 2], d[off + 3]]) as usize;
+        if ty == 0 {
+            break;
+        }
+        if REJECTED_MINT_EXTENSIONS.contains(&ty) {
+            return Some(true);
+        }
+        off = off.checked_add(4 + len)?;
+    }
+    Some(false)
+}
+
+/// Token account balance at offset 64 (same for both token programs).
+pub fn token_account_amount(acc: &AccountInfo) -> Option<u64> {
+    let d = acc.try_borrow_data().ok()?;
+    if d.len() < 165 {
+        return None;
+    }
+    Some(u64::from_le_bytes(d[64..72].try_into().ok()?))
+}
+
 /// Token account owner at offset 32, amount at 64.
 pub fn token_account_owner(acc: &AccountInfo) -> Option<Pubkey> {
     let d = acc.try_borrow_data().ok()?;
@@ -122,4 +179,43 @@ pub fn create_associated_token_account<'a>(
             ata_program.clone(),
         ],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mint_with(exts: &[(u16, usize)]) -> Vec<u8> {
+        let mut d = vec![0u8; 165];
+        d.push(1); // account type: Mint
+        for &(ty, len) in exts {
+            d.extend_from_slice(&ty.to_le_bytes());
+            d.extend_from_slice(&(len as u16).to_le_bytes());
+            d.extend(std::iter::repeat_n(0xAA, len));
+        }
+        d
+    }
+
+    #[test]
+    fn base_mints_and_harmless_extensions_pass() {
+        assert_eq!(mint_bytes_have_rejected_extension(&[0u8; 82]), Some(false));
+        // MetadataPointer(18) + TokenMetadata(19) + ConfidentialTransferMint(4)
+        let d = mint_with(&[(18, 64), (19, 120), (4, 65)]);
+        assert_eq!(mint_bytes_have_rejected_extension(&d), Some(false));
+    }
+
+    #[test]
+    fn fee_hook_delegate_are_rejected_anywhere_in_the_list() {
+        for ty in [1u16, 6, 9, 12, 14, 26] {
+            let d = mint_with(&[(18, 64), (ty, 8), (19, 32)]);
+            assert_eq!(mint_bytes_have_rejected_extension(&d), Some(true), "type {ty}");
+        }
+    }
+
+    #[test]
+    fn malformed_layouts_are_not_silently_accepted() {
+        let mut d = mint_with(&[(18, 64)]);
+        d[165] = 2; // account type: Account, not Mint
+        assert_eq!(mint_bytes_have_rejected_extension(&d), None);
+    }
 }

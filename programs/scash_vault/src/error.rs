@@ -49,6 +49,10 @@ pub enum VaultError {
     CapNotLower,
     #[error("ext data too large")]
     ExtDataTooLarge,
+    #[error("mint uses a Token-2022 extension the pool does not support (transfer fee, transfer hook, permanent delegate, non-transferable, default frozen, pausable)")]
+    UnsupportedMintExtension,
+    #[error("vault received less than the credited amount")]
+    ShortDelivery,
 }
 
 impl From<VaultError> for ProgramError {

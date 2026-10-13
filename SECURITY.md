@@ -35,6 +35,13 @@ signature. Mitigations in place:
 - **No reuse of the wallet's own key.** The Solana keypair never touches notes;
   compromise of the shielded key does not expose the public wallet, and vice
   versa.
+- **One derivation path.** `seedFromSignature` → `ShieldedWallet.fromSeed` is
+  the only route from a signature to any key, including viewing keys and
+  addresses; the backup path imports the finished seed and bypasses nothing.
+  SPEC §2 spells out loss, offline-guessing cost (≈10⁶ guesses per core-day
+  with the signature in hand; an 8-character minimum is a floor, not a
+  recommendation) and why a leaked signature does not link a wallet to
+  shielded activity.
 
 What is *not* in place: origin binding. Sign-In-With-Solana lets a wallet
 verify that the requested domain matches the page, which would stop a phishing
@@ -100,6 +107,35 @@ outline. Treat the anonymity numbers in the app as upper bounds.
 - **Not done:** public ceremony, independent audit, mainnet deployment,
   formal privacy analysis, incident runbook, bug bounty. None of these are
   implied by anything in the README or the app.
+
+### 6. Token-2022 extensions, yield scope, proving cost, exit adapters
+
+- **Token-2022.** "Supports Token-2022" never meant every extension. A
+  transfer-fee mint would have let a depositor be credited `amount` while the
+  vault received `amount − fee`, leaving the last withdrawers short.
+  `create_pool` now refuses mints with TransferFee, TransferHook,
+  PermanentDelegate, NonTransferable, DefaultAccountState or Pausable
+  extensions, and every inbound token transfer verifies that the vault balance
+  grew by exactly the credited amount (`ShortDelivery` otherwise). A base-mint
+  freeze authority (USDC) is not rejected; a frozen vault would block
+  unshields of that asset. SPEC §9.
+- **Yield.** Creator fees are donated to the SCASH pool only. SOL, USDC and
+  other pools have a fixed share rate of 1. The rate is tokens per share and
+  depends on trading volume; it is not a price claim and not a return on other
+  assets. The landing page and FAQ say this explicitly.
+- **Proving in the browser.** The ~3 s figure is a desktop measurement for
+  `transact2x2` (wasm witness + snarkjs Groth16). Phones and low-memory tabs
+  are slower and may fail to allocate; there is no measured mobile budget yet.
+- **Exit adapters.** The swap exit is a CPI from the vault to an external
+  program with the funds already at `recipient`. Each adapter widens the
+  attack surface (account constraints, leftover funds, re-entrancy into the
+  vault via the exit target) and must be reviewed on its own; none is
+  deployed.
+- **Immutability vs. repair.** With no upgrade authority, a serious bug means a
+  new program and a user-driven migration. A migration must not publish a
+  link between old and new notes; the planned `scash_migrator` exit target
+  moves value inside a proof for that reason. Until it exists, the only
+  remedy is to unshield, which is public.
 
 ## Design-level guarantees
 

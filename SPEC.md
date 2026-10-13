@@ -52,6 +52,13 @@ This is the Sapling hierarchy minus the re-randomized spend-authorization signat
 
 **Why a passphrase.** Any web page can ask a connected wallet to sign arbitrary text, and most wallets will sign it after showing the text. A signature-only derivation therefore hands the spending key to any page that can phish one signature. The passphrase is a second factor the page never sees; scrypt makes each guess at it cost about 100 ms. Users may leave it empty, in which case the signature alone is the key and the only protection is the warning text inside the message. See SECURITY.md §1.
 
+**What the passphrase does and does not do.**
+
+- *Single derivation path.* `seedFromSignature` is the only function that turns a signature into `sk`; every other key (`ask`, `nsk`, `ovk`, `ak`, `nk`, `ivk`, all diversified addresses) is derived from `sk` by `ShieldedWallet.fromSeed`. There is no viewing-key or recovery path that skips the passphrase. The passphrase is not stored anywhere, not even hashed.
+- *Loss.* Wallet signature + passphrase, or the `scashseed1` backup, each reproduce `sk`. Losing the passphrase without a backup means the notes are unspendable; nobody can reset it. The app offers the backup immediately after first unlock for this reason.
+- *Offline guessing.* An attacker who has obtained the signature (phishing, a malicious dapp, a wallet that logs signatures) can test passphrases offline at the cost of one scrypt call each, about 100 ms on a desktop core, roughly 10⁶ guesses per core-day. The app enforces a minimum of 8 characters; that stops nothing against a dictionary. A passphrase of four or more random words is the realistic bar. Without the signature, the passphrase is useless, so the attacker needs both.
+- *Cross-site linkage.* Ed25519 signatures are deterministic, so the signature over `SPENDING_KEY_MESSAGE` is a fixed value per wallet. A site that obtains it learns only that it belongs to the public wallet address it already knows; it cannot derive `ivk` or any `scash1…` address without the passphrase, so it cannot link the wallet to shielded activity.
+
 ## 3. Diversified addresses
 
 An address is `(d, pk_d)`:
@@ -201,7 +208,9 @@ amount_for(shares) = shares * total_assets / total_shares        (floor)
 
 Shield mints `shares_for(amount)` shares; unshield burns `shares` and releases `amount_for(shares)`. Anyone may call `donate(amount)`, which increases `total_assets` without minting shares, so every existing note is worth more. This is how the native token's trading fees are paid to every private holder with no distribution transaction and no information about who holds what (§13).
 
-For assets that are never donated to, `total_shares == total_assets` always and shares equal base units.
+For assets that are never donated to, `total_shares == total_assets` always and shares equal base units. In the current deployment only the `SCASH` pool is donated to (§13); SOL, USDC and every other pool have a constant share rate of 1 and earn nothing. The share rate is base units per share: it never decreases, but it says nothing about the asset's market price.
+
+**Which mints a pool accepts.** The share arithmetic assumes that `shield(amount)` puts exactly `amount` base units into the vault and that only the pool PDA can move them out. Token-2022 extensions can break both, so `create_pool` refuses mints that carry any of: `TransferFeeConfig` (vault receives less than credited), `TransferHook` (foreign code and extra accounts on every transfer), `PermanentDelegate` (a third party can pull from the vault), `NonTransferable`, `DefaultAccountState` (vault created frozen), `Pausable` (unshields can be halted). Harmless extensions (metadata, confidential transfer, interest-bearing display, close authority, memo-required, CPI guard) are accepted. As defence in depth, every inbound token transfer reads the vault balance before and after and fails with `ShortDelivery` unless it grew by exactly `amount`. A base-mint *freeze authority* is not an extension and is not rejected: USDC has one, and a frozen vault account would block every unshield of that asset. That is an accepted, documented counterparty risk of holding such assets in any pool.
 
 ## 10. Association sets
 

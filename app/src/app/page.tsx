@@ -15,15 +15,16 @@ const guarantees = [
 
 const yieldFlow = [
   ["Every trade", "SCASH launches on a Meteora bonding curve and graduates to DAMM v2. Each trade pays a creator fee."],
-  ["Harvester", "An on-chain program anyone can call claims the fee, swaps it and donates it into the shielded pool."],
-  ["Every note", "Notes hold pool shares. A donation raises the share rate, so every private balance grows without a transaction."],
+  ["Harvester", "An on-chain program anyone can call claims the fee, swaps it to SCASH and donates it into the SCASH pool."],
+  ["Every SCASH note", "Notes hold pool shares. A donation raises the SCASH pool's share rate, so every private SCASH balance grows without a transaction. Other pools are unaffected."],
 ];
 
 const faq = [
   ["What is scash, in one sentence?", "A shielded pool on Solana built on the Zcash Sapling design: diversified addresses, note commitments in a Merkle tree, position-bound nullifiers and Groth16 proofs verified by an immutable program."],
   ["Is shielding private?", "The deposit itself is public: an address put X SOL into the pool. Everything after it is not. You hide among the other notes of the same asset, not among every note in the tree, so use round amounts and wait before withdrawing."],
   ["Who pays the network fee?", "For sends and withdrawals, a relayer does. Its fee is deducted inside the proof from your notes, so the address that receives funds never has to hold SOL for gas."],
-  ["Where does the yield come from?", "Creator fees from SCASH trading are harvested and donated into the pool. Balances are denominated in shares; a donation lifts the share rate for everyone at once."],
+  ["Where does the yield come from?", "Creator fees from SCASH trading are harvested, swapped to SCASH and donated into the SCASH pool. Balances there are denominated in shares, so a donation lifts the share rate for every SCASH note at once. It is not a return on SOL or USDC notes, it depends on trading volume, and a rising share rate means more SCASH per share, not more dollars."],
+  ["Which tokens can be shielded?", "SOL, SPL tokens, and Token-2022 tokens whose mint has none of the extensions that break pool accounting: transfer fee, transfer hook, permanent delegate, non-transferable, default-frozen, pausable. The program refuses such mints at pool creation and additionally checks that the vault received exactly the credited amount on every deposit."],
   ["Can anyone take or freeze my notes?", "No. The program cannot be upgraded and has no instruction that moves a note without its owner's proof. The guardian can only pause new deposits and lower the TVL cap."],
   ["What if this website disappears?", "Your keys come from your wallet's signature, and every ciphertext is on-chain. Any copy of the open-source app, or your own, recovers the same notes."],
   ["Is it audited?", "No. This is a pre-release with development proving keys and no independent audit of the circuits or programs. The code is open source and cross-tested in CI, which is not the same thing. SECURITY.md lists the known limitations in priority order."],
@@ -80,12 +81,12 @@ export default function Landing() {
                 <p className="font-mono text-xs text-accent">holder yield</p>
                 <h2 className="display mt-3 text-4xl md:text-5xl">Shares, <span className="serif italic font-normal">not tokens.</span></h2>
                 <p className="mt-5 max-w-md text-[15px] leading-relaxed text-mute">
-                  A note doesn&apos;t hold SOL; it holds a share of the pool. When fees are donated, the pool grows and every share is worth more. No staking, no claiming, no transaction linking you to the yield.
+                  A SCASH note doesn&apos;t hold tokens; it holds a share of the SCASH pool. When creator fees are donated, the pool grows and every share is backed by more SCASH. No staking, no claiming, no transaction linking you to the yield. The rate is tokens per share: it says nothing about the token&apos;s price, and it depends on there being trades to pay fees.
                 </p>
                 <div className="card mt-8 inline-block bg-raise px-5 py-4">
-                  <div className="text-xs text-mute">Value of one share</div>
+                  <div className="text-xs text-mute">SCASH per share</div>
                   <div className="mt-1 font-mono text-3xl tabular-nums">1.0000 <span className="text-base text-dim">at launch</span></div>
-                  <div className="mt-1 text-xs text-dim">rises with every donation; can never fall</div>
+                  <div className="mt-1 text-xs text-dim">rises with every donation; the program has no instruction that lowers it</div>
                 </div>
               </div>
               <ol className="divide-y divide-line border-y border-line">
