@@ -8,3 +8,4 @@ export * from "./extdata.js";
 export * from "./prover.js";
 export * from "./program.js";
 export * from "./wallet.js";
+export * from "./lookup.js";

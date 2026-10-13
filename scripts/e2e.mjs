@@ -5,10 +5,10 @@
 // to a fresh public key → donate() raises the share rate → turnstile checks.
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { Connection, Keypair, PublicKey, SystemProgram, Transaction, ComputeBudgetProgram, sendAndConfirmTransaction, LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { Connection, Keypair, SystemProgram, Transaction, sendAndConfirmTransaction, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import {
   ShieldedWallet, MerkleTree, assetId, encodeAddress, decodeAddress, initializeIx, createPoolIx, donateIx,
-  configPda, treePda, poolPda, decodePool, decodeTree, amountForBurn, PROGRAM_ID,
+  configPda, treePda, poolPda, decodePool, decodeTree, amountForBurn, staticAddresses, createLookupTable, fetchLookupTable, buildV0,
 } from "../sdk/dist/index.js";
 
 const { values } = parseArgs({ options: { rpc: { type: "string", default: "http://127.0.0.1:8899" }, keypair: { type: "string", default: "keypairs/deployer.json" } } });
@@ -24,12 +24,18 @@ const t0 = Date.now();
 const log = (...a) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}s]`, ...a);
 const fmt = (l) => (Number(l) / LAMPORTS_PER_SOL).toFixed(4) + " SOL";
 
+let table; // address lookup table, created after the pool exists
 async function send(ixs, signers, label) {
-  const tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }), ...ixs);
   try {
-    const sig = await sendAndConfirmTransaction(conn, tx, signers, { commitment: "confirmed" });
+    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
+    const tx = buildV0(signers[0].publicKey, ixs, blockhash, table);
+    tx.sign(signers);
+    const size = tx.serialize().length;
+    const sig = await conn.sendTransaction(tx, { skipPreflight: false });
+    const res = await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+    if (res.value.err) throw new Error(JSON.stringify(res.value.err));
     const meta = (await conn.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 })).meta;
-    log(`${label}: ok  cu=${meta.computeUnitsConsumed}  sig=${sig.slice(0, 16)}…`);
+    log(`${label}: ok  ${size}B  cu=${meta.computeUnitsConsumed}  sig=${sig.slice(0, 16)}…`);
     return sig;
   } catch (e) {
     console.error(`${label}: FAILED`, e.message);
@@ -53,6 +59,10 @@ log("bob shielded address:", bobAddr);
 // --- protocol init
 if (!(await conn.getAccountInfo(configPda()))) await send([initializeIx(payer.publicKey, payer.publicKey)], [payer], "initialize");
 if (!(await conn.getAccountInfo(poolPda(SOL)))) await send([createPoolIx(payer.publicKey, SOL, 1000n * BigInt(LAMPORTS_PER_SOL))], [payer], "create SOL pool");
+const tableAddr = await createLookupTable(conn, payer, staticAddresses([{ mint: SOL }]));
+await new Promise((r) => setTimeout(r, 1500)); // tables become usable one slot after extension
+table = await fetchLookupTable(conn, tableAddr);
+log(`lookup table ${tableAddr.toBase58()} with ${table.state.addresses.length} addresses`);
 const pool = async () => decodePool(new Uint8Array((await conn.getAccountInfo(poolPda(SOL))).data));
 const chainTree = async () => decodeTree(new Uint8Array((await conn.getAccountInfo(treePda())).data));
 

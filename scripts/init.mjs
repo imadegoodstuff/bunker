@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { Connection, Keypair, PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
-import { initializeIx, createPoolIx, configPda, treePda, poolPda, TREE_ACCOUNT_LEN, PROGRAM_ID } from "../sdk/dist/index.js";
+import { initializeIx, createPoolIx, configPda, treePda, poolPda, TREE_ACCOUNT_LEN, PROGRAM_ID, createLookupTable, staticAddresses } from "../sdk/dist/index.js";
 
 const { values } = parseArgs({
   options: {
@@ -39,4 +39,7 @@ if (!(await conn.getAccountInfo(solPool))) {
 } else {
   console.log("SOL pool exists", solPool.toBase58());
 }
+
+const table = await createLookupTable(conn, payer, staticAddresses([{ mint: SystemProgram.programId }], programId));
+console.log("lookup table", table.toBase58(), "→ set LOOKUP_TABLE on the relayer");
 process.exit(0);

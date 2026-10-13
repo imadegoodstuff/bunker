@@ -2,10 +2,10 @@
 // Client-side shielded wallet state. Nothing here ever leaves the browser
 // except proofs, ciphertexts and the instruction handed to the relayer.
 import { create } from "zustand";
-import { Connection, PublicKey, Transaction, ComputeBudgetProgram, SystemProgram } from "@solana/web3.js";
+import { Connection, PublicKey, SystemProgram, type VersionedTransaction } from "@solana/web3.js";
 import {
   ShieldedWallet, MerkleTree, assetId, seedFromSignature, encodeAddress, decodeAddress, decodePool, poolPda, treePda, decodeTree,
-  type PoolState, type SpendableNote, SPENDING_KEY_MESSAGE,
+  buildV0, fetchLookupTable, type PoolState, type SpendableNote, SPENDING_KEY_MESSAGE,
 } from "@scash/sdk";
 import { indexer, relayer, type RelayerInfo } from "./api";
 import { ARTIFACTS, ASSETS, CLUSTER, PROGRAM_ID, RPC_URL, type AssetMeta } from "./config";
@@ -45,7 +45,7 @@ interface State {
   sync: () => Promise<void>;
   refreshPools: () => Promise<void>;
   rotateAddress: () => void;
-  shield: (asset: AssetMeta, amount: bigint, owner: PublicKey, sendTx: (tx: Transaction) => Promise<string>, to?: string) => Promise<void>;
+  shield: (asset: AssetMeta, amount: bigint, owner: PublicKey, sendTx: (tx: VersionedTransaction) => Promise<string>, to?: string) => Promise<void>;
   send: (asset: AssetMeta, amount: bigint, to: string, memo?: string) => Promise<void>;
   unshield: (asset: AssetMeta, amount: bigint, recipient: PublicKey) => Promise<void>;
   resetTx: () => void;
@@ -164,7 +164,9 @@ export const useScash = create<State>((set, get) => ({
         depositorSource: asset.mint.equals(SystemProgram.programId) ? owner : undefined,
       });
       set({ tx: { stage: "signing", message: "Approve the transaction in your wallet" } });
-      const tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 })).add(built.instruction);
+      const conn = get().connection;
+      const table = rl?.lookupTable ? await fetchLookupTable(conn, new PublicKey(rl.lookupTable)) : undefined;
+      const tx = buildV0(owner, [built.instruction], (await conn.getLatestBlockhash()).blockhash, table);
       const sig = await sendTx(tx);
       set({ tx: { stage: "confirming", message: "Waiting for confirmation", signature: sig } });
       await get().connection.confirmTransaction(sig, "confirmed");

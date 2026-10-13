@@ -2,10 +2,8 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { readFileSync } from "node:fs";
-import {
-  Connection, Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction, ComputeBudgetProgram, type AccountMeta,
-} from "@solana/web3.js";
-import { deserializeExtData, PROGRAM_ID as DEFAULT_PROGRAM, decodePool, poolPda, P } from "@scash/sdk";
+import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction, type AccountMeta } from "@solana/web3.js";
+import { deserializeExtData, PROGRAM_ID as DEFAULT_PROGRAM, decodePool, poolPda, P, buildV0, fetchLookupTable } from "@scash/sdk";
 import { FeePolicy } from "./policy.js";
 import { SubmitQueue } from "./queue.js";
 
@@ -22,6 +20,10 @@ const queue = new SubmitQueue(conn, signer, {
   cuPriceMicroLamports: Number(process.env.CU_PRICE ?? 0),
   maxAttempts: 4,
 });
+if (process.env.LOOKUP_TABLE) {
+  queue.table = await fetchLookupTable(conn, new PublicKey(process.env.LOOKUP_TABLE));
+  console.log(`[relayer] using lookup table ${process.env.LOOKUP_TABLE} (${queue.table.state.addresses.length} addresses)`);
+}
 queue.start();
 
 function loadKeypair(): Keypair {
@@ -70,6 +72,7 @@ app.get("/info", async () => ({
   cluster: RPC.includes("devnet") ? "devnet" : RPC.includes("mainnet") ? "mainnet-beta" : "custom",
   fees: policy.list(),
   delay: { minMs: queue.opts.minDelayMs, maxMs: queue.opts.maxDelayMs },
+  lookupTable: process.env.LOOKUP_TABLE ?? null,
   queued: queue.size(),
 }));
 
@@ -120,10 +123,10 @@ app.post<{ Body: RelayBody }>("/relay", async (req, reply) => {
 
   // --- simulate before accepting (catches bad proofs / stale roots / spent notes)
   const ix = new TransactionInstruction({ programId: PROGRAM, keys, data: Buffer.from(data) });
-  const sim = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: queue.opts.cuLimit })).add(ix);
-  sim.feePayer = signer.publicKey;
-  sim.recentBlockhash = (await conn.getLatestBlockhash()).blockhash;
-  const res = await conn.simulateTransaction(sim, [signer]);
+  const sim = buildV0(signer.publicKey, [ix], (await conn.getLatestBlockhash()).blockhash, queue.table, { cuLimit: queue.opts.cuLimit });
+  sim.sign([signer]);
+  if (sim.serialize().length > 1232) return reply.code(400).send({ error: "transaction too large", bytes: sim.serialize().length });
+  const res = await conn.simulateTransaction(sim, { sigVerify: false });
   if (res.value.err) {
     return reply.code(422).send({ error: "simulation failed", details: res.value.err, logs: res.value.logs?.slice(-8) });
   }

@@ -36,6 +36,7 @@ export interface RelayerInfo {
   cluster: string;
   fees: { mint: string; min: string; bps: number }[];
   delay: { minMs: number; maxMs: number };
+  lookupTable: string | null;
   queued: number;
 }
 

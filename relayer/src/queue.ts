@@ -2,7 +2,8 @@
 // held for `minDelayMs..maxDelayMs` (uniform) so that submission time is
 // decorrelated from the request time, then signed and sent.
 import { randomInt, randomUUID } from "node:crypto";
-import { Connection, Keypair, Transaction, type TransactionInstruction, ComputeBudgetProgram } from "@solana/web3.js";
+import { Connection, Keypair, type TransactionInstruction, type AddressLookupTableAccount } from "@solana/web3.js";
+import { buildV0 } from "@scash/sdk";
 
 export type JobStatus = "queued" | "submitting" | "confirmed" | "failed";
 export interface Job {
@@ -23,7 +24,8 @@ export class SubmitQueue {
   constructor(
     readonly conn: Connection,
     readonly signer: Keypair,
-    readonly opts: { minDelayMs: number; maxDelayMs: number; cuLimit: number; cuPriceMicroLamports: number; maxAttempts: number }
+    readonly opts: { minDelayMs: number; maxDelayMs: number; cuLimit: number; cuPriceMicroLamports: number; maxAttempts: number },
+    public table?: AddressLookupTableAccount
   ) {}
 
   enqueue(ix: TransactionInstruction): Job {
@@ -73,16 +75,12 @@ export class SubmitQueue {
     job.status = "submitting";
     job.attempts++;
     try {
-      const tx = new Transaction();
-      tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: this.opts.cuLimit }));
-      if (this.opts.cuPriceMicroLamports > 0) {
-        tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: this.opts.cuPriceMicroLamports }));
-      }
-      tx.add(job.ix);
       const { blockhash, lastValidBlockHeight } = await this.conn.getLatestBlockhash("confirmed");
-      tx.recentBlockhash = blockhash;
-      tx.feePayer = this.signer.publicKey;
-      tx.sign(this.signer);
+      const tx = buildV0(this.signer.publicKey, [job.ix], blockhash, this.table, {
+        cuLimit: this.opts.cuLimit,
+        cuPriceMicroLamports: this.opts.cuPriceMicroLamports,
+      });
+      tx.sign([this.signer]);
       const sig = await this.conn.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
       job.signature = sig;
       const res = await this.conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
