@@ -681,13 +681,48 @@ so this section states its boundary rather than its marketing.
   relayer's random release order and delay make a private trade's landing
   time unpredictable to its own sender, let alone to others. Private trades
   carry a minimum-out bound chosen by the client (1 % slippage in the app).
-  Graduation ends private trading on that curve; the token's shielded pool
-  remains and keeps receiving harvested fees, but new entrants after
-  graduation buy publicly and shield afterwards like any other asset.
-- **Not done.** No independent audit of the launchpad. No post-graduation
-  liquidity migration to an external AMM (public trading continues on the
-  same curve). The harvester for the native token (§13 of SPEC) and the
-  launchpad's harvest are separate code paths that do the same thing.
+  Graduation at 20 SOL ends private trading on that curve; the token's
+  shielded pool remains (holders keep their notes), and new entrants after
+  graduation buy on the Raydium pool and shield afterwards like any other
+  asset. The buy that crosses the end of the curve is capped to the tokens
+  left and refunded the rest at its claim key, so nobody is refused for
+  arriving last.
+- **Migration to Raydium (SPEC §16).** `migrate` is permissionless and has no
+  parameters: everything it does is derived from the curve and from Raydium's
+  config 0, so there is nothing for a caller to choose and no key to hold. The
+  pool's creator is `PDA("migrate", mint)`, a system-owned, data-less account
+  that exists for one instruction and is swept to the treasury at its end; it
+  is funded by a direct lamport move from the curve and the first CPI names
+  both accounts, which is what the runtime requires before it will start a
+  CPI after such a move. Every LP token is burned in the same instruction, so
+  no account — not the program, not the treasury — can ever withdraw the
+  liquidity. The program trusts Raydium only for the account layout of
+  `initialize`; it verifies the config account's discriminator and that pool
+  creation is enabled on it, derives every pool address itself, reads the
+  creation fee from the config at run time, and asserts the LP balance it is
+  about to burn is non-zero. The known griefing path — someone who unshielded
+  tokens before graduation creates the config-0 pool for the pair first — is
+  handled by accepting any other enabled CP-Swap config whose pool does not
+  exist yet when the config-0 pool is already there; a front-run pool is a
+  separate pool with its own price, not a lock on the curve. A 0.1 SOL
+  reserve covers the rents of the accounts Raydium creates (about 0.05 SOL
+  today); if Raydium ever grew those accounts past the reserve, `migrate`
+  would fail until the program is upgraded, and the curve's SOL would wait on
+  the curve meanwhile (it cannot be taken by anyone). The 0.15 SOL creation
+  fee is Raydium's. The CI validator clones the real CP-Swap program and
+  config from mainnet-beta, so the e2e creates a real pool through the real
+  program rather than a mock.
+- **Launch metadata hosting.** The indexer's `POST /meta` is the project's
+  only writable public endpoint. It accepts one image (type sniffed from the
+  bytes, ≤ 512 KiB) plus bounded text, stores both content-addressed and
+  immutable, rate-limits per IP, logs nothing about the uploader, and serves
+  files only by their hash names. A mint's URI is a 200-byte string the
+  program does not interpret; a launch made outside the app can point
+  anywhere, and the app shows an image only for URIs the indexer itself
+  hosts.
+- **Not done.** No independent audit of the launchpad. The harvester for the
+  native token (§13 of SPEC) and the launchpad's harvest are separate code
+  paths that do the same thing.
 
 ### 16. Mainnet beta: what is deployed, under which keys, and why the upgrade authority is still held
 

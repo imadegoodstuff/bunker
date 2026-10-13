@@ -1,7 +1,8 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import { amountForBurn, sharesForWithdraw, quotePrivateBuy, quotePrivateSell, rolled, worstFeeBps, type CurveState, type PoolState } from "@scash/sdk";
+import { amountForBurn, sharesForWithdraw, quotePrivateBuy, quotePrivateSell, rolled, worstFeeBps, raydium, type CurveState, type PoolState } from "@scash/sdk";
+import { PublicKey } from "@solana/web3.js";
 import { FeePolicy } from "@/components/launch/FeePolicy";
 import { Unlock } from "@/components/Unlock";
 import { LaunchShell, Row } from "@/components/launch/LaunchShell";
@@ -46,19 +47,30 @@ function Token({ mint }: { mint: string }) {
   if (!curve) return <p className="text-sm text-dim">Loading curve…</p>;
   const decimals = meta?.decimals ?? 6;
   const symbol = meta?.symbol ?? short(mint, 4);
-  const price = priceLamportsPerToken(curve, decimals);
-  const prog = Math.min(1, Number(curve.realSol) / Number(curve.graduationLamports || 1n));
+  const migrated = !!curve.ammPool;
+  const ammSol = meta?.amm_sol ? BigInt(meta.amm_sol) : null;
+  const ammTokens = meta?.amm_tokens ? BigInt(meta.amm_tokens) : null;
+  // after migration the curve is empty; the opening pool price is the last thing we can show without reading Raydium
+  const price = migrated && ammSol && ammTokens ? (Number(ammSol) / Number(ammTokens)) * 10 ** decimals : priceLamportsPerToken(curve, decimals);
+  const prog = curve.graduated ? 1 : Math.min(1, Number(curve.realSol) / Number(curve.graduationLamports || 1n));
+  const image = meta && "image" in meta ? meta.image : null;
 
   return (
     <div className="grid gap-5 lg:grid-cols-[1fr_22rem]">
       <div className="space-y-5">
         <section className="glass noise px-7 py-7">
           <div className="flex flex-wrap items-baseline justify-between gap-3">
-            <div>
-              <div className="label">{meta?.name ?? "Token"}</div>
-              <div className="mt-2 flex items-baseline gap-3">
-                <span className="text-[2.5rem] leading-none tracking-[-0.04em] tabular-nums">{(price / 1e9).toPrecision(3)}</span>
-                <span className="text-lg text-mute">SOL / {symbol}</span>
+            <div className="flex items-center gap-4">
+              {image ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={image} alt="" className="h-16 w-16 rounded-2xl object-cover" />
+              ) : null}
+              <div>
+                <div className="label">{meta?.name ?? "Token"}</div>
+                <div className="mt-2 flex items-baseline gap-3">
+                  <span className="text-[2.5rem] leading-none tracking-[-0.04em] tabular-nums">{(price / 1e9).toPrecision(3)}</span>
+                  <span className="text-lg text-mute">SOL / {symbol}</span>
+                </div>
               </div>
             </div>
             <a className="link font-mono text-xs" href={explorerAddr(mint)} target="_blank" rel="noreferrer">{short(mint)}</a>
@@ -67,10 +79,19 @@ function Token({ mint }: { mint: string }) {
             <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${(prog * 100).toFixed(1)}%` }} />
           </div>
           <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-xs sm:grid-cols-4">
-            <Row k="Raised" v={`${fmtAmount(curve.realSol, 9, 3)} SOL`} />
-            <Row k="Graduates at" v={`${fmtAmount(curve.graduationLamports, 9, 0)} SOL`} />
+            {migrated ? (
+              <>
+                <Row k="In the pool" v={ammSol !== null ? `${fmtAmount(ammSol, 9, 2)} SOL` : "—"} />
+                <Row k="With" v={ammTokens !== null ? `${fmtAmount(ammTokens, decimals, 0)} ${symbol}` : "—"} />
+              </>
+            ) : (
+              <>
+                <Row k="Raised" v={`${fmtAmount(curve.realSol, 9, 3)} SOL`} />
+                <Row k="Graduates at" v={`${fmtAmount(curve.graduationLamports, 9, 0)} SOL`} />
+              </>
+            )}
             <Row k="Left on curve" v={`${fmtAmount(curve.realToken, decimals, 0)}`} />
-            <Row k="Status" v={curve.graduated ? "graduated · public trading open" : "shielded-only"} strong />
+            <Row k="Status" v={migrated ? "on Raydium" : curve.graduated ? "graduated · moving to Raydium" : "shielded-only"} strong />
             <Row k="Trades" v={`${curve.buys} buys · ${curve.sells} sells`} />
             <Row k="Volume" v={`${fmtAmount(curve.solVolume, 9, 2)} SOL`} />
             <Row k="Fees waiting" v={`${fmtAmount(curve.feesAccrued, 9, 4)} SOL`} />
@@ -78,8 +99,8 @@ function Token({ mint }: { mint: string }) {
           </dl>
         </section>
 
-        {ready ? <TradePanel mint={mint} curve={curve} worstFee={worstFeeBps(stored, slot)} symbol={symbol} decimals={decimals} /> : <UnlockToTrade symbol={symbol} />}
-        <FeePolicy curve={curve} slot={slot} events={row?.feeEvents ?? []} />
+        {curve.graduated ? <OnRaydium mint={mint} curve={curve} symbol={symbol} /> : ready ? <TradePanel mint={mint} curve={curve} worstFee={worstFeeBps(stored, slot)} symbol={symbol} decimals={decimals} /> : <UnlockToTrade symbol={symbol} />}
+        {!curve.graduated && <FeePolicy curve={curve} slot={slot} events={row?.feeEvents ?? []} />}
         <Trades trades={row?.trades ?? []} symbol={symbol} decimals={decimals} />
       </div>
       <aside className="space-y-4">
@@ -101,6 +122,28 @@ function Token({ mint }: { mint: string }) {
         </section>
       </aside>
     </div>
+  );
+}
+
+/** After graduation the curve is done: its SOL and the reserved supply are (or are about to be) a Raydium pool with the LP burned. */
+function OnRaydium({ mint, curve, symbol }: { mint: string; curve: CurveState; symbol: string }) {
+  const pool = curve.ammPool ?? raydium.poolState(new PublicKey(mint));
+  return (
+    <section className="glass px-7 py-6">
+      <div className="label">{curve.ammPool ? `${symbol} trades on Raydium` : `${symbol} has graduated`}</div>
+      <p className="mt-2 text-sm leading-relaxed text-mute">
+        {curve.ammPool
+          ? `The curve's SOL and the reserved supply became a Raydium CP-Swap pool; every LP token was burned, so the liquidity is permanent and nobody controls it. The launchpad's fee policy no longer applies — Raydium's 0.25% fee does.`
+          : `The curve reached 20 SOL and is frozen. The next keeper tick (any wallet can send it) turns its SOL and the reserved supply into a Raydium pool with the LP burned.`}
+      </p>
+      <p className="mt-3 text-xs text-dim">
+        Shielded {symbol} you already hold stays in your notes; unshield it to a wallet to sell on Raydium, or keep it private.
+      </p>
+      <div className="mt-4 flex flex-wrap gap-3">
+        <a className="btn-primary h-11 px-5" href={raydium.swapUrl(new PublicKey(mint))} target="_blank" rel="noreferrer">Trade on Raydium</a>
+        <a className="btn-ghost h-11 px-5 font-mono text-xs" href={explorerAddr(pool.toBase58())} target="_blank" rel="noreferrer">pool {short(pool.toBase58())}</a>
+      </div>
+    </section>
   );
 }
 
@@ -144,7 +187,7 @@ function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string;
         const q = quotePrivateBuy(curve, delivered, rents, CLAIM_BUDGET);
         // min_out assumes the worst fee an epoch boundary inside the next few minutes can bring
         const w = quotePrivateBuy({ ...curve, tradeFeeBps: worstFee }, delivered, rents, CLAIM_BUDGET);
-        return { amount: lamports, relayerFee: fee, curveFee: q.fee, out: q.out, minOut: w.out - (w.out * SLIPPAGE_BPS) / 10_000n };
+        return { amount: lamports, relayerFee: fee, curveFee: q.fee, out: q.out, minOut: w.out - (w.out * SLIPPAGE_BPS) / 10_000n, refund: q.refund };
       }
       if (!tokenPool) return null;
       const tokens = (tokAvail * sellPart) / 100n;
@@ -153,7 +196,7 @@ function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string;
       const delivered = amountForBurn(tokenPool, sharesForWithdraw(tokenPool, tokens));
       const q = quotePrivateSell(curve, delivered, tip);
       const w = quotePrivateSell({ ...curve, tradeFeeBps: worstFee }, delivered, tip);
-      return { amount: tokens, relayerFee: tip, curveFee: q.fee, out: q.out, minOut: w.out - (w.out * SLIPPAGE_BPS) / 10_000n };
+      return { amount: tokens, relayerFee: tip, curveFee: q.fee, out: q.out, minOut: w.out - (w.out * SLIPPAGE_BPS) / 10_000n, refund: 0n };
     } catch (e) {
       return { error: (e as Error).message } as const;
     }
@@ -206,6 +249,7 @@ function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string;
             <Row k={`Curve fee (${(curve.tradeFeeBps / 100).toFixed(1)}%)`} v={`${fmtAmount(quote.curveFee, 9, 4)} SOL · ${curve.holderShareBps / 100}% back to holders`} />
             <Row k="You receive" v={side === "buy" ? `≈ ${fmtAmount(quote.out, decimals, 0)} ${symbol}` : `≈ ${fmtAmount(quote.out, 9, 4)} SOL`} strong />
             <Row k={worstFee > curve.tradeFeeBps ? `Minimum (if the fee steps to ${(worstFee / 100).toFixed(1)}%)` : "Minimum"} v={side === "buy" ? `${fmtAmount(quote.minOut, decimals, 0)} ${symbol}` : `${fmtAmount(quote.minOut, 9, 4)} SOL`} />
+            {quote.refund > 0n && <Row k="Graduation" v={`this buy takes the last tokens; ${fmtAmount(quote.refund, 9, 4)} SOL comes back to your claim key and the curve moves to Raydium`} />}
           </>
         ) : (
           <Row k="Quote" v={quote && "error" in quote ? quote.error : side === "sell" && tokAvail === 0n ? `no shielded ${symbol} yet` : "—"} />
@@ -214,7 +258,6 @@ function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string;
         <Row k="Your wallet" v="not involved" strong />
       </dl>
 
-      {curve.graduated && <p className="mt-3 text-xs text-warn">This curve has graduated. Private trading through it has ended; it now trades publicly.</p>}
       {relayer && !relayer.launchProgram && <p className="mt-3 text-xs text-warn">The configured relayer does not forward launchpad trades.</p>}
       {err && <p className="mt-3 text-sm text-bad">{err}</p>}
       {done && <p className="mt-3 text-sm text-accent">{done}</p>}

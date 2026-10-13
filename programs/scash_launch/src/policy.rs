@@ -104,7 +104,7 @@ mod tests {
             virtual_sol: 1, virtual_token: 1, real_sol: 0, real_token: 1, fees_accrued: 0, graduated: 0, created_slot: 0,
             total_supply: 1, curve_supply: 1, trade_fee_bps: fee, holder_share_bps: holder, graduation_lamports: 1,
             protocol_treasury: Pubkey::new_unique(), vault_program: Pubkey::new_unique(), buys: 0, sells: 0, sol_volume: 0,
-            lookup_table: Pubkey::new_unique(), settled_epoch, votes: [Vote::default(); AGENTS],
+            lookup_table: Pubkey::new_unique(), settled_epoch, votes: [Vote::default(); AGENTS], amm_pool: Pubkey::default(),
         }
     }
     const V: fn(u16, u16, u64) -> Vote = |fee_bps, holder_bps, slot| Vote { fee_bps, holder_bps, slot };

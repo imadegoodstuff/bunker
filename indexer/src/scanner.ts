@@ -309,6 +309,10 @@ export class Scanner {
         case "graduate":
           if (parts.length >= 4) this.db.markGraduated(pk(parts[1]), u64le(parts[2]).toString(), u64le(parts[3]).toString());
           break;
+        // migrate(mint, pool, sol_in, token_in, lp_burned): the curve's liquidity moved to a Raydium CP-Swap pool
+        case "migrate":
+          if (parts.length >= 5) this.db.markMigrated(pk(parts[1]), pk(parts[2]), u64le(parts[3]).toString(), u64le(parts[4]).toString());
+          break;
         // --- fee policy: an agent's vote, and the epoch roll that moved the effective fee
         case "fee_vote":
           if (parts.length >= 6) this.db.insertFeeEvent({ signature, mint: pk(parts[1]), kind: "vote", agent: parts[2][0], feeBps: u16le(parts[3]), holderBps: u16le(parts[4]), slot: Number(u64le(parts[5])), blockTime: bt });

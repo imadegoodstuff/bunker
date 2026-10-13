@@ -97,6 +97,11 @@ export class Db {
       );
       CREATE INDEX IF NOT EXISTS fee_events_mint_slot ON fee_events(mint, slot);
     `);
+    // added after the first deployments: the Raydium pool a graduated curve migrated to
+    const cols = (this.db.prepare("PRAGMA table_info(launches)").all() as { name: string }[]).map((c) => c.name);
+    if (!cols.includes("amm_pool")) this.db.exec("ALTER TABLE launches ADD COLUMN amm_pool TEXT");
+    if (!cols.includes("amm_sol")) this.db.exec("ALTER TABLE launches ADD COLUMN amm_sol TEXT");
+    if (!cols.includes("amm_tokens")) this.db.exec("ALTER TABLE launches ADD COLUMN amm_tokens TEXT");
   }
 
   insertFeeEvent(e: { signature: string; mint: string; kind: "vote" | "roll"; agent: number | null; feeBps: number; holderBps: number; slot: number; blockTime: number | null; epoch?: number }) {
@@ -208,6 +213,12 @@ export class Db {
   }
   markGraduated(mint: string, realSol: string, realToken: string) {
     this.db.prepare("UPDATE launches SET graduated = 1, real_sol = ?, real_token = ? WHERE mint = ?").run(realSol, realToken, mint);
+  }
+  /** The curve moved to a Raydium pool: it holds nothing any more, the pool holds `solIn` lamports and `tokensIn` base units. */
+  markMigrated(mint: string, pool: string, solIn: string, tokensIn: string) {
+    this.db
+      .prepare("UPDATE launches SET graduated = 1, amm_pool = ?, amm_sol = ?, amm_tokens = ?, real_sol = '0', real_token = '0' WHERE mint = ?")
+      .run(pool, solIn, tokensIn, mint);
   }
   launches(limit: number, offset: number) {
     return this.db.prepare("SELECT * FROM launches ORDER BY slot DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[];

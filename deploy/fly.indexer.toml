@@ -11,12 +11,15 @@ primary_region = "sin"
   # Public fallback; the keyed endpoint is a Fly secret of the same name (secrets override [env]).
   RPC_URL = "https://api.mainnet-beta.solana.com"
   # Comma-separated fallbacks tried after RPC_URL for every signature the primary
-  # cannot return (SECURITY.md §14). Set via `flyctl secrets set RPC_URLS=…` when
+  # cannot return (SECURITY.md §14). Set via `flyctl secrets set RPC_URLS=...` when
   # the endpoints carry keys; empty means "primary only".
   # RPC_URLS = ""
   PROGRAM_ID = "89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR"
   DB_PATH = "/data/scash-indexer.sqlite"
   SCAN_INTERVAL_MS = "4000"
+  # Launch metadata (token images + JSON) is written under /data/meta and served from PUBLIC_URL/meta/…
+  PUBLIC_URL = "https://scash-indexer.fly.dev"
+  META_UPLOADS_PER_HOUR = "20"
 
 [mounts]
   source = "scash_indexer_data"

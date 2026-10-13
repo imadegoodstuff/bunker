@@ -16,8 +16,8 @@ What each suite covers, how to run it, and what nothing covers yet.
 | end-to-end | `node scripts/e2e.mjs` | `e2e` job | init, pool, lookup table, shield, relayed send with memo, receiver scan, unshield to fresh key, donate and yield accrual, replay rejection, turnstile |
 | bench | `node scripts/bench.mjs --n 140` | `e2e` job, artifact `bench-report` | proving latency, 139 concurrent transacts, per-slot landing, CU, root-ring eviction at exactly 128 |
 | migration e2e | `node scripts/migrate-e2e.mjs --new-vault <id>` | `e2e` job (fresh validator) | stage → old-vault unshield to PDA → permissionless Execute → new-vault note; PDA emptied; staging closed; refund |
-| launchpad e2e | `node scripts/launch-e2e.mjs` | `e2e` job (fresh validator) | launch (mint without authorities, metadata, pool, frozen table) → three agent votes recorded, stranger and out-of-bounds votes refused, fee unchanged within the epoch → public buy refused → relayed private buy (claim key holds exactly the quote and the reserve; books match) → claim shield signed by the claim key only → harvest (treasury half, pool rate rises, second harvest refused) → relayed private sell with tip → SOL claim → direct exit call refused → buyer key absent from every launchpad transaction → epoch boundary: program's rolled fee equals the SDK's `rolled` |
-| indexer tests | `npm test -w indexer` | `ts` job | RPC failover and deferral, launch/trade/harvest/graduate ingestion with idempotent replays, fee vote/roll events from the launch program's own history |
+| launchpad e2e | `node scripts/launch-e2e.mjs` | `e2e` job (fresh validator) | launch (mint without authorities, metadata, pool, frozen table) → three agent votes recorded, stranger and out-of-bounds votes refused, fee unchanged within the epoch → retired public-trade tag and premature migrate refused → relayed private buy (claim key holds exactly the quote and the reserve; books match) → claim shield signed by the claim key only → harvest (treasury half, pool rate rises, second harvest refused) → relayed private sell with tip → SOL claim → direct exit call refused → epoch boundary: program's rolled fee equals the SDK's `rolled` → buy past the end of the curve (capped, refund at the claim key, graduated at ≈20 SOL) → vote, harvest and a late private buy refused → `migrate` into Raydium CP-Swap cloned from mainnet-beta (pool owned by CP-Swap, vault balances to the lamport, LP supply 0, migrate PDA gone, treasury receipts, second migrate refused) → buyer key absent from every launchpad transaction |
+| indexer tests | `npm test -w indexer` | `ts` job | RPC failover and deferral, launch/trade/harvest/graduate/migrate ingestion with idempotent replays, fee vote/roll events from the launch program's own history, metadata upload validation/store/rate limit |
 | agents tests | `npm test -w agents` | `ts` job | model output parsing, snapping to the policy grid, when a vote is re-sent; Orbio OAuth: PKCE/state, single-use state, one refresh under concurrency, new refresh token persisted before use, refusal marks the connection disconnected, pair survives a restart |
 | relayer tests | `npm test -w relayer` | `ts` job | priority-fee oracle, nullifier idempotency |
 | ceremony check | `node circuits/scripts/ceremony.mjs check --fetch` | `ceremony` job | r1cs hashes, transcript chain, hosted zkey verification with contribution hashes |
@@ -34,9 +34,12 @@ What each suite covers, how to run it, and what nothing covers yet.
 - **Exit adapters other than the launchpad.** The exit CPI (`exit_target`,
   `exit_data` forwarding, trailing accounts with flags preserved) is exercised
   end-to-end by the launchpad e2e; no swap adapter exists yet.
-- **Launchpad public trading after graduation.** `public_buy`/`public_sell`
-  are unit-free and exercised in e2e only as "refused before graduation";
-  reaching 85 SOL in CI is not done.
+- **Migration fallback config.** The e2e migrates through Raydium's config 0;
+  the path that accepts another config when the config-0 pool was front-run
+  is checked by the program's derivation code but not exercised end-to-end.
+- **Metadata upload over HTTP.** `indexer/src/meta.ts` (sniffing, bounds,
+  content addressing, store, rate limit) is unit-tested; the Fastify route
+  itself is not.
 - **Relayer `/relay` policy for launchpad exits.** The e2e signs with a
   relayer key directly; the HTTP checks (exit target allow-list, tip floor,
   per-token table) are not covered by an automated test.

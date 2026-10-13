@@ -113,9 +113,17 @@ pub struct Curve {
     pub settled_epoch: u64,
     /// Latest vote of each agent, indexed like `Launchpad.agents`.
     pub votes: [Vote; crate::policy::AGENTS],
+    /// The Raydium CP-Swap pool the curve's SOL and remaining tokens moved to at
+    /// migration (`amm.rs`); all-zero until then. Once set the curve is inert:
+    /// no trades, no votes, no harvest — the token trades on the AMM.
+    pub amm_pool: Pubkey,
 }
 impl Curve {
-    pub const LEN: usize = 1 + 1 + 1 + 32 + 32 + 8 * 5 + 1 + 8 * 3 + 2 + 2 + 8 + 32 + 32 + 8 * 3 + 32 + 8 + Vote::LEN * crate::policy::AGENTS;
+    pub const LEN: usize = 1 + 1 + 1 + 32 + 32 + 8 * 5 + 1 + 8 * 3 + 2 + 2 + 8 + 32 + 32 + 8 * 3 + 32 + 8 + Vote::LEN * crate::policy::AGENTS + 32;
+
+    pub fn migrated(&self) -> bool {
+        self.amm_pool != Pubkey::default()
+    }
 
     pub fn load(d: &[u8]) -> Result<Self, ProgramError> {
         let s = Self::try_from_slice(d).map_err(|_| LaunchError::BadAccount)?;
@@ -152,7 +160,7 @@ mod tests {
             disc: DISC_CURVE, bump: 0, intake_bump: 0, mint: Pubkey::new_unique(), token_vault: Pubkey::new_unique(), virtual_sol: 0, virtual_token: 0, real_sol: 0, real_token: 0,
             fees_accrued: 0, graduated: 0, created_slot: 0, total_supply: 0, curve_supply: 0, trade_fee_bps: 0, holder_share_bps: 0, graduation_lamports: 0,
             protocol_treasury: Pubkey::new_unique(), vault_program: Pubkey::new_unique(), buys: 0, sells: 0, sol_volume: 0, lookup_table: Pubkey::new_unique(),
-            settled_epoch: 7, votes: [Vote { fee_bps: 100, holder_bps: 5000, slot: 1 }, Vote::default(), Vote::default(), Vote::default()],
+            settled_epoch: 7, votes: [Vote { fee_bps: 100, holder_bps: 5000, slot: 1 }, Vote::default(), Vote::default(), Vote::default()], amm_pool: Pubkey::default(),
         };
         let mut buf = vec![0u8; Curve::LEN];
         c.store(&mut buf).unwrap();

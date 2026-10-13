@@ -9,11 +9,15 @@
  *
  * Every decision (and every failure to decide) is kept in a public log at
  * GET /log so anyone can audit what each agent said and did.
+ *
+ * The service is also the launchpad's keeper: when a curve graduates (20 SOL)
+ * it sends the permissionless `migrate` that turns the curve into a Raydium
+ * pool. From then on the agents have nothing to set for that token.
  */
 import Fastify from "fastify";
 import cors from "@fastify/cors";
-import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction, sendAndConfirmTransaction } from "@solana/web3.js";
-import { LAUNCH_PROGRAM_ID, curvePda, decodeCurve, epochOf, policy, rolled, voteIx, type CurveState } from "@scash/sdk";
+import { ComputeBudgetProgram, Connection, Keypair, PublicKey, Transaction, TransactionInstruction, sendAndConfirmTransaction } from "@solana/web3.js";
+import { LAUNCH_PROGRAM_ID, curvePda, decodeCurve, epochOf, migrateIx, policy, raydium, rolled, voteIx, type CurveState } from "@scash/sdk";
 import { parseDecision, prompt, shouldSend, type Decision, type TokenView } from "./decide.js";
 import { complete, keyEnvFor, parseModelSpec, type ModelSpec } from "./models.js";
 import { Orbio } from "./orbio.js";
@@ -111,7 +115,7 @@ const conn = new Connection(RPC, "confirmed");
 console.log(`[agents] program ${PROGRAM.toBase58()}, indexer ${INDEXER}`);
 agents.forEach((a) => console.log(`[agents] agent ${a.index}: ${a.key.publicKey.toBase58()} via ${a.model.provider}:${a.model.model}`));
 
-interface LaunchRow { mint: string; symbol: string; decimals: number; graduated: number }
+interface LaunchRow { mint: string; symbol: string; decimals: number; graduated: number; amm_pool: string | null }
 interface TradeRow { side: "buy" | "sell"; sol: string; private: number; slot: number }
 
 async function getJson<T>(url: string): Promise<T> {
@@ -159,8 +163,34 @@ function hasNewVolume(mint: string, curve: CurveState): boolean {
   return curve.buys + curve.sells > (seenTrades.get(mint) ?? 0n);
 }
 
+/**
+ * Keeper duty: a graduated curve is moved to its Raydium pool. The instruction
+ * is permissionless and deterministic, so the first agent key simply pays the
+ * fee for it; anyone else may send the same instruction. Retried every tick
+ * until the curve records the pool.
+ */
+const migrating = new Set<string>();
+async function migrate(row: LaunchRow, curve: CurveState, mint: PublicKey, slot: bigint) {
+  if (migrating.has(row.mint)) return;
+  migrating.add(row.mint);
+  const payer = agents[0].key;
+  const base: LogEntry = { at: Date.now(), slot: slot.toString(), epoch: epochOf(slot).toString(), agent: 0, agentKey: payer.publicKey.toBase58(), model: "keeper", mint: row.mint, symbol: row.symbol };
+  try {
+    const tx = new Transaction()
+      .add(ComputeBudgetProgram.setComputeUnitLimit({ units: 900_000 }))
+      .add(migrateIx(mint, curve.protocolTreasury, raydium.AMM_CONFIG, PROGRAM));
+    const sig = await sendAndConfirmTransaction(conn, tx, [payer], { commitment: "confirmed" });
+    record({ ...base, decision: { feeBps: 0, holderBps: 0, reason: `graduated at ${(Number(curve.realSol) / 1e9).toFixed(2)} SOL → Raydium pool ${raydium.poolState(mint).toBase58()}` }, sent: sig });
+  } catch (e) {
+    record({ ...base, error: `migrate: ${(e as Error).message}` });
+  } finally {
+    migrating.delete(row.mint);
+  }
+}
+
 async function tick() {
-  const launches = (await getJson<LaunchRow[]>(`${INDEXER}/launches?limit=200`)).filter((l) => l.graduated === 0);
+  // graduated-but-unmigrated curves still need the keeper, so only rows the indexer already shows on the AMM are skipped
+  const launches = (await getJson<LaunchRow[]>(`${INDEXER}/launches?limit=200`)).filter((l) => !l.amm_pool);
   if (launches.length === 0) return;
   const mints = launches.map((l) => new PublicKey(l.mint));
   const { context, value } = await conn.getMultipleAccountsInfoAndContext(mints.map((m) => curvePda(m, PROGRAM)));
@@ -170,7 +200,10 @@ async function tick() {
     const ai = value[i];
     if (!ai) continue;
     const curve = rolled(decodeCurve(new Uint8Array(ai.data)), slot);
-    if (curve.graduated) continue;
+    if (curve.graduated) {
+      if (!curve.ammPool) void migrate(launches[i], curve, mints[i], slot);
+      continue;
+    }
     if (!hasNewVolume(launches[i].mint, curve)) continue;
     seenTrades.set(launches[i].mint, curve.buys + curve.sells);
     let v: TokenView | undefined;

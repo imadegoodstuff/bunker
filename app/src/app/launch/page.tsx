@@ -26,6 +26,7 @@ export default function LaunchListPage() {
 }
 
 function progress(l: LaunchRow) {
+  if (l.graduated || l.amm_pool) return 1;
   const g = BigInt(l.graduation_lamports);
   return g === 0n ? 1 : Math.min(1, Number(BigInt(l.real_sol)) / Number(g));
 }
@@ -39,8 +40,8 @@ function LaunchList() {
           <div className="label">Launched inside the pool</div>
           <h1 className="mt-2 text-3xl tracking-[-0.03em]">Tokens you can buy without a wallet showing up</h1>
           <p className="mt-2 max-w-xl text-sm leading-relaxed text-mute">
-            Every token here is bought and sold from shielded notes. Until a curve graduates there is no public route in: a buyer&apos;s only on-chain
-            footprint is a throwaway key that exists for one transaction.
+            Every token here is bought and sold from shielded notes. Until a curve graduates at 20 SOL there is no public route in: a buyer&apos;s only on-chain
+            footprint is a throwaway key that exists for one transaction. At graduation the curve becomes a Raydium pool with its LP burned.
           </p>
         </div>
       </div>
@@ -50,12 +51,20 @@ function LaunchList() {
         {launches.map((l) => {
           const p = progress(l);
           return (
-            <Link key={l.mint} href={`/launch/${l.mint}`} className="block px-7 py-5 transition-colors hover:bg-white/[0.03]">
+            <Link key={l.mint} href={`/launch/${l.mint}`} className="flex gap-4 px-7 py-5 transition-colors hover:bg-white/[0.03]">
+              {l.image ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={l.image} alt="" className="mt-0.5 h-12 w-12 shrink-0 rounded-xl object-cover" />
+              ) : (
+                <span className="mt-0.5 flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-white/5 font-mono text-xs text-dim">{l.symbol.slice(0, 3)}</span>
+              )}
+              <div className="min-w-0 flex-1">
               <div className="flex items-baseline justify-between gap-4">
                 <div className="flex items-baseline gap-3">
                   <span className="text-lg">{l.name}</span>
                   <span className="font-mono text-xs text-dim">{l.symbol}</span>
-                  {l.graduated ? <span className="rounded-full border border-accent/40 px-2 py-0.5 font-mono text-[10px] uppercase text-accent">graduated</span> : null}
+                  {l.amm_pool ? <span className="rounded-full border border-accent/40 px-2 py-0.5 font-mono text-[10px] uppercase text-accent">on Raydium</span>
+                    : l.graduated ? <span className="rounded-full border border-accent/40 px-2 py-0.5 font-mono text-[10px] uppercase text-accent">graduated</span> : null}
                 </div>
                 <span className="text-xs text-dim">{l.block_time ? timeAgo(l.block_time * 1000) : `slot ${l.slot}`}</span>
               </div>
@@ -63,10 +72,13 @@ function LaunchList() {
                 <div className="h-full rounded-full bg-accent" style={{ width: `${(p * 100).toFixed(1)}%` }} />
               </div>
               <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-mute">
-                <span>{fmtAmount(BigInt(l.real_sol), 9, 2)} / {fmtAmount(BigInt(l.graduation_lamports), 9, 0)} SOL raised</span>
+                {l.amm_pool
+                  ? <span>{fmtAmount(BigInt(l.amm_sol ?? "0"), 9, 2)} SOL + {fmtAmount(BigInt(l.amm_tokens ?? "0"), l.decimals, 0)} {l.symbol} in the pool</span>
+                  : <span>{fmtAmount(BigInt(l.real_sol), 9, 2)} / {fmtAmount(BigInt(l.graduation_lamports), 9, 0)} SOL raised</span>}
                 <span>{l.buys} buys · {l.sells} sells</span>
                 <span>{fmtAmount(BigInt(l.sol_volume), 9, 2)} SOL volume</span>
                 <span>{fmtAmount(BigInt(l.tokens_donated), l.decimals, 0)} {l.symbol} paid to holders</span>
+              </div>
               </div>
             </Link>
           );
@@ -84,16 +96,30 @@ function CreateCard() {
   const router = useRouter();
   const [name, setName] = useState("");
   const [symbol, setSymbol] = useState("");
-  const [uri, setUri] = useState("");
+  const [description, setDescription] = useState("");
+  const [image, setImage] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+
+  const pickImage = (file: File | undefined) => {
+    setErr(null);
+    setImage(null);
+    if (!file) return;
+    if (!["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type)) return setErr("Image must be PNG, JPEG, GIF or WebP");
+    if (file.size > 512 * 1024) return setErr("Image must be 512 KiB or smaller");
+    const r = new FileReader();
+    r.onload = () => setImage(String(r.result));
+    r.onerror = () => setErr("Could not read the image");
+    r.readAsDataURL(file);
+  };
 
   const submit = async () => {
     setErr(null);
     if (!publicKey) return setErr("Connect a wallet");
     if (!name.trim() || !symbol.trim()) return setErr("Name and symbol are required");
-    if (name.length > 32 || symbol.length > 10 || uri.length > 200) return setErr("Name ≤ 32, symbol ≤ 10, URI ≤ 200 characters");
+    if (!image) return setErr("An image is required");
+    if (name.length > 32 || symbol.length > 10 || description.length > 500) return setErr("Name ≤ 32, symbol ≤ 10, description ≤ 500 characters");
     try {
-      const mint = await launch({ name: name.trim(), symbol: symbol.trim().toUpperCase(), uri: uri.trim() }, publicKey, (tx) => sendTransaction(tx, connection));
+      const mint = await launch({ name: name.trim(), symbol: symbol.trim().toUpperCase(), description: description.trim(), image }, publicKey, (tx) => sendTransaction(tx, connection));
       router.push(`/launch/${mint.toBase58()}`);
     } catch (e) {
       setErr((e as Error).message);
@@ -108,15 +134,29 @@ function CreateCard() {
         No shielded wallet is needed to launch — only to trade.
       </p>
       <div className="mt-4 space-y-3">
+        <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-dashed border-line p-3 transition-colors hover:border-accent/50">
+          {image ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={image} alt="" className="h-14 w-14 rounded-lg object-cover" />
+          ) : (
+            <span className="flex h-14 w-14 items-center justify-center rounded-lg bg-white/5 font-mono text-[10px] uppercase text-dim">image</span>
+          )}
+          <span className="text-xs leading-relaxed text-mute">
+            <span className="text-fg">{image ? "Image chosen" : "Choose an image (required)"}</span>
+            <br />PNG, JPEG, GIF or WebP, up to 512 KiB. Hosted immutably, content-addressed.
+          </span>
+          <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" className="hidden" onChange={(e) => pickImage(e.target.files?.[0])} />
+        </label>
         <input className="input" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} maxLength={32} />
         <input className="input font-mono uppercase" placeholder="SYMBOL" value={symbol} onChange={(e) => setSymbol(e.target.value)} maxLength={10} />
-        <input className="input font-mono text-[13px]" placeholder="Metadata URI (optional)" value={uri} onChange={(e) => setUri(e.target.value)} maxLength={200} />
+        <textarea className="input min-h-[4.5rem] text-[13px]" placeholder="Description (optional)" value={description} onChange={(e) => setDescription(e.target.value)} maxLength={500} />
       </div>
       <dl className="mt-4 space-y-1.5 text-xs">
         <Row k="Supply" v="1,000,000,000 · 6 decimals" />
         <Row k="On the curve" v="793,100,000 (79.3%)" />
-        <Row k="Graduates at" v="85 SOL raised" />
-        <Row k="Trading fee" v="0.5–3%, set per token by four AI agents each epoch · 50–100% of it to holders" />
+        <Row k="Graduates at" v="20 SOL raised" />
+        <Row k="Then" v="curve SOL + the reserved 20.7% of supply become a Raydium pool; LP burned" />
+        <Row k="Trading fee" v="0.5–3% until graduation, set per token by four AI agents each epoch · 50–100% of it to holders" />
         <Row k="Your privileges" v="none" strong />
       </dl>
       {err && <p className="mt-3 text-sm text-bad">{err}</p>}
@@ -136,8 +176,8 @@ function WhatIsPublic() {
     <section className="glass p-5 text-xs leading-relaxed">
       <div className="label">What stays public</div>
       <ul className="mt-3 space-y-2 text-mute">
-        <li><span className="text-fg">The curve.</span> Reserves, every trade&apos;s size and time, fees, graduation. Anyone can chart it.</li>
-        <li><span className="text-fg">The creator.</span> Whoever paid the launch rent.</li>
+        <li><span className="text-fg">The curve.</span> Reserves, every trade&apos;s size and time, fees, graduation, the Raydium pool it becomes. Anyone can chart it.</li>
+        <li><span className="text-fg">The creator.</span> Whoever paid the launch rent, and the image and text they uploaded.</li>
         <li><span className="text-fg">One throwaway key per trade.</span> Funded by the vault, emptied by the claim, never reused, never linked to a wallet.</li>
       </ul>
       <div className="label mt-5">What does not exist on-chain</div>

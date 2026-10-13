@@ -9,9 +9,9 @@ import {
   ShieldedWallet, MerkleTree, assetId, initializeIx, createPoolIx, configPda, treePda, poolPda, decodePool, decodeTree,
   amountForBurn, amountForMint, sharesForDeposit, sharesForWithdraw, staticAddresses, PROGRAM_ID, createLookupTable, fetchLookupTable, buildV0, TOKEN_2022_PROGRAM_ID,
   LAUNCH_PROGRAM_ID, launchpadPda, curvePda, intakePda, intakeAta, claimAta, claimKeypair, decodeCurve, decodeLaunchpad, decodeTokenMetadata,
-  defaultLaunchpadParams, initLaunchpadIx, launchIx, harvestIx, publicBuyIx, exitData, exitAccounts, EXIT_BUY, EXIT_SELL,
+  defaultLaunchpadParams, initLaunchpadIx, launchIx, harvestIx, exitData, exitAccounts, EXIT_BUY, EXIT_SELL,
   fetchClaimRents, quotePrivateBuy, quotePrivateSell, buyReserve, claimShieldAccounts, closeTokenAccountIx, launchLookupTableIxs, lookupTableCovers, spotPrice,
-  voteIx, rolled, policy, epochOf,
+  voteIx, rolled, policy, epochOf, migrateIx, ammMigratePda, raydium, TOKEN_PROGRAM_ID, associatedTokenAddress,
 } from "../sdk/dist/index.js";
 
 const { values } = parseArgs({ options: { rpc: { type: "string", default: "http://127.0.0.1:8899" }, keypair: { type: "string", default: "keypairs/deployer.json" } } });
@@ -61,7 +61,7 @@ const relayer = Keypair.generate();
 const treasury = Keypair.generate();
 const agents = [0, 1, 2, 3].map(() => Keypair.generate()); // four fee-policy voters, one model each in production
 for (const k of [alice, relayer, ...agents]) {
-  await sendAndConfirmTransaction(conn, new Transaction().add(SystemProgram.transfer({ fromPubkey: payer.publicKey, toPubkey: k.publicKey, lamports: 20 * LAMPORTS_PER_SOL })), [payer]);
+  await sendAndConfirmTransaction(conn, new Transaction().add(SystemProgram.transfer({ fromPubkey: payer.publicKey, toPubkey: k.publicKey, lamports: 40 * LAMPORTS_PER_SOL })), [payer]);
 }
 const seed = new Uint8Array(32).fill(42);
 const aliceW = await ShieldedWallet.fromSeed(seed);
@@ -134,16 +134,17 @@ const apply = async (built, asset) => {
 };
 const solPool = async () => decodePool(new Uint8Array((await conn.getAccountInfo(poolPda(SOL))).data));
 
-// --- 2. alice shields 10 SOL (the only public act she ever performs)
+// --- 2. alice shields 30 SOL (the only public act she ever performs)
 let built = await aliceW.buildTransact({
-  asset: solAsset, mint: SOL, pool: await solPool(), tree, chainTree: await chainTree(), artifacts, kind: "shield", amount: 10n * BigInt(LAMPORTS_PER_SOL),
+  asset: solAsset, mint: SOL, pool: await solPool(), tree, chainTree: await chainTree(), artifacts, kind: "shield", amount: 30n * BigInt(LAMPORTS_PER_SOL),
   relayer: alice.publicKey, relayerDest: alice.publicKey, relayerFee: 0n, payer: alice.publicKey, depositor: alice.publicKey,
 });
-await send([built.instruction], [alice], "alice: shield 10 SOL");
+await send([built.instruction], [alice], "alice: shield 30 SOL");
 await apply(built, solAsset);
 
-// --- 3. public buying is refused before graduation
-await expectFail(send([publicBuyIx(relayer.publicKey, mint.publicKey, 1_000_000n, 0n)], [relayer], "public buy before graduation"), /0xa|NotGraduated/, "curve is shielded-only");
+// --- 3. there is no public route onto the curve, and nothing to migrate before graduation
+await expectFail(send([{ programId: LAUNCH_PROGRAM_ID, keys: [{ pubkey: curvePda(mint.publicKey), isSigner: false, isWritable: true }], data: Buffer.from(new Uint8Array([5, ...new Uint8Array(16)])) }], [relayer], "public buy"), /error: 0x0(?![0-9a-f])|InvalidInstruction/, "curve is shielded-only: tag 5 is unassigned");
+await expectFail(send([migrateIx(mint.publicKey, treasury.publicKey)], [relayer], "migrate before graduation"), /0x12\b|NotMigratable/, "migration waits for graduation");
 
 // --- 4. private buy: unshield 2 SOL to the curve, tokens land at a throwaway claim key
 const rents = await fetchClaimRents(conn);
@@ -270,8 +271,82 @@ await expectFail(
   log(`fee policy rolled: ${before.tradeFeeBps} → ${after.tradeFeeBps} bps, holder share ${before.holderShareBps} → ${after.holderShareBps} (epoch ${after.settledEpoch})`);
 }
 
-// --- 11. what is public
-const sigs = await conn.getSignaturesForAddress(LAUNCH_PROGRAM_ID, { limit: 30 });
+// --- 11. graduation at 20 SOL: the buy that crosses the line takes the last tokens, pays only for them, and the curve freezes
+let gradFees, gradHolderBps, gradRealSol, vaultBefore;
+{
+  c = await curve();
+  const claim3 = claimKeypair(seed, 2n);
+  const gradBuy = 25n * BigInt(LAMPORTS_PER_SOL); // more than the curve has left to sell
+  const sp3 = await solPool();
+  const delivered3 = amountForBurn(sp3, sharesForWithdraw(sp3, gradBuy)) - relayerFee;
+  const gq = quotePrivateBuy(rolled(c, BigInt(await conn.getSlot("confirmed"))), delivered3, rents, claimBudget);
+  assert(gq.out === c.realToken && gq.refund > 0n, `the crossing buy is capped to the ${fmtT(c.realToken)} tokens left and refunds ${fmt(gq.refund)}`);
+  log(`graduation buy: ${fmt(delivered3)} delivered → ${fmtT(gq.out)} ${meta.symbol} for ${fmt(gq.net)} (+ fee ${fmt(gq.fee)}), ${fmt(gq.refund)} refunded`);
+  built = await aliceW.buildTransact({
+    asset: solAsset, mint: SOL, pool: sp3, tree, chainTree: await chainTree(), artifacts, kind: "unshield", amount: gradBuy,
+    recipient: intakePda(mint.publicKey), relayer: relayer.publicKey, relayerDest: relayer.publicKey, relayerFee, payer: relayer.publicKey,
+    exitTarget: LAUNCH_PROGRAM_ID, exitData: exitData(EXIT_BUY, claim3.publicKey, claimBudget, gq.out),
+    exitAccounts: exitAccounts(EXIT_BUY, mint.publicKey, claim3.publicKey, relayer.publicKey),
+  });
+  await send([built.instruction], [relayer], "alice: private buy that sells the curve out (relayed)");
+  await apply(built, solAsset);
+  c = await curve();
+  assert(c.graduated && c.realToken === 0n, "curve graduated: sold out");
+  assert(c.realSol >= 19_900_000_000n && c.realSol <= 20_100_000_000n, `≈20 SOL raised (${fmt(c.realSol)})`);
+  const claim3Lamports = BigInt(await conn.getBalance(claim3.publicKey));
+  assert(claim3Lamports === rents.claimRent + 2n * rents.nullifierRent + claimBudget + gq.refund, `refund landed at the claim key (${fmt(claim3Lamports)})`);
+  assert(BigInt((await conn.getTokenAccountBalance(claimAta(claim3.publicKey, mint.publicKey))).value.amount) === gq.out, "last tokens at the claim key");
+  log(`graduated at ${fmt(c.realSol)}; ${fmt(c.feesAccrued)} of fees still on the curve; ${c.buys} buys / ${c.sells} sells`);
+  gradFees = c.feesAccrued; gradHolderBps = c.holderShareBps; gradRealSol = c.realSol;
+  vaultBefore = BigInt((await conn.getTokenAccountBalance(c.tokenVault)).value.amount);
+  assert(vaultBefore === params.totalSupply - params.curveSupply, "the vault keeps exactly the reserved supply for the AMM");
+
+  // frozen: votes, harvest and further private trades are refused; alice's notes stay unspent
+  await expectFail(send([voteIx(agents[0].publicKey, mint.publicKey, 100, 5000)], [agents[0]], "vote after graduation"), /0x11\b|Migrated/, "no fee left for the agents to set");
+  await expectFail(send([harvestIx(mint.publicKey, treasury.publicKey)], [relayer], "harvest after graduation"), /0x11\b|Migrated/, "the last fees travel with the curve to the AMM");
+  const claim4 = claimKeypair(seed, 3n);
+  const late = await aliceW.buildTransact({
+    asset: solAsset, mint: SOL, pool: await solPool(), tree, chainTree: await chainTree(), artifacts, kind: "unshield", amount: 1n * BigInt(LAMPORTS_PER_SOL),
+    recipient: intakePda(mint.publicKey), relayer: relayer.publicKey, relayerDest: relayer.publicKey, relayerFee, payer: relayer.publicKey,
+    exitTarget: LAUNCH_PROGRAM_ID, exitData: exitData(EXIT_BUY, claim4.publicKey, claimBudget, 0n),
+    exitAccounts: exitAccounts(EXIT_BUY, mint.publicKey, claim4.publicKey, relayer.publicKey),
+  });
+  await expectFail(send([late.instruction], [relayer], "private buy after graduation"), /0x11\b|Migrated/, "the curve no longer trades; the whole unshield reverts");
+}
+
+// --- 12. migration: the curve becomes a Raydium CP-Swap pool with its SOL and the reserved supply; the LP is burned
+{
+  const treasuryBefore = BigInt(await conn.getBalance(treasury.publicKey));
+  const pool = raydium.poolState(mint.publicKey);
+  await send([migrateIx(mint.publicKey, treasury.publicKey)], [relayer], "migrate: curve → Raydium CP-Swap pool (permissionless, sent by the relayer)");
+  c = await curve();
+  assert(c.ammPool && c.ammPool.equals(pool), "curve records the pool");
+  assert(c.realSol === 0n && c.realToken === 0n && c.feesAccrued === 0n, "curve emptied");
+  const poolAcc = await conn.getAccountInfo(pool);
+  assert(poolAcc && poolAcc.owner.equals(raydium.CP_SWAP_PROGRAM_ID), "pool state owned by CP-Swap");
+  const { token0, wsolFirst } = raydium.ordered(mint.publicKey);
+  const bal = async (a) => BigInt((await conn.getTokenAccountBalance(a)).value.amount);
+  const v0 = await bal(raydium.vault(pool, token0));
+  const v1 = await bal(raydium.vault(pool, wsolFirst ? mint.publicKey : raydium.WSOL_MINT));
+  const [solV, tokV] = wsolFirst ? [v0, v1] : [v1, v0];
+  const holder = (gradFees * BigInt(gradHolderBps)) / 10_000n;
+  const protocol = gradFees - holder;
+  assert(solV === gradRealSol + holder - 150_000_000n - 100_000_000n, `pool SOL = raised + holder share of the last fees − Raydium's 0.15 SOL − 0.1 SOL rent reserve (${fmt(solV)})`);
+  assert(tokV === vaultBefore, `pool tokens = the reserved supply (${fmtT(tokV)})`);
+  assert((await bal(c.tokenVault)) === 0n, "curve vault empty");
+  assert((await conn.getTokenSupply(raydium.lpMint(pool))).value.amount === "0", "every LP token was burned; nobody can pull the liquidity");
+  const mig = ammMigratePda(mint.publicKey);
+  assert((await conn.getBalance(mig)) === 0 && (await conn.getAccountInfo(associatedTokenAddress(mig, raydium.WSOL_MINT, TOKEN_PROGRAM_ID))) === null && (await conn.getAccountInfo(claimAta(mig, mint.publicKey))) === null, "the migrate PDA and its token accounts are gone");
+  const treasuryDelta = BigInt(await conn.getBalance(treasury.publicKey)) - treasuryBefore;
+  assert(treasuryDelta >= protocol + 20_000_000n && treasuryDelta <= protocol + 100_000_000n, `treasury got the protocol share plus the unused rent reserve (${fmt(treasuryDelta)})`);
+  assert(BigInt(await conn.getBalance(curvePda(mint.publicKey))) === BigInt(await conn.getMinimumBalanceForRentExemption(352)), "curve holds only its rent");
+  await expectFail(send([migrateIx(mint.publicKey, treasury.publicKey)], [relayer], "migrate again"), /0x11\b|Migrated/, "migration happens once");
+  const price = Number(solV) / Number(tokV);
+  log(`pool ${pool.toBase58()}: ${fmt(solV)} + ${fmtT(tokV)} ${meta.symbol} (${(price * 1e6 / LAMPORTS_PER_SOL).toExponential(3)} SOL/${meta.symbol}), LP supply 0 — trades at ${raydium.swapUrl(mint.publicKey)}`);
+}
+
+// --- 13. what is public
+const sigs = await conn.getSignaturesForAddress(LAUNCH_PROGRAM_ID, { limit: 40 });
 const buyers = new Set();
 for (const s of sigs) {
   const tx = await conn.getTransaction(s.signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });

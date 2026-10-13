@@ -23,7 +23,11 @@ pub fn metadata_tlv_len(name: usize, symbol: usize, uri: usize) -> usize {
 }
 
 pub fn associated_token_address(owner: &Pubkey, mint: &Pubkey) -> Pubkey {
-    Pubkey::find_program_address(&[owner.as_ref(), TOKEN_2022_PROGRAM_ID.as_ref(), mint.as_ref()], &ASSOCIATED_TOKEN_PROGRAM_ID).0
+    associated_token_address_for(owner, mint, &TOKEN_2022_PROGRAM_ID)
+}
+
+pub fn associated_token_address_for(owner: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[owner.as_ref(), token_program.as_ref(), mint.as_ref()], &ASSOCIATED_TOKEN_PROGRAM_ID).0
 }
 
 pub fn token_account_amount(acc: &AccountInfo) -> Option<u64> {
@@ -173,4 +177,55 @@ pub fn create_ata_idempotent<'a>(
         data: vec![1u8],
     };
     invoke(&ix, &[payer.clone(), ata.clone(), owner.clone(), mint.clone(), system.clone(), token_program.clone(), ata_program.clone()])
+}
+
+/// CreateIdempotent(1) paid by a PDA this program signs for. `extra` accounts are
+/// appended to the CPI (the ATA program ignores trailing accounts) so that the
+/// runtime syncs direct lamport edits made to them before this call; see
+/// `process_migrate` for why the curve has to ride along.
+#[allow(clippy::too_many_arguments)]
+pub fn create_ata_idempotent_signed<'a>(
+    ata_program: &AccountInfo<'a>,
+    payer: &AccountInfo<'a>,
+    ata: &AccountInfo<'a>,
+    owner: &AccountInfo<'a>,
+    mint: &AccountInfo<'a>,
+    system: &AccountInfo<'a>,
+    token_program: &AccountInfo<'a>,
+    extra: &[AccountInfo<'a>],
+    seeds: &[&[&[u8]]],
+) -> ProgramResult {
+    let mut accounts = vec![
+        AccountMeta::new(*payer.key, true),
+        AccountMeta::new(*ata.key, false),
+        AccountMeta::new_readonly(*owner.key, false),
+        AccountMeta::new_readonly(*mint.key, false),
+        AccountMeta::new_readonly(*system.key, false),
+        AccountMeta::new_readonly(*token_program.key, false),
+    ];
+    let mut infos = vec![payer.clone(), ata.clone(), owner.clone(), mint.clone(), system.clone(), token_program.clone(), ata_program.clone()];
+    for e in extra {
+        accounts.push(AccountMeta::new(*e.key, false));
+        infos.push(e.clone());
+    }
+    let ix = Instruction { program_id: *ata_program.key, accounts, data: vec![1u8] };
+    invoke_signed(&ix, &infos, seeds)
+}
+
+/// SyncNative(17): make a wrapped-SOL account's balance match its lamports.
+pub fn sync_native<'a>(token_program: &AccountInfo<'a>, account: &AccountInfo<'a>) -> ProgramResult {
+    let ix = Instruction { program_id: *token_program.key, accounts: vec![AccountMeta::new(*account.key, false)], data: vec![17u8] };
+    invoke(&ix, &[account.clone(), token_program.clone()])
+}
+
+/// Burn(8).
+pub fn burn<'a>(token_program: &AccountInfo<'a>, account: &AccountInfo<'a>, mint: &AccountInfo<'a>, owner: &AccountInfo<'a>, amount: u64, seeds: &[&[&[u8]]]) -> ProgramResult {
+    let mut data = vec![8u8];
+    data.extend_from_slice(&amount.to_le_bytes());
+    let ix = Instruction {
+        program_id: *token_program.key,
+        accounts: vec![AccountMeta::new(*account.key, false), AccountMeta::new(*mint.key, false), AccountMeta::new_readonly(*owner.key, true)],
+        data,
+    };
+    run(&ix, &[account.clone(), mint.clone(), owner.clone(), token_program.clone()], seeds)
 }

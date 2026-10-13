@@ -309,6 +309,15 @@ test("launchpad events: a launch row is created and every trade/harvest/graduate
   l = db.launch(mintB58)!;
   assert.equal(l.graduated, 1);
   assert.equal(l.real_token, "0");
+  assert.equal(l.amm_pool, null);
+  const pool = bytes32(8);
+  const migrate = line([te.encode("migrate"), mint, pool, u64(19_750_000_000n), u64(206_900_000_000_000n), u64(2_021_000_000_000n)]);
+  scanner.ingest("M", tx(15, [migrate]) as never);
+  l = db.launch(mintB58)!;
+  assert.equal(l.amm_pool, new PublicKey(pool).toBase58());
+  assert.equal(l.amm_sol, "19750000000");
+  assert.equal(l.amm_tokens, "206900000000000");
+  assert.equal(l.real_sol, "0");
   const trades = db.trades(mintB58, 10);
   assert.deepEqual(trades.map((t) => t.side), ["sell", "buy"]);
   assert.equal(trades[0].private, 1);

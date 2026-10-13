@@ -51,7 +51,8 @@ interface LaunchpadState {
   load: () => Promise<void>;
   refresh: (mint: string) => Promise<{ curve: CurveState; pool?: PoolState; slot: bigint }>;
   /** Create a token: two wallet transactions (frozen lookup table, then the launch). Returns the mint. */
-  launch: (meta: { name: string; symbol: string; uri: string }, owner: PublicKey, sendTx: (tx: VersionedTransaction) => Promise<string>) => Promise<PublicKey>;
+  /** Uploads the image + metadata to the indexer first (an image is required), then sends the two launch transactions. */
+  launch: (meta: { name: string; symbol: string; description?: string; image: string }, owner: PublicKey, sendTx: (tx: VersionedTransaction) => Promise<string>) => Promise<PublicKey>;
   buy: (mint: string, lamports: bigint) => Promise<void>;
   sell: (mint: string, tokens: bigint) => Promise<void>;
   claim: (rec: ClaimRecord) => Promise<void>;
@@ -191,11 +192,14 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
       return { curve, pool, slot };
     },
 
-    async launch(meta, owner, sendTx) {
+    async launch(input, owner, sendTx) {
       const c = conn();
       const mint = Keypair.generate();
       set({ busy: "launch" });
       try {
+        if (!input.image) throw new Error("an image is required");
+        const hosted = await indexer.uploadMeta({ name: input.name, symbol: input.symbol, description: input.description, image: input.image });
+        const meta = { name: input.name, symbol: input.symbol, uri: hosted.uri };
         const alt = launchLookupTableIxs(owner, mint.publicKey, await c.getSlot("finalized"), PROGRAM_ID);
         let bh = await c.getLatestBlockhash();
         const t1 = buildV0(owner, alt.ixs, bh.blockhash, undefined, { cuLimit: 100_000 });
@@ -214,6 +218,7 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
           virtual_sol: curve.virtualSol.toString(), virtual_token0: curve.virtualToken.toString(), curve_supply: curve.curveSupply.toString(), total_supply: curve.totalSupply.toString(),
           graduation_lamports: curve.graduationLamports.toString(), real_sol: curve.realSol.toString(), real_token: curve.realToken.toString(), virtual_token: curve.virtualToken.toString(),
           graduated: 0, buys: 0, sells: 0, sol_volume: "0", fees_to_treasury: "0", tokens_donated: "0", signature: s2, slot: 0, block_time: Math.floor(Date.now() / 1000),
+          amm_pool: null, amm_sol: null, amm_tokens: null, image: hosted.image,
         };
         set((s) => ({ launches: [row, ...s.launches.filter((l) => l.mint !== row.mint)] }));
         useScash.getState().addLaunchAssets([{ symbol: meta.symbol, name: meta.name, mint: mint.publicKey, decimals: 6, tokenProgram: TOKEN_2022_PROGRAM_ID, denominations: [] }]);
@@ -236,7 +241,7 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
       // quote at the fee the program will charge now; protect min_out with the worst fee the next ~300 slots can bring
       const curve = rolled(stored, slot);
       const worst = { ...curve, tradeFeeBps: worstFeeBps(stored, slot) };
-      if (curve.graduated) throw new Error("this curve has graduated; trade it publicly");
+      if (curve.graduated) throw new Error("this curve has graduated; it trades on Raydium now");
       const rents = get().rents ?? (await fetchClaimRents(conn()));
       const feePolicy = rl.fees.find((f) => f.mint === SOL.toBase58());
       if (!feePolicy) throw new Error("relayer has no SOL policy");
@@ -276,7 +281,7 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
       const curve = rolled(stored, slot);
       const worst = { ...curve, tradeFeeBps: worstFeeBps(stored, slot) };
       if (!pool) throw new Error("token pool missing");
-      if (curve.graduated) throw new Error("this curve has graduated; trade it publicly");
+      if (curve.graduated) throw new Error("this curve has graduated; it trades on Raydium now");
       const feePolicy = rl.fees.find((f) => f.mint === SOL.toBase58());
       if (!feePolicy) throw new Error("relayer has no SOL policy");
       // the relayer is tipped in SOL out of the proceeds: its SOL minimum, which already covers its costs

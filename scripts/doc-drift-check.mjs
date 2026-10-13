@@ -52,6 +52,19 @@ const graduationSol = (() => {
   if (!m) throw new Error("graduationLamports default not found in sdk/src/launch.ts");
   return Number(m[1].replace(/_/g, "")) / 1e9;
 })();
+// migration facts: the rent reserve (processor.rs) and the Raydium CP-Swap program id (amm.rs)
+const migrationReserveSol = (() => {
+  const m = read("programs/scash_launch/src/processor.rs").match(/pub const MIGRATION_RENT_RESERVE: u64 = ([0-9_]+);/);
+  if (!m) throw new Error("MIGRATION_RENT_RESERVE not found");
+  return Number(m[1].replace(/_/g, "")) / 1e9;
+})();
+const cpSwapId = (() => {
+  const m = read("programs/scash_launch/src/amm.rs").match(/pub const CP_SWAP_PROGRAM_ID: Pubkey = solana_program::pubkey!\("([1-9A-HJ-NP-Za-km-z]+)"\)/);
+  if (!m) throw new Error("CP_SWAP_PROGRAM_ID not found in amm.rs");
+  if (!read("sdk/src/launch.ts").includes(`"${m[1]}"`)) fail(`SDK does not carry the CP-Swap program id ${m[1]} from amm.rs`);
+  if (!read(".github/workflows/ci.yml").includes(`--clone-upgradeable-program ${m[1]}`)) fail(`CI validator does not clone the CP-Swap program ${m[1]}`);
+  return m[1];
+})();
 // fee policy constants (programs/scash_launch/src/policy.rs)
 const policyConst = (name) => {
   const m = read("programs/scash_launch/src/policy.rs").match(new RegExp(`pub const ${name}: u(?:size|\\d+) = ([0-9_]+(?: \\* EPOCH_SLOTS)?);`));
@@ -73,6 +86,10 @@ const facts = [
   { doc: "audit/KNOWN_ISSUES.md", re: /Fee policy is four agent keys with no brake/, what: "fee policy accepted risk" },
   { doc: "SPEC.md", re: new RegExp(`\\+ ${exitDataLen} of exit data`), what: `exit data is ${exitDataLen} bytes` },
   { doc: "SPEC.md", re: new RegExp(`graduation at ${graduationSol} SOL`), what: `graduation threshold ${graduationSol} SOL` },
+  { doc: "SPEC.md", re: new RegExp(`create_pool_fee − ${migrationReserveSol} SOL`), what: `migration rent reserve ${migrationReserveSol} SOL` },
+  { doc: "SECURITY.md", re: new RegExp(`A ${migrationReserveSol} SOL\\s+reserve`), what: `migration rent reserve in SECURITY §15` },
+  { doc: "SPEC.md", re: /Raydium CP-Swap pool/, what: `migration target is Raydium CP-Swap (${cpSwapId})` },
+  { doc: "audit/KNOWN_ISSUES.md", re: /Migration depends on Raydium CP-Swap/, what: "migration dependency accepted risk" },
   { doc: "SPEC.md", re: /empty dummy ciphertext and outgoing record/, what: "unshield omits dummy ciphertext and outgoing record" },
   { doc: "SECURITY.md", re: /refuses to run at the top level/, what: "launchpad exit refuses top-level calls" },
   { doc: "SECURITY.md", re: new RegExp(`refuses anything under \\*\\*${minBits}\\*\\*`), what: `passphrase floor ${minBits} bits` },
@@ -110,6 +127,9 @@ const stale = [
   /Automatic RPC failover is not implemented/, // superseded by RPC_URLS in §14
   /transient program-owned token account/, // SPEC §11 before the launchpad: exits never worked that way
   /funds the relayer gas pool/, // SPEC §13 before the correction: Distribute splits vault/team only
+  /public_buy|public_sell/, // the launchpad's public curve trades were removed: a graduated curve migrates to Raydium
+  /graduation at 85 SOL|after 85 SOL|No liquidity migration/, // graduation is 20 SOL and migrates
+  /public trading continues on the same curve/i,
 ];
 for (const [name, text] of Object.entries(docs)) {
   text.split("\n").forEach((line, i) => {

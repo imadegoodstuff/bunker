@@ -5,6 +5,8 @@ import { Db } from "./db.js";
 import { Scanner } from "./scanner.js";
 import { contiguousPrefix } from "./paging.js";
 import { inspectProgram, type ProgramInfo } from "./program.js";
+import { buildMeta, MetaError, MetaStore, RateLimit } from "./meta.js";
+import { dirname, join } from "node:path";
 
 const RPC = process.env.RPC_URL ?? "https://api.mainnet-beta.solana.com";
 const PROGRAM = new PublicKey(process.env.PROGRAM_ID ?? "89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR");
@@ -12,6 +14,10 @@ const PROGRAM = new PublicKey(process.env.PROGRAM_ID ?? "89TrDDtwYTkrvxGmfYnSz6E
 const LAUNCH = process.env.LAUNCH_PROGRAM_ID === "" ? undefined : new PublicKey(process.env.LAUNCH_PROGRAM_ID ?? "861VJkPL2yUYL1DTCToeziREP4XyraihkqbTM1irFZ3k");
 const DB_PATH = process.env.DB_PATH ?? "./scash-indexer.sqlite";
 const PORT = Number(process.env.PORT ?? 8788);
+// Launch metadata (token image + JSON) lives next to the database and is served from PUBLIC_URL/meta/…
+const META_DIR = process.env.META_DIR ?? join(dirname(DB_PATH), "meta");
+const PUBLIC_URL = process.env.PUBLIC_URL ?? `http://localhost:${PORT}`;
+const META_UPLOADS_PER_HOUR = Number(process.env.META_UPLOADS_PER_HOUR ?? 20);
 
 // RPC_URLS: comma-separated fallbacks tried in order after RPC_URL whenever the
 // primary throws or returns null for a confirmed signature.
@@ -36,8 +42,10 @@ void scanner.start();
 let programInfo: ProgramInfo = await inspectProgram(conn, PROGRAM);
 setInterval(() => void inspectProgram(conn, PROGRAM).then((p) => (programInfo = p)), 10 * 60 * 1000).unref();
 
-const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
+const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" }, trustProxy: true });
 await app.register(cors, { origin: true });
+const meta = new MetaStore(META_DIR);
+const metaLimit = new RateLimit(META_UPLOADS_PER_HOUR, 60 * 60 * 1000);
 
 const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64");
 
@@ -112,15 +120,59 @@ app.get<{ Querystring: { sinceSlot?: string; days?: string } }>("/stats", async 
  * public on-chain already (curve reserves, trade sizes, fee flows); what is
  * absent is who traded — a private trade's only wallet is a throwaway claim key.
  */
+/** The token image for a launch whose metadata this indexer hosts (`uri` under PUBLIC_URL/meta); null for foreign URIs. */
+const imageCache = new Map<string, string | null>();
+function imageOf(uri: unknown): string | null {
+  if (typeof uri !== "string") return null;
+  const prefix = `${PUBLIC_URL.replace(/\/+$/, "")}/meta/`;
+  if (!uri.startsWith(prefix)) return null;
+  const cached = imageCache.get(uri);
+  if (cached !== undefined) return cached;
+  let image: string | null = null;
+  try {
+    const f = meta.get(uri.slice(prefix.length));
+    const j = f ? (JSON.parse(f.bytes.toString("utf8")) as { image?: unknown }) : undefined;
+    if (typeof j?.image === "string" && j.image.startsWith(prefix)) image = j.image;
+  } catch { /* not ours or malformed: no image */ }
+  imageCache.set(uri, image);
+  return image;
+}
+const withImage = (l: Record<string, unknown>) => ({ ...l, image: imageOf(l.uri) });
+
 app.get<{ Querystring: { limit?: string; offset?: string } }>("/launches", async (req) =>
-  db.launches(Math.min(Number(req.query.limit ?? 50), 200), Number(req.query.offset ?? 0))
+  db.launches(Math.min(Number(req.query.limit ?? 50), 200), Number(req.query.offset ?? 0)).map(withImage)
 );
 app.get<{ Params: { mint: string }; Querystring: { limit?: string; beforeSlot?: string } }>("/launches/:mint", async (req, reply) => {
   const l = db.launch(req.params.mint);
   if (!l) return reply.code(404).send({ error: "unknown launch" });
   const trades = db.trades(req.params.mint, Math.min(Number(req.query.limit ?? 50), 500), req.query.beforeSlot ? Number(req.query.beforeSlot) : undefined);
   const feeEvents = db.feeEvents(req.params.mint, 100);
-  return { ...l, trades, feeEvents };
+  return { ...withImage(l), trades, feeEvents };
+});
+
+/**
+ * Launch metadata. The app uploads the token's image (required) with its
+ * name/symbol/description before the launch transaction; the mint's URI then
+ * points at the JSON written here. Content-addressed and immutable; the only
+ * writable endpoint of the indexer, so it is bounded (512 KiB, sniffed image
+ * types, per-IP rate limit) and holds nothing that identifies the uploader.
+ */
+app.post<{ Body: { name?: string; symbol?: string; description?: string; image?: string } }>("/meta", { bodyLimit: 1024 * 1024 }, async (req, reply) => {
+  if (!metaLimit.allow(req.ip)) return reply.code(429).send({ error: "too many uploads from this address; try again later" });
+  try {
+    const b = req.body ?? {};
+    const files = buildMeta({ name: b.name ?? "", symbol: b.symbol ?? "", description: b.description, image: b.image ?? "" }, PUBLIC_URL);
+    meta.put(files);
+    return { uri: files.uri, image: files.image };
+  } catch (e) {
+    if (e instanceof MetaError) return reply.code(400).send({ error: e.message });
+    throw e;
+  }
+});
+app.get<{ Params: { file: string } }>("/meta/:file", async (req, reply) => {
+  const f = meta.get(req.params.file);
+  if (!f) return reply.code(404).send({ error: "not found" });
+  return reply.header("Cache-Control", "public, max-age=31536000, immutable").type(f.mime).send(f.bytes);
 });
 
 await app.listen({ port: PORT, host: "0.0.0.0" });

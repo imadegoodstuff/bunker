@@ -67,8 +67,28 @@ pub fn quote_buy_exact_out(r: &Reserves, token_out: u64) -> Result<u64, LaunchEr
     Ok((x2 - x) as u64)
 }
 
+/// `buy`, except that a buy reaching past the last token takes every token
+/// left and only the lamports they cost: `(out, new virtual token, lamports used)`.
+/// The buyer gets the rest back. This is how the curve sells out cleanly at
+/// graduation instead of refusing the trade that would cross it.
+pub fn buy_capped(r: &Reserves, sol_in: u64) -> Result<(u64, u64, u64), LaunchError> {
+    match buy(r, sol_in) {
+        Ok((out, y2)) => Ok((out, y2, sol_in)),
+        Err(LaunchError::SoldOut) => {
+            let used = quote_buy_exact_out(r, r.real_token)?;
+            Ok((r.real_token, r.virtual_token - r.real_token, used.min(sol_in)))
+        }
+        Err(e) => Err(e),
+    }
+}
+
 pub fn fee(amount: u64, bps: u16) -> Result<u64, LaunchError> {
     u64::try_from((amount as u128) * (bps as u128) / 10_000).map_err(|_| LaunchError::Overflow)
+}
+
+/// The fee that goes with a net amount: `fee_on_net(net) = fee(gross)` where `gross = net + fee`, rounded down.
+pub fn fee_on_net(net: u64, bps: u16) -> Result<u64, LaunchError> {
+    u64::try_from((net as u128) * (bps as u128) / (10_000 - bps as u128)).map_err(|_| LaunchError::Overflow)
 }
 
 #[cfg(test)]
@@ -158,9 +178,13 @@ mod tests {
     #[test]
     fn graduation_sized_buy_sells_most_of_the_supply() {
         let r = fresh();
-        // 85 SOL at these parameters takes roughly 3/4 of the curve supply
+        // the generic fixture (30 SOL virtual): 85 SOL takes roughly 3/4 of the curve supply
         let (out, _) = buy(&r, 85_000_000_000).unwrap();
         assert!(out > 700_000_000_000_000 && out < r.real_token, "{out}");
+        // the mainnet defaults (7.05838 SOL virtual): 20 SOL takes all but a dust of the curve supply
+        let m = Reserves { virtual_sol: 7_058_380_000, ..fresh() };
+        let (out, _) = buy(&m, 20_000_000_000).unwrap();
+        assert!(out <= m.real_token && m.real_token - out < m.real_token / 10_000, "{out}");
     }
 
     #[test]
@@ -168,5 +192,30 @@ mod tests {
         assert_eq!(fee(10_000, 100).unwrap(), 100);
         assert_eq!(fee(1, 100).unwrap(), 0);
         assert_eq!(fee(u64::MAX, 10_000).unwrap(), u64::MAX);
+        // fee_on_net inverts fee: gross = net + fee_on_net(net) pays fee(gross) (up to rounding)
+        for net in [1u64, 999, 1_000_000, 123_456_789_012] {
+            let f = fee_on_net(net, 100).unwrap();
+            assert!(fee(net + f, 100).unwrap().abs_diff(f) <= 1, "{net}");
+        }
+    }
+
+    #[test]
+    fn the_last_buy_is_capped_and_pays_only_for_what_it_gets() {
+        // mainnet defaults: 7.05838 SOL virtual, graduation at 20 SOL, the curve sells out right there
+        let r = Reserves { virtual_sol: 7_058_380_000, real_sol: 0, virtual_token: 1_073_000_000_000_000, real_token: 793_100_000_000_000 };
+        assert_eq!(buy(&r, 25_000_000_000).unwrap_err(), LaunchError::SoldOut);
+        let (out, y2, used) = buy_capped(&r, 25_000_000_000).unwrap();
+        assert_eq!(out, r.real_token);
+        assert_eq!(y2, r.virtual_token - r.real_token);
+        assert!(used > 19_990_000_000 && used < 20_010_000_000, "sells out at ≈20 SOL: {used}");
+        // the product never decreases through the capped path either, and one lamport less does not empty the curve
+        let (x, y) = (r.virtual_sol as u128 + r.real_sol as u128, r.virtual_token as u128);
+        assert!((x + used as u128) * y2 as u128 >= x * y);
+        let (o1, _) = buy(&r, used - 1_000_000).unwrap();
+        assert!(o1 < r.real_token);
+        // a buy that does not cross is unchanged
+        let (o, y, u) = buy_capped(&r, 1_000_000_000).unwrap();
+        assert_eq!((o, y), buy(&r, 1_000_000_000).unwrap());
+        assert_eq!(u, 1_000_000_000);
     }
 }

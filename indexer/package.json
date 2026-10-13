@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json && node --experimental-sqlite dist/index.js",
-    "test": "tsc -p tsconfig.json && node --experimental-sqlite --test dist/scanner.test.js",
+    "test": "tsc -p tsconfig.json && node --experimental-sqlite --test dist/scanner.test.js dist/meta.test.js",
     "start": "node --experimental-sqlite dist/index.js"
   },
   "dependencies": {

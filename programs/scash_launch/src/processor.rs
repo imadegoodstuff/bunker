@@ -1,5 +1,5 @@
 use crate::{
-    curve, policy,
+    amm, curve, policy,
     seeds,
     state::{Curve, Launchpad, Vote, DISC_CURVE, DISC_LAUNCHPAD},
     token, LaunchError,
@@ -66,21 +66,22 @@ pub struct LaunchArgs {
     pub uri: String,
 }
 
-#[derive(BorshSerialize, BorshDeserialize)]
-pub struct SwapArgs {
-    pub amount_in: u64,
-    pub min_out: u64,
-}
+/// Lamports kept back from the AMM deposit to pay for the accounts Raydium
+/// creates at `initialize` (pool state, observation buffer, LP mint, two vaults,
+/// LP token account) and the two transient token accounts of the migrate PDA.
+/// About 0.05 SOL is needed today; whatever is left over goes to the treasury.
+pub const MIGRATION_RENT_RESERVE: u64 = 100_000_000;
 
 /// Instruction tags (first byte). Exit calls from the vault carry no tag: they
-/// are recognised by stack height, see `process`.
+/// are recognised by stack height, see `process`. Tags 5 and 6 were the public
+/// curve trades of an earlier design; a graduated curve now migrates to the AMM
+/// instead, so they are unassigned.
 pub const IX_INIT_LAUNCHPAD: u8 = 0;
 pub const IX_LAUNCH: u8 = 1;
 pub const IX_HARVEST: u8 = 3;
 pub const IX_GRADUATE: u8 = 4;
-pub const IX_PUBLIC_BUY: u8 = 5;
-pub const IX_PUBLIC_SELL: u8 = 6;
 pub const IX_VOTE: u8 = 7;
+pub const IX_MIGRATE: u8 = 8;
 
 pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     // The vault's exit call is the only way this program is ever invoked by
@@ -95,9 +96,8 @@ pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Pr
         IX_LAUNCH => process_launch(program_id, accounts, LaunchArgs::try_from_slice(rest).map_err(|_| LaunchError::InvalidInstruction)?),
         IX_HARVEST => process_harvest(program_id, accounts),
         IX_GRADUATE => process_graduate(program_id, accounts),
-        IX_PUBLIC_BUY => process_public_buy(program_id, accounts, SwapArgs::try_from_slice(rest).map_err(|_| LaunchError::InvalidInstruction)?),
-        IX_PUBLIC_SELL => process_public_sell(program_id, accounts, SwapArgs::try_from_slice(rest).map_err(|_| LaunchError::InvalidInstruction)?),
         IX_VOTE => process_vote(program_id, accounts, VoteArgs::try_from_slice(rest).map_err(|_| LaunchError::InvalidInstruction)?),
+        IX_MIGRATE => process_migrate(program_id, accounts),
         _ => Err(LaunchError::InvalidInstruction.into()),
     }
 }
@@ -112,6 +112,9 @@ pub fn curve_pda(mint: &Pubkey, program_id: &Pubkey) -> (Pubkey, u8) {
 }
 pub fn intake_pda(mint: &Pubkey, program_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[seeds::INTAKE, mint.as_ref()], program_id)
+}
+pub fn migrate_pda(mint: &Pubkey, program_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[seeds::MIGRATE, mint.as_ref()], program_id)
 }
 fn expect_key(a: &AccountInfo, k: &Pubkey) -> ProgramResult {
     if a.key != k {
@@ -363,6 +366,7 @@ fn process_launch(program_id: &Pubkey, accounts: &[AccountInfo], a: LaunchArgs) 
         lookup_table: *lookup_table.key,
         settled_epoch: policy::epoch_of(slot),
         votes: [Vote::default(); policy::AGENTS],
+        amm_pool: Pubkey::default(),
     };
     c.store(&mut curve.try_borrow_mut_data()?)?;
     sol_log_data(&[
@@ -421,6 +425,11 @@ fn process_exit(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> P
     let sysvar = next_account_info(it)?;
 
     let mut c = load_curve_rolled(curve, program_id)?;
+    // Graduation freezes the curve: from then on the only thing that can happen
+    // to it is `migrate`, and the token trades on the AMM.
+    if c.graduated != 0 {
+        return Err(LaunchError::Migrated.into());
+    }
     expect_key(mint, &c.mint)?;
     expect_key(curve_vault, &c.token_vault)?;
     expect_key(token_program, &token::TOKEN_2022_PROGRAM_ID)?;
@@ -470,17 +479,22 @@ fn process_exit(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> P
                 .and_then(|x| x.checked_add(relayer_tip))
                 .ok_or(LaunchError::Overflow)?;
             let gross = amount_in.checked_sub(reserve).ok_or(LaunchError::AmountTooSmall)?;
-            let fee = curve::fee(gross, c.trade_fee_bps)?;
-            let net = gross - fee;
-            let (out, y2) = curve::buy(&c.reserves(), net)?;
+            let mut fee = curve::fee(gross, c.trade_fee_bps)?;
+            let (out, y2, net) = curve::buy_capped(&c.reserves(), gross - fee)?;
             if out < min_out {
                 return Err(LaunchError::Slippage.into());
             }
+            // The buy that empties the curve pays only for what it got; the rest returns to the buyer's claim key.
+            let mut refund = 0u64;
+            if net < gross - fee {
+                fee = curve::fee_on_net(net, c.trade_fee_bps)?;
+                refund = gross - net - fee;
+            }
 
-            // money: intake → curve (net + fee), intake → claim (its reserve), intake → payer (ATA rent it fronts)
-            invoke_signed(&system_instruction::transfer(intake.key, curve.key, gross), &[intake.clone(), curve.clone(), system.clone()], &[intake_seeds])?;
+            // money: intake → curve (net + fee), intake → claim (its reserve + any refund), intake → payer (ATA rent it fronts)
+            invoke_signed(&system_instruction::transfer(intake.key, curve.key, net + fee), &[intake.clone(), curve.clone(), system.clone()], &[intake_seeds])?;
             invoke_signed(
-                &system_instruction::transfer(intake.key, claim.key, claim_rent + nf_rent + claim_budget),
+                &system_instruction::transfer(intake.key, claim.key, claim_rent + nf_rent + claim_budget + refund),
                 &[intake.clone(), claim.clone(), system.clone()],
                 &[intake_seeds],
             )?;
@@ -590,6 +604,10 @@ fn process_harvest(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResu
     let system = next_account_info(it)?;
 
     let mut c = load_curve_rolled(curve, program_id)?;
+    // After graduation the fees still on the curve travel with it to the AMM (`process_migrate`).
+    if c.graduated != 0 {
+        return Err(LaunchError::Migrated.into());
+    }
     expect_key(mint, &c.mint)?;
     expect_key(curve_vault, &c.token_vault)?;
     expect_key(treasury, &c.protocol_treasury)?;
@@ -684,6 +702,10 @@ fn process_vote(program_id: &Pubkey, accounts: &[AccountInfo], a: VoteArgs) -> P
         return Err(LaunchError::BadParams.into());
     }
     let mut c = load_curve_rolled(curve, program_id)?;
+    // Once the token is on the AMM there is no fee for the agents to set.
+    if c.graduated != 0 {
+        return Err(LaunchError::Migrated.into());
+    }
     let slot = Clock::get()?.slot;
     c.votes[idx] = Vote { fee_bps: a.fee_bps, holder_bps: a.holder_bps, slot };
     c.store(&mut curve.try_borrow_mut_data()?)?;
@@ -691,111 +713,191 @@ fn process_vote(program_id: &Pubkey, accounts: &[AccountInfo], a: VoteArgs) -> P
     Ok(())
 }
 
-// ------------------------------------------------------- public trading
+// ----------------------------------------------------------------- migrate
 
-/// After graduation anyone may trade on the curve directly.
-/// Accounts: `[curve w, mint, curve_vault w, buyer s w, buyer_ata w, token_2022, ata_program, system]`.
-fn process_public_buy(program_id: &Pubkey, accounts: &[AccountInfo], a: SwapArgs) -> ProgramResult {
+/// Permissionless. Moves a graduated curve to a Raydium CP-Swap pool: all of
+/// the curve's SOL (less Raydium's creation fee and the rents of the accounts
+/// it creates) and every token the curve vault still holds — the unsold
+/// remainder plus the supply reserved for exactly this — become the pool's
+/// initial liquidity, and the LP tokens are burned in the same instruction.
+/// Fees not yet harvested are split one last time: the protocol share to the
+/// treasury, the holder share into the pool (permanent liquidity is the only
+/// form "to holders" can still take once nothing trades on the curve).
+///
+/// Raydium pays the creation fee with a system transfer from `creator`, so the
+/// creator must be a plain system account: the data-less PDA("migrate", mint)
+/// stands in for one transaction, funded from the curve, and is swept into the
+/// treasury at the end. Nothing is left behind but the pool.
+///
+/// Accounts: `[curve w, mint, curve_vault w, migrate w, migrate_token w, wsol_mint,
+///   migrate_wsol w, treasury w, cp_swap, amm_config, authority, pool_state w,
+///   lp_mint w, migrate_lp w, token_0_vault w, token_1_vault w, create_pool_fee w,
+///   observation w, spl_token, token_2022, ata_program, system, rent, default_pool]`.
+///
+/// `amm_config` is normally Raydium's config 0 (`amm::AMM_CONFIG`). Anyone who
+/// got hold of tokens before graduation could create that pool first and strand
+/// the curve, so if the config-0 pool already exists (`default_pool`, the last
+/// account, is initialised) any other enabled CP-Swap config whose pool does not
+/// exist yet is accepted instead.
+fn process_migrate(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     let it = &mut accounts.iter();
     let curve = next_account_info(it)?;
     let mint = next_account_info(it)?;
     let curve_vault = next_account_info(it)?;
-    let buyer = next_account_info(it)?;
-    let buyer_ata = next_account_info(it)?;
-    let token_program = next_account_info(it)?;
+    let mig = next_account_info(it)?;
+    let mig_token = next_account_info(it)?;
+    let wsol_mint = next_account_info(it)?;
+    let mig_wsol = next_account_info(it)?;
+    let treasury = next_account_info(it)?;
+    let cp_swap = next_account_info(it)?;
+    let amm_config = next_account_info(it)?;
+    let authority = next_account_info(it)?;
+    let pool_state = next_account_info(it)?;
+    let lp_mint = next_account_info(it)?;
+    let mig_lp = next_account_info(it)?;
+    let token_0_vault = next_account_info(it)?;
+    let token_1_vault = next_account_info(it)?;
+    let fee_receiver = next_account_info(it)?;
+    let observation = next_account_info(it)?;
+    let spl_token = next_account_info(it)?;
+    let token_2022 = next_account_info(it)?;
     let ata_program = next_account_info(it)?;
     let system = next_account_info(it)?;
+    let rent_sysvar = next_account_info(it)?;
+    let default_pool = next_account_info(it)?;
 
-    let mut c = load_curve_rolled(curve, program_id)?;
-    if c.graduated == 0 {
-        return Err(LaunchError::NotGraduated.into());
+    let mut c = load_curve(curve, program_id)?;
+    if c.migrated() {
+        return Err(LaunchError::Migrated.into());
     }
-    expect_signer(buyer)?;
+    if c.graduated == 0 {
+        return Err(LaunchError::NotMigratable.into());
+    }
     expect_key(mint, &c.mint)?;
     expect_key(curve_vault, &c.token_vault)?;
-    expect_key(token_program, &token::TOKEN_2022_PROGRAM_ID)?;
+    expect_key(treasury, &c.protocol_treasury)?;
+    expect_key(wsol_mint, &amm::WSOL_MINT)?;
+    expect_key(cp_swap, &amm::CP_SWAP_PROGRAM_ID)?;
+    expect_key(fee_receiver, &amm::CREATE_POOL_FEE_RECEIVER)?;
+    expect_key(spl_token, &amm::SPL_TOKEN_PROGRAM_ID)?;
+    expect_key(token_2022, &token::TOKEN_2022_PROGRAM_ID)?;
     expect_key(ata_program, &token::ASSOCIATED_TOKEN_PROGRAM_ID)?;
-    expect_key(buyer_ata, &token::associated_token_address(buyer.key, mint.key))?;
-    let fee = curve::fee(a.amount_in, c.trade_fee_bps)?;
-    let net = a.amount_in.checked_sub(fee).ok_or(LaunchError::Overflow)?;
-    let (out, y2) = curve::buy(&c.reserves(), net)?;
-    if out < a.min_out {
-        return Err(LaunchError::Slippage.into());
+    expect_key(system, &system_program::ID)?;
+    expect_key(rent_sysvar, &solana_program::sysvar::rent::ID)?;
+    let (mig_addr, mig_bump) = migrate_pda(mint.key, program_id);
+    expect_key(mig, &mig_addr)?;
+    if !mig.data_is_empty() || *mig.owner != system_program::ID {
+        return Err(LaunchError::BadAccount.into());
     }
-    invoke(&system_instruction::transfer(buyer.key, curve.key, a.amount_in), &[buyer.clone(), curve.clone(), system.clone()])?;
-    token::create_ata_idempotent(ata_program, buyer, buyer_ata, buyer, mint, system, token_program)?;
+    expect_key(mig_token, &token::associated_token_address(mig.key, mint.key))?;
+    expect_key(mig_wsol, &token::associated_token_address_for(mig.key, wsol_mint.key, spl_token.key))?;
+
+    // Which Raydium config, and the pool keys that follow from it.
+    let (token_0, token_1, wsol_first) = amm::ordered(mint.key);
+    if amm_config.owner != cp_swap.key {
+        return Err(LaunchError::AccountMismatch.into());
+    }
+    let create_fee = amm::create_pool_fee(&amm_config.try_borrow_data()?).ok_or(LaunchError::AccountMismatch)?;
+    expect_key(default_pool, &amm::pool_state(&amm::AMM_CONFIG, &token_0, &token_1))?;
+    if *amm_config.key != amm::AMM_CONFIG && (default_pool.data_is_empty() || default_pool.owner != cp_swap.key) {
+        // config 0 is still free: use it
+        return Err(LaunchError::AccountMismatch.into());
+    }
+    let keys = amm::pool_keys(amm_config.key, &token_0, &token_1);
+    expect_key(authority, &keys.authority)?;
+    expect_key(pool_state, &keys.pool_state)?;
+    expect_key(lp_mint, &keys.lp_mint)?;
+    expect_key(token_0_vault, &keys.token_0_vault)?;
+    expect_key(token_1_vault, &keys.token_1_vault)?;
+    expect_key(observation, &keys.observation)?;
+    expect_key(mig_lp, &token::associated_token_address_for(mig.key, lp_mint.key, spl_token.key))?;
+
+    // What goes in.
+    let holder = curve::fee(c.fees_accrued, c.holder_share_bps)?;
+    let protocol = c.fees_accrued - holder;
+    let sol_total = c.real_sol.checked_add(holder).ok_or(LaunchError::Overflow)?;
+    let sol_in = sol_total.checked_sub(create_fee).and_then(|x| x.checked_sub(MIGRATION_RENT_RESERVE)).ok_or(LaunchError::InsufficientReserve)?;
+    let token_in = token::token_account_amount(curve_vault).ok_or(LaunchError::AccountMismatch)?;
+    if sol_in == 0 || token_in == 0 {
+        return Err(LaunchError::InsufficientReserve.into());
+    }
+    let (amount_0, amount_1) = if wsol_first { (sol_in, token_in) } else { (token_in, sol_in) };
+    let (mint_0, mint_1, prog_0, prog_1, acc_0, acc_1) = if wsol_first {
+        (wsol_mint, mint, spl_token, token_2022, mig_wsol, mig_token)
+    } else {
+        (mint, wsol_mint, token_2022, spl_token, mig_token, mig_wsol)
+    };
+    let mig_seeds: &[&[u8]] = &[seeds::MIGRATE, mint.key.as_ref(), &[mig_bump]];
     let curve_seeds: &[&[u8]] = &[seeds::CURVE, mint.key.as_ref(), &[c.bump]];
-    token::transfer_checked(token_program, curve_vault, mint, buyer_ata, curve, out, mint_decimals(mint)?, &[curve_seeds])?;
-    c.real_sol = c.real_sol.checked_add(net).ok_or(LaunchError::Overflow)?;
-    c.fees_accrued = c.fees_accrued.checked_add(fee).ok_or(LaunchError::Overflow)?;
-    c.virtual_token = y2;
-    c.real_token = c.real_token.checked_sub(out).ok_or(LaunchError::Overflow)?;
-    c.buys += 1;
-    c.sol_volume = c.sol_volume.saturating_add(net);
+
+    // 1. Fund the migrate PDA from the curve. The runtime only learns about a
+    //    direct lamport edit when the account is named in the next CPI, and
+    //    refuses to start one while the edits it knows of do not net to zero, so
+    //    the first CPI below names both sides.
+    debit(curve, mig, sol_total)?;
+    token::create_ata_idempotent_signed(ata_program, mig, mig_wsol, mig, wsol_mint, system, spl_token, std::slice::from_ref(curve), &[mig_seeds])?;
+    // 2. Wrap the SOL leg.
+    invoke_signed(&system_instruction::transfer(mig.key, mig_wsol.key, sol_in), &[mig.clone(), mig_wsol.clone(), system.clone()], &[mig_seeds])?;
+    token::sync_native(spl_token, mig_wsol)?;
+    // 3. Move every token the curve still holds to the migrate PDA.
+    token::create_ata_idempotent_signed(ata_program, mig, mig_token, mig, mint, system, token_2022, &[], &[mig_seeds])?;
+    token::transfer_checked(token_2022, curve_vault, mint, mig_token, curve, token_in, mint_decimals(mint)?, &[curve_seeds])?;
+    // 4. Create the pool. Raydium creates `mig_lp` itself and mints the LP there.
+    amm::initialize(
+        &amm::InitializeAccounts {
+            cp_swap,
+            creator: mig,
+            amm_config,
+            authority,
+            pool_state,
+            token_0_mint: mint_0,
+            token_1_mint: mint_1,
+            lp_mint,
+            creator_token_0: acc_0,
+            creator_token_1: acc_1,
+            creator_lp_token: mig_lp,
+            token_0_vault,
+            token_1_vault,
+            create_pool_fee: fee_receiver,
+            observation_state: observation,
+            token_program: spl_token,
+            token_0_program: prog_0,
+            token_1_program: prog_1,
+            associated_token_program: ata_program,
+            system_program: system,
+            rent: rent_sysvar,
+        },
+        amount_0,
+        amount_1,
+        0,
+        mig_seeds,
+    )?;
+    // 5. Burn the LP and close the PDA's token accounts; rents return to the PDA.
+    let lp_amount = token::token_account_amount(mig_lp).ok_or(LaunchError::AccountMismatch)?;
+    if lp_amount == 0 {
+        return Err(LaunchError::Nothing.into());
+    }
+    token::burn(spl_token, mig_lp, lp_mint, mig, lp_amount, &[mig_seeds])?;
+    token::close_account(spl_token, mig_lp, mig, mig, &[mig_seeds])?;
+    token::close_account(spl_token, mig_wsol, mig, mig, &[mig_seeds])?;
+    token::close_account(token_2022, mig_token, mig, mig, &[mig_seeds])?;
+    // 6. Sweep what the reserve did not need into the treasury, then the protocol
+    //    share of the last fees (a direct edit, nothing CPIs after it).
+    let left = mig.lamports();
+    if left > 0 {
+        invoke_signed(&system_instruction::transfer(mig.key, treasury.key, left), &[mig.clone(), treasury.clone(), system.clone()], &[mig_seeds])?;
+    }
+    if protocol > 0 {
+        debit(curve, treasury, protocol)?;
+    }
+
+    c.real_sol = 0;
+    c.real_token = 0;
+    c.fees_accrued = 0;
+    c.amm_pool = *pool_state.key;
     check_curve_balance(curve, &c)?;
     c.store(&mut curve.try_borrow_mut_data()?)?;
-    sol_log_data(&[
-        b"curve_buy",
-        mint.key.as_ref(),
-        &net.to_le_bytes(),
-        &fee.to_le_bytes(),
-        &out.to_le_bytes(),
-        &c.real_sol.to_le_bytes(),
-        &c.real_token.to_le_bytes(),
-        &c.virtual_token.to_le_bytes(),
-        &[0u8],
-        buyer.key.as_ref(),
-    ]);
-    Ok(())
-}
-
-/// Accounts: `[curve w, mint, curve_vault w, seller s w, seller_ata w, token_2022, system]`.
-fn process_public_sell(program_id: &Pubkey, accounts: &[AccountInfo], a: SwapArgs) -> ProgramResult {
-    let it = &mut accounts.iter();
-    let curve = next_account_info(it)?;
-    let mint = next_account_info(it)?;
-    let curve_vault = next_account_info(it)?;
-    let seller = next_account_info(it)?;
-    let seller_ata = next_account_info(it)?;
-    let token_program = next_account_info(it)?;
-    let _system = next_account_info(it)?;
-
-    let mut c = load_curve_rolled(curve, program_id)?;
-    if c.graduated == 0 {
-        return Err(LaunchError::NotGraduated.into());
-    }
-    expect_signer(seller)?;
-    expect_key(mint, &c.mint)?;
-    expect_key(curve_vault, &c.token_vault)?;
-    expect_key(token_program, &token::TOKEN_2022_PROGRAM_ID)?;
-    let (gross, y2) = curve::sell(&c.reserves(), a.amount_in)?;
-    let fee = curve::fee(gross, c.trade_fee_bps)?;
-    let out = gross - fee;
-    if out < a.min_out {
-        return Err(LaunchError::Slippage.into());
-    }
-    token::transfer_checked(token_program, seller_ata, mint, curve_vault, seller, a.amount_in, mint_decimals(mint)?, &[])?;
-    debit(curve, seller, out)?;
-    c.real_sol = c.real_sol.checked_sub(gross).ok_or(LaunchError::Overflow)?;
-    c.fees_accrued = c.fees_accrued.checked_add(fee).ok_or(LaunchError::Overflow)?;
-    c.virtual_token = y2;
-    c.real_token = c.real_token.checked_add(a.amount_in).ok_or(LaunchError::Overflow)?;
-    c.sells += 1;
-    c.sol_volume = c.sol_volume.saturating_add(gross);
-    check_curve_balance(curve, &c)?;
-    c.store(&mut curve.try_borrow_mut_data()?)?;
-    sol_log_data(&[
-        b"curve_sell",
-        mint.key.as_ref(),
-        &gross.to_le_bytes(),
-        &fee.to_le_bytes(),
-        &a.amount_in.to_le_bytes(),
-        &c.real_sol.to_le_bytes(),
-        &c.real_token.to_le_bytes(),
-        &c.virtual_token.to_le_bytes(),
-        &[0u8],
-        seller.key.as_ref(),
-    ]);
+    sol_log_data(&[b"migrate", mint.key.as_ref(), pool_state.key.as_ref(), &sol_in.to_le_bytes(), &token_in.to_le_bytes(), &lp_amount.to_le_bytes()]);
     Ok(())
 }
 

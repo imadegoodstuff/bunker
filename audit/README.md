@@ -44,8 +44,10 @@ note it returns), Fly.io deployment config.
 6. **Launchpad** (`programs/scash_launch`, SPEC §16, `SECURITY.md` §15): the
    exit handler's vault-origin check (stack height + instructions sysvar),
    intake sweep, curve arithmetic and the lamport-balance invariant, the
-   claim-key reserve, harvest's donate path, graduation gating of the public
-   instructions. The vault bounds the damage to what one user just
+   claim-key reserve, harvest's donate path, the capped last buy, the
+   graduation freeze, and `migrate` (lamport move before the first CPI, the
+   migrate PDA as Raydium's creator, LP burn, sweep, fallback config).
+   The vault bounds the damage to what one user just
    unshielded; confirm that bound holds and that nothing in the launchpad
    can reach pool funds.
 

@@ -35,6 +35,7 @@
 //! with the holder share and `donate`s them, so every private holder's shares
 //! appreciate), at percentages fixed when the launchpad was initialised.
 
+pub mod amm;
 pub mod curve;
 pub mod policy;
 pub mod processor;
@@ -50,6 +51,8 @@ pub mod seeds {
     pub const LAUNCHPAD: &[u8] = b"launchpad";
     pub const CURVE: &[u8] = b"curve";
     pub const INTAKE: &[u8] = b"intake";
+    /// system-owned, data-less signer that stands in as the AMM pool's creator for one transaction
+    pub const MIGRATE: &[u8] = b"migrate";
 }
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
@@ -74,7 +77,7 @@ pub enum LaunchError {
     InsufficientReserve,
     #[error("amount too small to cover the claim key's rent, nullifier rents and budget")]
     AmountTooSmall,
-    #[error("public trading opens when the curve graduates; until then buy and sell through the vault")]
+    #[error("the curve has not graduated")]
     NotGraduated,
     #[error("exit call did not come from the vault program")]
     NotFromVault,
@@ -88,6 +91,10 @@ pub enum LaunchError {
     BadClaimAccount,
     #[error("signer is not one of the launchpad's agents")]
     NotAgent,
+    #[error("the curve has migrated to the AMM; trade there")]
+    Migrated,
+    #[error("the curve is still graduating; nothing to migrate yet")]
+    NotMigratable,
 }
 impl From<LaunchError> for ProgramError {
     fn from(e: LaunchError) -> Self {

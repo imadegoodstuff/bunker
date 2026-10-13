@@ -1,9 +1,9 @@
 // Client for programs/scash_launch: a bonding curve traded from inside the
 // shielded pool. Layouts mirror programs/scash_launch/src/{state,processor}.rs.
-import { AddressLookupTableProgram, Keypair, PublicKey, SystemProgram, SYSVAR_INSTRUCTIONS_PUBKEY, TransactionInstruction, type AccountMeta } from "@solana/web3.js";
+import { AddressLookupTableProgram, Keypair, PublicKey, SystemProgram, SYSVAR_INSTRUCTIONS_PUBKEY, SYSVAR_RENT_PUBKEY, TransactionInstruction, type AccountMeta } from "@solana/web3.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bigIntToBytesLE, concatBytes } from "./field.js";
-import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, PROGRAM_ID as VAULT_PROGRAM_ID, associatedTokenAddress, configPda, poolPda, vaultFor } from "./program.js";
+import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, PROGRAM_ID as VAULT_PROGRAM_ID, associatedTokenAddress, configPda, poolPda, vaultFor } from "./program.js";
 
 export const LAUNCH_PROGRAM_ID = new PublicKey("861VJkPL2yUYL1DTCToeziREP4XyraihkqbTM1irFZ3k");
 const enc = new TextEncoder();
@@ -33,7 +33,7 @@ export function claimAta(claimKey: PublicKey, mint: PublicKey): PublicKey {
  * The claim key is a throwaway ed25519 key the buyer derives from their
  * shielded seed and a per-trade nonce. The curve funds it (tokens in its ATA,
  * lamports for its own fees), and it then signs an ordinary vault shield. It
- * appears on-chain twice — in the buy's exit data and as the shield's payer —
+ * appears on-chain twice â€” in the buy's exit data and as the shield's payer â€”
  * and nowhere else, so it links the two halves of one trade and nothing more.
  * Deterministic, so a seed backup recovers unclaimed trades.
  */
@@ -57,7 +57,14 @@ export interface LaunchpadParams {
   decimals: number;
 }
 
-/** 1 % fee, half of it donated to holders; 1e9 supply at 6 decimals, ~79 % on the curve; graduation at 85 SOL. */
+/**
+ * 1 % fee, half of it donated to holders; 1e9 supply at 6 decimals, ~79 % on the
+ * curve; graduation at 20 SOL. The virtual SOL reserve is sized so the curve
+ * sells its last token exactly as it reaches 20 SOL
+ * (`v_s = 20 Ã— (1.073 âˆ’ 0.7931) / 0.7931` SOL), and the 20.69 % of the supply
+ * not on the curve goes into the AMM with the raised SOL at migration, so the
+ * pool opens at about the price the curve ended on.
+ */
 export function defaultLaunchpadParams(protocolTreasury: PublicKey, agents: PublicKey[]): LaunchpadParams {
   if (agents.length !== policy.AGENTS) throw new Error(`exactly ${policy.AGENTS} agent keys`);
   return {
@@ -65,11 +72,11 @@ export function defaultLaunchpadParams(protocolTreasury: PublicKey, agents: Publ
     agents,
     tradeFeeBps: 100,
     holderShareBps: 5_000,
-    virtualSol: 30_000_000_000n,
+    virtualSol: 7_058_380_000n,
     virtualToken: 1_073_000_000_000_000n,
     curveSupply: 793_100_000_000_000n,
     totalSupply: 1_000_000_000_000_000n,
-    graduationLamports: 85_000_000_000n,
+    graduationLamports: 20_000_000_000n,
     decimals: 6,
   };
 }
@@ -104,6 +111,8 @@ export interface CurveState {
   settledEpoch: bigint;
   /** latest vote per agent, indexed like `LaunchpadState.agents`; `slot === 0n` means none */
   votes: Vote[];
+  /** the Raydium CP-Swap pool the curve migrated to, or null while it has not (see `migrateIx`) */
+  ammPool: PublicKey | null;
 }
 
 export interface Vote {
@@ -196,7 +205,7 @@ function readU16(d: Uint8Array, off: number): number {
   return d[off] | (d[off + 1] << 8);
 }
 
-export const CURVE_LEN = 320;
+export const CURVE_LEN = 352;
 
 export function decodeCurve(d: Uint8Array): CurveState {
   if (d[0] !== 2 || d.length < CURVE_LEN) throw new Error("not a curve account");
@@ -223,7 +232,9 @@ export function decodeCurve(d: Uint8Array): CurveState {
     const holderBps = readU16(d, o); o += 2;
     votes.push({ feeBps, holderBps, slot: u64() });
   }
-  return { bump, intakeBump, mint, tokenVault, virtualSol, virtualToken, realSol, realToken, feesAccrued, graduated, createdSlot, totalSupply, curveSupply, tradeFeeBps, holderShareBps, graduationLamports, protocolTreasury, vaultProgram, buys, sells, solVolume, lookupTable, settledEpoch, votes };
+  const pool = new PublicKey(d.slice(o, o + 32)); o += 32;
+  const ammPool = pool.equals(PublicKey.default) ? null : pool;
+  return { bump, intakeBump, mint, tokenVault, virtualSol, virtualToken, realSol, realToken, feesAccrued, graduated, createdSlot, totalSupply, curveSupply, tradeFeeBps, holderShareBps, graduationLamports, protocolTreasury, vaultProgram, buys, sells, solVolume, lookupTable, settledEpoch, votes, ammPool };
 }
 
 export interface LaunchpadState extends LaunchpadParams {
@@ -307,12 +318,12 @@ export const EXIT_SELL = 1;
 
 /**
  * `claimBudget`: lamports parked at the claim key beyond the rents its shield needs (its own transaction fee).
- * `relayerTip`: lamports paid from the SOL leg to the exit call's payer — the relayer. A relayed *sell* has
+ * `relayerTip`: lamports paid from the SOL leg to the exit call's payer â€” the relayer. A relayed *sell* has
  * to pay its relayer this way, since the vault's own fee would be denominated in the token being sold.
  */
 export const EXIT_DATA_LEN = 1 + 32 + 8 + 4 + 4;
 const U32_MAX = 0xffff_ffffn;
-/** Layout: kind u8 ‖ claim_key 32 ‖ min_out u64 ‖ claim_budget u32 ‖ relayer_tip u32 (lamports; both < 4.3 SOL). */
+/** Layout: kind u8 â€– claim_key 32 â€– min_out u64 â€– claim_budget u32 â€– relayer_tip u32 (lamports; both < 4.3 SOL). */
 export function exitData(kind: 0 | 1, claimKey: PublicKey, claimBudget: bigint, minOut: bigint, relayerTip = 0n): Uint8Array {
   if (claimBudget > U32_MAX || relayerTip > U32_MAX) throw new Error("claim budget and relayer tip are u32 lamports");
   return concatBytes(new Uint8Array([kind]), claimKey.toBytes(), bigIntToBytesLE(minOut, 8), bigIntToBytesLE(claimBudget, 4), bigIntToBytesLE(relayerTip, 4));
@@ -381,14 +392,33 @@ export async function fetchClaimRents(conn: { getMinimumBalanceForRentExemption(
 export function buyReserve(rents: ClaimRents, claimBudget: bigint, relayerTip = 0n, claimExists = false, claimAtaExists = false): bigint {
   return (claimExists ? 0n : rents.claimRent) + 2n * rents.nullifierRent + claimBudget + (claimAtaExists ? 0n : rents.tokenAccountRent) + relayerTip;
 }
-/** Tokens a private buy of `amountIn` lamports (what the vault delivers after the relayer fee) will park at the claim key. */
-export function quotePrivateBuy(curve: CurveState, amountIn: bigint, rents: ClaimRents, claimBudget: bigint, relayerTip = 0n): { out: bigint; net: bigint; fee: bigint; reserve: bigint } {
+/** Mirror of `curve::buy_capped`: the buy that reaches past the last token takes every token left and only pays for those. */
+export function curveBuyCapped(r: Reserves, solIn: bigint): { out: bigint; virtualToken: bigint; used: bigint } {
+  try {
+    return { ...curveBuy(r, solIn), used: solIn };
+  } catch (e) {
+    if (!(e instanceof Error) || e.message !== "sold out") throw e;
+    const used = quoteBuyExactOut(r, r.realToken);
+    return { out: r.realToken, virtualToken: r.virtualToken - r.realToken, used: used < solIn ? used : solIn };
+  }
+}
+/**
+ * Tokens a private buy of `amountIn` lamports (what the vault delivers after the
+ * relayer fee) will park at the claim key. `refund` is what comes back to the
+ * claim key when the buy empties the curve (the last buy before graduation).
+ */
+export function quotePrivateBuy(curve: CurveState, amountIn: bigint, rents: ClaimRents, claimBudget: bigint, relayerTip = 0n): { out: bigint; net: bigint; fee: bigint; reserve: bigint; refund: bigint } {
   const reserve = buyReserve(rents, claimBudget, relayerTip);
   if (amountIn <= reserve) throw new Error("amount too small to cover claim rents and budget");
   const gross = amountIn - reserve;
-  const fee = feeOf(gross, curve.tradeFeeBps);
-  const net = gross - fee;
-  return { out: curveBuy(curve, net).out, net, fee, reserve };
+  let fee = feeOf(gross, curve.tradeFeeBps);
+  const { out, used: net } = curveBuyCapped(curve, gross - fee);
+  let refund = 0n;
+  if (net < gross - fee) {
+    fee = (net * BigInt(curve.tradeFeeBps)) / BigInt(10_000 - curve.tradeFeeBps);
+    refund = gross - net - fee;
+  }
+  return { out, net, fee, reserve, refund };
 }
 /** Lamports a private sell of `tokenIn` parks at the claim key, after the curve fee and the relayer tip. */
 export function quotePrivateSell(curve: CurveState, tokenIn: bigint, relayerTip = 0n): { out: bigint; gross: bigint; fee: bigint } {
@@ -515,36 +545,90 @@ export function graduateIx(mint: PublicKey, programId = LAUNCH_PROGRAM_ID): Tran
   return new TransactionInstruction({ programId, keys: [{ pubkey: curvePda(mint, programId), isSigner: false, isWritable: true }], data: Buffer.from(new Uint8Array([4])) });
 }
 
-export function publicBuyIx(buyer: PublicKey, mint: PublicKey, lamports: bigint, minOut: bigint, programId = LAUNCH_PROGRAM_ID): TransactionInstruction {
+// ---- migration to Raydium CP-Swap (mirror of programs/scash_launch/src/amm.rs)
+
+/** Raydium CP-Swap on mainnet-beta: program, fee config 0 (0.25 %), and the account its pool-creation fee is paid to. */
+const CP_SWAP_PROGRAM_ID = new PublicKey("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C");
+const AMM_CONFIG = new PublicKey("D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2");
+const WSOL_MINT = new PublicKey("So11111111111111111111111111111111111111112");
+export const raydium = {
+  CP_SWAP_PROGRAM_ID,
+  AMM_CONFIG,
+  CREATE_POOL_FEE_RECEIVER: new PublicKey("DNXgeM9EiiaAbaWvwjHj9fQQLAX5ZsfHyvmYUNRAdNC8"),
+  WSOL_MINT,
+  authority(): PublicKey {
+    return PublicKey.findProgramAddressSync([enc.encode("vault_and_lp_mint_auth_seed")], CP_SWAP_PROGRAM_ID)[0];
+  },
+  /** CP-Swap orders a pair by key bytes. */
+  ordered(mint: PublicKey): { token0: PublicKey; token1: PublicKey; wsolFirst: boolean } {
+    const wsolFirst = Buffer.compare(WSOL_MINT.toBuffer(), mint.toBuffer()) < 0;
+    return wsolFirst ? { token0: WSOL_MINT, token1: mint, wsolFirst } : { token0: mint, token1: WSOL_MINT, wsolFirst };
+  },
+  poolState(mint: PublicKey, ammConfig: PublicKey = AMM_CONFIG): PublicKey {
+    const { token0, token1 } = raydium.ordered(mint);
+    return PublicKey.findProgramAddressSync([enc.encode("pool"), ammConfig.toBytes(), token0.toBytes(), token1.toBytes()], CP_SWAP_PROGRAM_ID)[0];
+  },
+  lpMint(pool: PublicKey): PublicKey {
+    return PublicKey.findProgramAddressSync([enc.encode("pool_lp_mint"), pool.toBytes()], CP_SWAP_PROGRAM_ID)[0];
+  },
+  vault(pool: PublicKey, mint: PublicKey): PublicKey {
+    return PublicKey.findProgramAddressSync([enc.encode("pool_vault"), pool.toBytes(), mint.toBytes()], CP_SWAP_PROGRAM_ID)[0];
+  },
+  observation(pool: PublicKey): PublicKey {
+    return PublicKey.findProgramAddressSync([enc.encode("observation"), pool.toBytes()], CP_SWAP_PROGRAM_ID)[0];
+  },
+  /** Where the token trades after migration. */
+  swapUrl(mint: PublicKey): string {
+    return `https://raydium.io/swap/?inputMint=sol&outputMint=${mint.toBase58()}`;
+  },
+};
+
+/** The system-owned PDA that acts as the Raydium pool's creator during `migrateIx`. */
+export function ammMigratePda(mint: PublicKey, programId = LAUNCH_PROGRAM_ID): PublicKey {
+  return PublicKey.findProgramAddressSync([enc.encode("migrate"), mint.toBytes()], programId)[0];
+}
+
+/**
+ * Permissionless: move a graduated curve into a Raydium CP-Swap pool (all of
+ * its SOL and remaining tokens; the LP is burned). The agents service sends
+ * this as soon as it sees a graduated, unmigrated curve; anyone else may too.
+ * `ammConfig` is Raydium's config 0 unless that pool was created by someone
+ * else first, in which case the program accepts another enabled config.
+ */
+export function migrateIx(mint: PublicKey, protocolTreasury: PublicKey, ammConfig = raydium.AMM_CONFIG, programId = LAUNCH_PROGRAM_ID): TransactionInstruction {
+  const mig = ammMigratePda(mint, programId);
+  const { token0, token1 } = raydium.ordered(mint);
+  const pool = raydium.poolState(mint, ammConfig);
+  const lpMint = raydium.lpMint(pool);
   return new TransactionInstruction({
     programId,
     keys: [
       { pubkey: curvePda(mint, programId), isSigner: false, isWritable: true },
       { pubkey: mint, isSigner: false, isWritable: false },
       { pubkey: curveTokenVault(mint, programId), isSigner: false, isWritable: true },
-      { pubkey: buyer, isSigner: true, isWritable: true },
-      { pubkey: associatedTokenAddress(buyer, mint, TOKEN_2022_PROGRAM_ID), isSigner: false, isWritable: true },
+      { pubkey: mig, isSigner: false, isWritable: true },
+      { pubkey: associatedTokenAddress(mig, mint, TOKEN_2022_PROGRAM_ID), isSigner: false, isWritable: true },
+      { pubkey: raydium.WSOL_MINT, isSigner: false, isWritable: false },
+      { pubkey: associatedTokenAddress(mig, raydium.WSOL_MINT, TOKEN_PROGRAM_ID), isSigner: false, isWritable: true },
+      { pubkey: protocolTreasury, isSigner: false, isWritable: true },
+      { pubkey: raydium.CP_SWAP_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: ammConfig, isSigner: false, isWritable: false },
+      { pubkey: raydium.authority(), isSigner: false, isWritable: false },
+      { pubkey: pool, isSigner: false, isWritable: true },
+      { pubkey: lpMint, isSigner: false, isWritable: true },
+      { pubkey: associatedTokenAddress(mig, lpMint, TOKEN_PROGRAM_ID), isSigner: false, isWritable: true },
+      { pubkey: raydium.vault(pool, token0), isSigner: false, isWritable: true },
+      { pubkey: raydium.vault(pool, token1), isSigner: false, isWritable: true },
+      { pubkey: raydium.CREATE_POOL_FEE_RECEIVER, isSigner: false, isWritable: true },
+      { pubkey: raydium.observation(pool), isSigner: false, isWritable: true },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
+      { pubkey: raydium.poolState(mint), isSigner: false, isWritable: false },
     ],
-    data: Buffer.from(concatBytes(new Uint8Array([5]), u64(lamports), u64(minOut))),
-  });
-}
-
-export function publicSellIx(seller: PublicKey, mint: PublicKey, tokens: bigint, minOut: bigint, programId = LAUNCH_PROGRAM_ID): TransactionInstruction {
-  return new TransactionInstruction({
-    programId,
-    keys: [
-      { pubkey: curvePda(mint, programId), isSigner: false, isWritable: true },
-      { pubkey: mint, isSigner: false, isWritable: false },
-      { pubkey: curveTokenVault(mint, programId), isSigner: false, isWritable: true },
-      { pubkey: seller, isSigner: true, isWritable: true },
-      { pubkey: associatedTokenAddress(seller, mint, TOKEN_2022_PROGRAM_ID), isSigner: false, isWritable: true },
-      { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-    ],
-    data: Buffer.from(concatBytes(new Uint8Array([6]), u64(tokens), u64(minOut))),
+    data: Buffer.from(new Uint8Array([8])),
   });
 }
 
@@ -552,4 +636,5 @@ export function publicSellIx(seller: PublicKey, mint: PublicKey, tokens: bigint,
 export const LAUNCH_ERRORS = [
   "InvalidInstruction", "BadAccount", "AlreadyInitialized", "BadPda", "AccountMismatch", "Overflow", "Slippage", "SoldOut",
   "InsufficientReserve", "AmountTooSmall", "NotGraduated", "NotFromVault", "Nothing", "StringTooLong", "BadParams", "BadClaimAccount",
+  "NotAgent", "Migrated", "NotMigratable",
 ] as const;

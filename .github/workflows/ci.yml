@@ -187,18 +187,29 @@ jobs:
           NEW_VAULT_ID: Ht494MDFWJ64tK6PvEctEEV5dUCCUHsgqSDPSt7Hat7k
       - name: migration e2e (old vault → PDA → new vault, no public wallet on the path)
         run: node scripts/migrate-e2e.mjs --new-vault Ht494MDFWJ64tK6PvEctEEV5dUCCUHsgqSDPSt7Hat7k
-      - name: fresh validator with the vault and the launchpad
+      - name: fresh validator with the vault, the launchpad and Raydium CP-Swap cloned from mainnet-beta
         run: |
           pkill -f solana-test-validator || true
           sleep 2
-          solana-test-validator --reset --quiet \
-            --bpf-program 89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR target/deploy/scash_vault.so \
-            --bpf-program 861VJkPL2yUYL1DTCToeziREP4XyraihkqbTM1irFZ3k target/deploy/scash_launch.so \
-            --ticks-per-slot 16 \
-            --mint "$(solana-keygen pubkey keypairs/deployer.json)" &
-          for i in $(seq 1 60); do solana cluster-version -u http://127.0.0.1:8899 >/dev/null 2>&1 && break; sleep 1; done
+          # Raydium CP-Swap (program, fee config 0, creation-fee receiver) is cloned from mainnet-beta so
+          # the migration e2e creates a real pool through the real program.
+          for attempt in 1 2 3; do
+            solana-test-validator --reset --quiet \
+              --bpf-program 89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR target/deploy/scash_vault.so \
+              --bpf-program 861VJkPL2yUYL1DTCToeziREP4XyraihkqbTM1irFZ3k target/deploy/scash_launch.so \
+              --url https://api.mainnet-beta.solana.com \
+              --clone-upgradeable-program CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C \
+              --clone D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2 \
+              --clone DNXgeM9EiiaAbaWvwjHj9fQQLAX5ZsfHyvmYUNRAdNC8 \
+              --ticks-per-slot 16 \
+              --mint "$(solana-keygen pubkey keypairs/deployer.json)" &
+            for i in $(seq 1 90); do solana cluster-version -u http://127.0.0.1:8899 >/dev/null 2>&1 && break; sleep 1; done
+            solana account -u http://127.0.0.1:8899 D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2 >/dev/null 2>&1 && break
+            echo "clone from mainnet-beta failed (attempt $attempt); retrying"; pkill -f solana-test-validator || true; sleep 5
+          done
+          solana account -u http://127.0.0.1:8899 D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2 >/dev/null
       # --ticks-per-slot 16 makes a slot ≈ 100 ms so the 900-slot fee epoch passes in about 90 s
-      - name: launchpad e2e (launch → agent votes → private buy → claim → harvest → private sell → claim → fee epoch rolls; buyer wallet never appears)
+      - name: launchpad e2e (launch → agent votes → private buy → claim → harvest → private sell → claim → fee epoch rolls → graduation at 20 SOL → Raydium pool, LP burned; buyer wallet never appears)
         run: node scripts/launch-e2e.mjs
 
   # Manual, gated on the `mainnet` environment: deploys the four programs under the ids declared in

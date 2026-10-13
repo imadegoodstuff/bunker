@@ -63,7 +63,7 @@ test("note encryption: receiver decrypts with ivk, strangers cannot, sender reco
   const note = { asset, value: 1234n, gd, pkd: to.pkd, ...freshRandomness() };
   const memo = new TextEncoder().encode("hello");
   const { ciphertext, esk } = encryptNote(bjj, to, note, memo, true);
-  assert.equal(ciphertext.length, NOTE_CIPHERTEXT_LEN_NO_MEMO + 64); // 5-byte memo → one 64-byte bucket
+  assert.equal(ciphertext.length, NOTE_CIPHERTEXT_LEN_NO_MEMO + 64); // 5-byte memo â†’ one 64-byte bucket
   assert.equal(NOTE_CIPHERTEXT_LEN, NOTE_CIPHERTEXT_LEN_NO_MEMO + MEMO_MAX);
 
   const got = tryDecryptNote(bjj, receiver.ivk, ciphertext);
@@ -93,8 +93,8 @@ test("note encryption: receiver decrypts with ivk, strangers cannot, sender reco
 });
 
 test("a g_d with a torsion component passes the circuit's small-order check but is never credited by the receiver", async () => {
-  // The circuit checks [8]·g_d ≠ O (not of small order), the same as Sapling;
-  // it does not prove g_d ∈ prime-order subgroup. A point g_d' = g_d + T with
+  // The circuit checks [8]Â·g_d â‰  O (not of small order), the same as Sapling;
+  // it does not prove g_d âˆˆ prime-order subgroup. A point g_d' = g_d + T with
   // T of order 8 therefore satisfies the circuit. This test shows why that is
   // acceptable: the receiver re-derives g_d from the diversifier and
   // recomputes the commitment, so a note built on g_d' is refused and the
@@ -109,7 +109,7 @@ test("a g_d with a torsion component passes the circuit's small-order check but 
   const gd = groupHash(bjj, to.d)!;
   const gdTorsion = bjj.add(gd, T);
   assert.ok(bjj.inCurve(gdTorsion));
-  assert.ok(!bjj.isIdentity(bjj.mulScalar(gdTorsion, 8n)), "passes the circuit's [8]P ≠ O check");
+  assert.ok(!bjj.isIdentity(bjj.mulScalar(gdTorsion, 8n)), "passes the circuit's [8]P â‰  O check");
   assert.ok(!bjj.inSubgroup(gdTorsion), "but is not in the prime-order subgroup");
   const asset = assetId(SystemProgram.programId);
 
@@ -120,7 +120,7 @@ test("a g_d with a torsion component passes the circuit's small-order check but 
   const bad = { ...honest, gd: gdTorsion, ...freshRandomness() };
   const badCt = encryptNote(bjj, to, bad, undefined, false).ciphertext;
   assert.equal(await receiver.scan({ index: 1, commitment: await noteCommitment(bad), ciphertext: badCt }, asset), null, "torsion g_d is refused");
-  // and the same with a pk_d that is not [ivk]·g_d (a wrong recipient key)
+  // and the same with a pk_d that is not [ivk]Â·g_d (a wrong recipient key)
   const wrongPkd = { ...honest, pkd: bjj.mulScalar(gd, fvk.ivk + 1n), ...freshRandomness() };
   const wrongCt = encryptNote(bjj, to, wrongPkd, undefined, false).ciphertext;
   assert.equal(await receiver.scan({ index: 2, commitment: await noteCommitment(wrongPkd), ciphertext: wrongCt }, asset), null, "wrong pk_d is refused");
@@ -128,8 +128,8 @@ test("a g_d with a torsion component passes the circuit's small-order check but 
 
 test("a torsion component in epk cannot probe ivk mod 8 (cofactor-cleared key agreement)", async () => {
   // Attack without cofactor clearing: epk' = epk + T, key from [esk]pk_d + [k]T.
-  // The recipient decrypts iff ivk ≡ k (mod 8), leaking three bits of ivk per
-  // accepted note. With shared = [8·sk]·P the torsion vanishes on both sides,
+  // The recipient decrypts iff ivk â‰¡ k (mod 8), leaking three bits of ivk per
+  // accepted note. With shared = [8Â·sk]Â·P the torsion vanishes on both sides,
   // so every such ciphertext decrypts to the same key as the honest one and
   // the sender learns nothing (and the tampered epk still fails the AEAD).
   const bjj = await BabyJub.load();
@@ -145,7 +145,7 @@ test("a torsion component in epk cannot probe ivk mod 8 (cofactor-cleared key ag
   const epkT = bjj.add(epk, T);
   const tampered = new Uint8Array(ciphertext);
   tampered.set(bjj.compress(epkT), 0);
-  // The receiver derives its key from [8·ivk]·(epk+T) = [8·ivk]·epk: identical
+  // The receiver derives its key from [8Â·ivk]Â·(epk+T) = [8Â·ivk]Â·epk: identical
   // secret, but the key also commits to the encoded epk, so the AEAD fails.
   assert.equal(tryDecryptNote(bjj, receiver.ivk, tampered), null);
   // Independent of ivk mod 8: the shared point computed from epk+T equals the
@@ -278,11 +278,11 @@ test("vault error table matches programs/scash_vault/src/error.rs and classifies
 
 test("passphrase strength: the time-to-crack arithmetic is 2^(b-1)/rate", () => {
   const day = 86400, year = 365 * day;
-  // 40 bits: 2^39 / 1e5 s ≈ 63.6 days, not millennia
+  // 40 bits: 2^39 / 1e5 s â‰ˆ 63.6 days, not millennia
   assert.ok(Math.abs(expectedSecondsToCrack(40) / day - 63.6) < 0.1);
-  // 50 bits (the floor): ≈ 178 years
+  // 50 bits (the floor): â‰ˆ 178 years
   assert.ok(Math.abs(expectedSecondsToCrack(PASSPHRASE_MIN_BITS) / year - 178) < 1);
-  // 55 bits: ≈ 5.7k years
+  // 55 bits: â‰ˆ 5.7k years
   assert.ok(Math.abs(expectedSecondsToCrack(55) / year - 5708) < 10);
   assert.equal(expectedSecondsToCrack(0), 0);
 });
@@ -358,7 +358,7 @@ test("a relayed 2-in/2-out send with the maximum memo fits in one packet", async
   const spl = sizeFor(splMint, ataFor(payer, splMint), [c0.ciphertext, c1.ciphertext]);
   assert.ok(sol <= 1232, `SOL send with ${MEMO_MAX}-byte memo serializes to ${sol} > 1232`);
   assert.ok(spl <= 1232, `SPL send with ${MEMO_MAX}-byte memo serializes to ${spl} > 1232`);
-  // and one more bucket would not fit — documents why MEMO_MAX is what it is
+  // and one more bucket would not fit â€” documents why MEMO_MAX is what it is
   const bigger = new Uint8Array(c0.ciphertext.length + MEMO_BUCKET);
   const over = sizeFor(mint, payer, [bigger, c1.ciphertext]);
   assert.ok(over > 1232, `a ${MEMO_MAX + MEMO_BUCKET}-byte memo would still fit (${over}); MEMO_MAX can be raised`);
@@ -371,10 +371,10 @@ test("fee policy mirror: median, quorum, one bounded step per epoch, votes count
     bump: 0, intakeBump: 0, mint: PublicKey.default, tokenVault: PublicKey.default, virtualSol: 1n, virtualToken: 1n, realSol: 0n, realToken: 1n,
     feesAccrued: 0n, graduated: false, createdSlot: 0n, totalSupply: 1n, curveSupply: 1n, tradeFeeBps: fee, holderShareBps: holder, graduationLamports: 1n,
     protocolTreasury: PublicKey.default, vaultProgram: PublicKey.default, buys: 0n, sells: 0n, solVolume: 0n, lookupTable: PublicKey.default,
-    settledEpoch, votes: [0, 1, 2, 3].map(() => ({ feeBps: 0, holderBps: 0, slot: 0n })),
+    settledEpoch, votes: [0, 1, 2, 3].map(() => ({ feeBps: 0, holderBps: 0, slot: 0n })), ammPool: null,
   });
   const v = (feeBps: number, holderBps: number, slot: bigint) => ({ feeBps, holderBps, slot });
-  assert.equal(CURVE_LEN, 320);
+  assert.equal(CURVE_LEN, 352);
   // no quorum: nothing moves
   let c = base(100, 5000, 0n);
   c.votes[0] = v(300, 10000, 10n);
@@ -407,4 +407,23 @@ test("fee policy mirror: median, quorum, one bounded step per epoch, votes count
   assert.equal(worstFeeBps(c, E - 10n, 300n), 200);
   assert.equal(worstFeeBps(c, 10n, 300n), 100);
   assert.ok(voteInBounds(50, 5000) && voteInBounds(300, 10000) && !voteInBounds(301, 5000) && !voteInBounds(100, 4999) && !voteInBounds(100.5, 5000));
+});
+
+test("default curve sells out exactly at the 20 SOL graduation and the AMM opens near the final curve price", async () => {
+  const { defaultLaunchpadParams, curveBuy, raydium, migrateIx, policy } = await import("./launch.js");
+  const p = defaultLaunchpadParams(PublicKey.default, Array.from({ length: policy.AGENTS }, () => PublicKey.default));
+  const r = { virtualSol: p.virtualSol, realSol: 0n, virtualToken: p.virtualToken, realToken: p.curveSupply };
+  const q = curveBuy(r, p.graduationLamports);
+  assert.ok(q.out <= p.curveSupply && p.curveSupply - q.out < p.curveSupply / 10_000n, `curve leaves ${p.curveSupply - q.out} tokens at graduation`);
+  // final curve price vs pool opening price (reserved supply + raised SOL less Raydium's fee and rents)
+  const endPrice = Number(p.virtualSol + p.graduationLamports) / Number(p.virtualToken - q.out);
+  const poolPrice = Number(p.graduationLamports - 150_000_000n - 100_000_000n) / Number(p.totalSupply - p.curveSupply + (p.curveSupply - q.out));
+  assert.ok(Math.abs(poolPrice / endPrice - 1) < 0.03, `pool opens ${(poolPrice / endPrice - 1) * 100} % off the curve`);
+  // Raydium derivations: the CP-Swap authority is a fixed mainnet address; the pair is ordered by key bytes
+  assert.equal(raydium.authority().toBase58(), "GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL");
+  const mint = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+  assert.deepEqual(raydium.ordered(mint).token0.toBase58(), "So11111111111111111111111111111111111111112");
+  const ix = migrateIx(mint, PublicKey.default);
+  assert.equal(ix.keys.length, 24);
+  assert.equal(ix.keys.filter((k) => k.isSigner).length, 0, "migration needs no signer: anyone's fee payer sends it");
 });

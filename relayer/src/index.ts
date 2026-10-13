@@ -176,6 +176,7 @@ app.post<{ Body: RelayBody }>("/relay", async (req, reply) => {
     const curveInfo = await conn.getAccountInfo(curveKey);
     if (!curveInfo) return reply.code(400).send({ error: "curve not found" });
     const curve = decodeCurve(new Uint8Array(curveInfo.data));
+    if (curve.graduated) return reply.code(400).send({ error: curve.ammPool ? "this token trades on Raydium now" : "this curve has graduated and is moving to Raydium" });
     const tables = [];
     try {
       const t = await fetchLookupTable(conn, curve.lookupTable);
