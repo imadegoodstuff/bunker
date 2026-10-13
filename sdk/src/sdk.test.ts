@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { AddressLookupTableAccount, Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import { BabyJub, poseidon } from "./crypto.js";
-import { spendingKeyFromSeed, fullViewingKey, newAddress, encodeAddress, decodeAddress, groupHash, seedFromSignature, seedToBackup, seedFromBackup, SPENDING_KEY_MESSAGE, SCALAR_MASK } from "./keys.js";
+import { spendingKeyFromSeed, fullViewingKey, newAddress, encodeAddress, decodeAddress, groupHash, seedFromSignature, seedToBackup, seedFromBackup, SPENDING_KEY_MESSAGE, SCALAR_MASK, passphraseStrength, PASSPHRASE_MIN_BITS } from "./keys.js";
 import { encryptNote, tryDecryptNote, encryptOutgoing, decryptOutgoing, decryptNoteAsSender, NOTE_CIPHERTEXT_LEN, NOTE_CIPHERTEXT_LEN_NO_MEMO, MEMO_MAX, MEMO_BUCKET } from "./encryption.js";
 import { transactIx } from "./program.js";
 import { staticAddresses, buildV0, ataFor } from "./lookup.js";
@@ -209,6 +209,25 @@ test("seed derivation: passphrase changes the seed, backup round-trips", async (
   assert.deepEqual(seedFromBackup(seedToBackup(b)), b);
   assert.throws(() => seedFromBackup("scashseed1zz"));
   assert.ok(SPENDING_KEY_MESSAGE.includes("SPEND"));
+});
+
+test("passphrase strength: short, repeated and sequential inputs are weak; long phrases are strong", () => {
+  assert.equal(passphraseStrength("").level, "weak");
+  assert.equal(passphraseStrength("password").level, "weak");
+  assert.equal(passphraseStrength("aaaaaaaaaaaaaaaa").level, "weak");
+  assert.equal(passphraseStrength("abcdefghijklmnop").level, "weak");
+  assert.equal(passphraseStrength("12345678").level, "weak");
+  // 8 chars at full mixed charset is still under 40 bits with the 0.6 human factor
+  assert.equal(passphraseStrength("Tr0ub4d&").level, "weak");
+  const fair = passphraseStrength("Tr0ub4d&3xq!Lm");
+  assert.equal(fair.level, "fair");
+  assert.ok(fair.bits >= PASSPHRASE_MIN_BITS);
+  const strong = passphraseStrength("correct horse battery staple river");
+  assert.equal(strong.level, "strong");
+  assert.ok(strong.bits >= 55);
+  assert.ok(strong.secondsToCrack > 3600 * 24 * 365 * 100);
+  // NFKC-equivalent inputs get the same score
+  assert.equal(passphraseStrength("caf\u00e9 au lait noir").bits, passphraseStrength("cafe\u0301 au lait noir").bits);
 });
 
 test("a relayed 2-in/2-out send with the maximum memo fits in one packet", async () => {

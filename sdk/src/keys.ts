@@ -81,6 +81,56 @@ export async function seedFromSignature(signature: Uint8Array, passphrase = ""):
   return scryptAsync(pw, SEED_SALT, { N: 2 ** 15, r: 8, p: 1, dkLen: 32 });
 }
 
+/**
+ * Offline guessing budget the passphrase has to survive if the signature leaks.
+ *
+ * One scrypt(N=2^15, r=8, p=1) evaluation needs 32 MiB of memory; a tuned GPU
+ * farm manages on the order of 10^5 guesses per second, not 10^9. The strength
+ * estimate below is deliberately conservative: it assumes the attacker knows the
+ * character classes in use and that human-chosen text carries about 60% of its
+ * nominal entropy. Dictionary-word phrases are credited 11 bits per word (a
+ * 2048-word list), which is what a diceware attacker would get.
+ */
+export const PASSPHRASE_GUESSES_PER_SECOND = 100_000;
+/** Below this the UI refuses the passphrase; the signature-only model is explicit instead. */
+export const PASSPHRASE_MIN_BITS = 40;
+/** At or above this the UI calls it strong (~10^5 guesses/s → centuries). */
+export const PASSPHRASE_STRONG_BITS = 64;
+
+export interface PassphraseStrength {
+  bits: number;
+  level: "weak" | "fair" | "strong";
+  /** Expected time to exhaust half the space at PASSPHRASE_GUESSES_PER_SECOND, in seconds. */
+  secondsToCrack: number;
+}
+
+export function passphraseStrength(passphrase: string): PassphraseStrength {
+  const p = passphrase.normalize("NFKC");
+  if (p.length === 0) return { bits: 0, level: "weak", secondsToCrack: 0 };
+  let charset = 0;
+  if (/[a-z]/.test(p)) charset += 26;
+  if (/[A-Z]/.test(p)) charset += 26;
+  if (/[0-9]/.test(p)) charset += 10;
+  if (/[^A-Za-z0-9\s]/.test(p)) charset += 33;
+  if (/[^\x00-\x7f]/.test(p)) charset += 100;
+  if (/\s/.test(p)) charset += 1;
+  // Repeated and sequential characters add nothing.
+  let effective = 0;
+  for (let i = 0; i < p.length; i++) {
+    const c = p.charCodeAt(i);
+    const prev = i > 0 ? p.charCodeAt(i - 1) : NaN;
+    if (c === prev || c === prev + 1 || c === prev - 1) continue;
+    effective += 1;
+  }
+  const charBits = effective * Math.log2(Math.max(charset, 2)) * 0.6;
+  const words = p.split(/\s+/).filter((w) => w.length >= 3);
+  const wordBits = words.length >= 3 ? words.length * 11 : 0;
+  const bits = Math.round(Math.max(charBits, wordBits));
+  const secondsToCrack = Math.pow(2, bits - 1) / PASSPHRASE_GUESSES_PER_SECOND;
+  const level = bits < PASSPHRASE_MIN_BITS ? "weak" : bits < PASSPHRASE_STRONG_BITS ? "fair" : "strong";
+  return { bits, level, secondsToCrack };
+}
+
 /** Hex encoding of a seed for backup. 64 hex chars; anyone holding it can spend. */
 export function seedToBackup(seed: Uint8Array): string {
   if (seed.length !== 32) throw new Error("seed must be 32 bytes");

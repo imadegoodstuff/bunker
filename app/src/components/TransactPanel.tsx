@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PublicKey } from "@solana/web3.js";
 import { motion } from "framer-motion";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
@@ -15,11 +15,30 @@ const MODES: { key: Mode; label: string; hint: string }[] = [
   { key: "unshield", label: "Withdraw", hint: "private → wallet" },
 ];
 
+/**
+ * Proving transact2x2 in the browser peaks at roughly 1 GB of WebAssembly
+ * memory and takes ~3 s on a laptop. Phones and low-memory tabs are slower and
+ * can fail to allocate; the budget is unmeasured there, so say so up front
+ * rather than after a failed proof.
+ */
+function useDeviceNotice() {
+  const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => {
+    const nav = navigator as Navigator & { deviceMemory?: number };
+    const mobile = /Android|iPhone|iPad|iPod/i.test(nav.userAgent);
+    const lowMem = typeof nav.deviceMemory === "number" && nav.deviceMemory < 4;
+    if (lowMem) setNotice(`This device reports ${nav.deviceMemory} GB of memory. Proving needs about 1 GB free and may fail here.`);
+    else if (mobile) setNotice("Proofs are made on your device. On a phone this takes longer than the ~3 s quoted for laptops and has not been benchmarked.");
+  }, []);
+  return notice;
+}
+
 /** Balance + action in one console. */
 export function TransactPanel() {
   const { publicKey, sendTransaction } = useWallet();
   const { connection } = useConnection();
-  const { balances, pools, relayer, shield, send, unshield, notes, sync, syncedTo, totalLeaves } = useScash();
+  const { balances, pools, relayer, shield, send, unshield, notes, sync, syncedTo, totalLeaves, freezeAuthority, lastProveMs } = useScash();
+  const deviceNotice = useDeviceNotice();
   const [mode, setMode] = useState<Mode>("shield");
   const [asset, setAsset] = useState<AssetMeta>(ASSETS[0]);
   const [amount, setAmount] = useState("");
@@ -167,7 +186,17 @@ export function TransactPanel() {
           {mode !== "shield" && <Row k="Recipient gets" v={`${fmtAmount(receives, asset.decimals)} ${asset.symbol}`} strong />}
           {mode !== "shield" && <Row k="Delay" v={relayer ? `${relayer.delay.minMs / 1000}–${relayer.delay.maxMs / 1000}s, random` : "—"} />}
           {mode === "shield" && <Row k="Visible on-chain" v="your wallet deposited this amount" />}
+          <Row k="Yield" v={asset.yieldBearing ? "creator fees are donated into this pool" : `none — only the SCASH pool earns`} />
+          <Row k="Proof time" v={lastProveMs ? `${(lastProveMs / 1000).toFixed(1)} s on this device` : "~3 s on a laptop, longer on phones"} />
         </dl>
+
+        {freezeAuthority[asset.symbol] && (
+          <p className="rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-warn">
+            {asset.symbol}&apos;s issuer keeps a freeze authority ({freezeAuthority[asset.symbol].slice(0, 4)}…{freezeAuthority[asset.symbol].slice(-4)}).
+            If it froze the pool&apos;s token account, withdrawals of {asset.symbol} would stop until it unfroze it. scash cannot prevent this.
+          </p>
+        )}
+        {deviceNotice && <p className="text-xs leading-relaxed text-dim">{deviceNotice}</p>}
 
         {err && <p className="text-sm text-bad">{err}</p>}
         <button className="btn-primary h-12 w-full text-[15px]" disabled={busy || !pool || (mode !== "shield" && !relayer)} onClick={submit}>

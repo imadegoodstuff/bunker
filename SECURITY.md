@@ -30,8 +30,21 @@ signature. Mitigations in place:
 
 - **Passphrase as a second factor.** `seed = scrypt(sig ‖ passphrase)`. A stolen
   signature without the passphrase yields nothing; with scrypt at N=2¹⁵ a guess
-  costs ~100 ms. The app recommends a passphrase and explains that losing it
-  loses the balance. A user who turns it off accepts the signature-only model.
+  costs ~100 ms on one core and 32 MiB of memory, so a GPU farm manages on the
+  order of 10⁵ guesses/s, not 10⁹. That only helps if the passphrase has
+  entropy: a weak one falls offline once the signature leaks. The app therefore
+  scores every passphrase (`passphraseStrength`, `sdk/src/keys.ts`: character
+  classes × length × 0.6, repeats and runs discounted, 11 bits per word for
+  phrases) and refuses anything under 40 bits — about 10 000 years at 10⁵
+  guesses/s — while showing the estimated time-to-crack for the budget above.
+  The estimate is conservative and still not a guarantee against a targeted
+  dictionary; a four-plus-word phrase is what the placeholder asks for. The
+  passphrase is on by default; there is no reset, and the app says so next to
+  the field and points at the seed backup as the only recovery path. A user
+  who turns it off accepts the signature-only model.
+- **Seed backup is a bearer secret.** `scashseed1…` is the raw 32-byte seed.
+  Anyone holding it can spend; it is shown behind a click, with that warning,
+  and is never written to storage by the app.
 - **Self-describing message.** The signed text says, in the wallet's own
   signing dialog, that it derives a key that can spend a private balance and
   must only be signed inside scash. This makes phishing visible, not impossible.
@@ -79,7 +92,9 @@ the SOL pool's TVL cap should stay small.
 ### 3. Memo length is bounded by the packet, and the spec says so
 
 A 2-in/2-out `transact` with the lookup table is 1,140 bytes before any memo
-and Solana packets are 1,232 bytes, so the maximum memo is one 64-byte bucket.
+and the `v0` transactions the client builds are capped at 1,232 bytes, so the
+maximum memo is one 64-byte bucket. (Solana's `v1` format allows 4,096 bytes;
+the client does not use it yet — §9.)
 `sdk/src/sdk.test.ts` serialises the real instruction for the SOL and SPL
 cases and asserts both that 64 fits and that 128 does not; SPEC §15 has the
 measured numbers. An earlier draft of the spec claimed 512 bytes; that was
@@ -124,14 +139,20 @@ outline. Treat the anonymity numbers in the app as upper bounds.
   extensions, and every inbound token transfer verifies that the vault balance
   grew by exactly the credited amount (`ShortDelivery` otherwise). A base-mint
   freeze authority (USDC) is not rejected; a frozen vault would block
-  unshields of that asset. SPEC §9.
+  unshields of that asset. The app reads the mint's `freeze_authority` and
+  shows a per-asset warning naming it before any shield. SPEC §9.
 - **Yield.** Creator fees are donated to the SCASH pool only. SOL, USDC and
   other pools have a fixed share rate of 1. The rate is tokens per share and
   depends on trading volume; it is not a price claim and not a return on other
-  assets. The landing page and FAQ say this explicitly.
+  assets. The landing page, the FAQ and the fee summary of every transaction in
+  the app ("Yield: none — only the SCASH pool earns") say this explicitly.
 - **Proving in the browser.** The ~3 s figure is a desktop measurement for
-  `transact2x2` (wasm witness + snarkjs Groth16). Phones and low-memory tabs
-  are slower and may fail to allocate; there is no measured mobile budget yet.
+  `transact2x2` (wasm witness + snarkjs Groth16); the Node bench in CI reports
+  p50 4.8 s / p90 5.2 s. Phones and low-memory tabs are slower and may fail to
+  allocate; there is no measured mobile budget yet. The app does not hide
+  this: it warns up front on mobile user agents and on devices reporting under
+  4 GB (`navigator.deviceMemory`), and after the first proof it shows the time
+  measured on that device instead of the laptop figure.
 - **Exit adapters.** The swap exit is a CPI from the vault to an external
   program with the funds already at `recipient`. Each adapter widens the
   attack surface (account constraints, leftover funds, re-entrancy into the
@@ -282,6 +303,44 @@ oversold, and how anyone can tell which source the site is running.
   per-asset anonymity sets and the seed backup when this review was written;
   the reviewer's GitHub view showed a one-commit snapshot that no longer
   exists.
+
+### 9. Remaining product risks, and the transaction-size correction
+
+A fifth review listed what is still risky after everything above. None of it
+is new; what changed is that each item now has something in the product, not
+only in this file.
+
+- **Weak passphrase + leaked signature.** Addressed in §1: the app scores the
+  passphrase, refuses under 40 estimated bits, shows the time-to-crack at
+  10⁵ scrypt guesses/s, and says plainly that there is no reset and that the
+  seed backup is the only recovery path. It is still the user's entropy; the
+  protocol cannot add any.
+- **No backup, lost passphrase.** Still fatal, by design; the Backup card's
+  copy now says so and tells the user the backup is a bearer secret.
+- **Mobile proving.** Still unmeasured. The app now warns before the first
+  proof on mobile and low-memory devices and reports the measured time after
+  it (§6), so the number users see is their own, not the laptop one.
+- **Yield only on the SCASH pool.** Already true everywhere it was stated;
+  now also in the fee summary of every transaction so a SOL depositor is never
+  left assuming otherwise. Shares growing in tokens says nothing about price.
+- **Freeze authority on a base mint.** Still accepted (refusing it excludes
+  USDC). The app now reads `freeze_authority` and shows which key could halt
+  withdrawals of that asset. The swap adapter is still undeployed and
+  unreviewed; README marks it "in review".
+- **Transaction size — a correction.** SPEC §15 said Solana has no larger
+  format than 1,232 bytes. That was wrong when written and more wrong now:
+  the `v1` format (SIMD-0385) has been active on mainnet since epoch 1035,
+  15 September 2026, with a 4,096-byte limit. §15 now separates the two facts
+  the reviewer asked for — the network supports 4,096-byte `v1` transactions;
+  scash's client builds `v0` and is bound to 1,232 — and spells out what a
+  move to `v1` would buy and cost. The mistake also exposed an operational
+  bug: the indexer fetched transactions with `maxSupportedTransactionVersion:
+  0`, so one `v1` transaction sent to the program by anyone would have made
+  the RPC error on the whole batch and stalled the scanner on it forever.
+  `indexer/src/scanner.ts` now requests version 1, falls back to
+  per-signature fetches when a batch fails, and logs and skips rather than
+  stalls. The relayer still rejects anything over 1,232 bytes because it
+  signs `v0` transactions; that is a client limit, correctly labelled.
 
 ## Design-level guarantees
 

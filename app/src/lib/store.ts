@@ -31,6 +31,10 @@ interface State {
   tree?: MerkleTree;
   address?: string;
   pools: Record<string, PoolState>;
+  /** Base-mint freeze authority per asset symbol, when one exists. A frozen vault account blocks withdrawals of that asset. */
+  freezeAuthority: Record<string, string>;
+  /** Wall-clock proving time of the last proof made on this device, in ms. */
+  lastProveMs?: number;
   balances: Record<string, bigint>;
   notes: SpendableNote[];
   syncedTo: number;
@@ -81,6 +85,7 @@ export const useScash = create<State>((set, get) => {
   return {
   phase: "idle",
   pools: {},
+  freezeAuthority: {},
   balances: {},
   notes: [],
   syncedTo: 0,
@@ -124,7 +129,20 @@ export const useScash = create<State>((set, get) => {
     infos.forEach((info, i) => {
       if (info) pools[ASSETS[i].symbol] = decodePool(new Uint8Array(info.data));
     });
-    set({ pools });
+    // Mint layout (SPL Token and Token-2022 share it): freeze_authority is a
+    // COption<Pubkey> at offset 46 — 4-byte tag, then 32 bytes. The program
+    // deliberately does not refuse such mints (USDC has one); the UI shows it.
+    const freezeAuthority: Record<string, string> = {};
+    const spl = ASSETS.filter((a) => !a.mint.equals(SystemProgram.programId));
+    if (spl.length) {
+      const mints = await connection.getMultipleAccountsInfo(spl.map((a) => a.mint));
+      mints.forEach((m, i) => {
+        if (m && m.data.length >= 82 && m.data.readUInt32LE(46) === 1) {
+          freezeAuthority[spl[i].symbol] = new PublicKey(m.data.subarray(50, 82)).toBase58();
+        }
+      });
+    }
+    set({ pools, freezeAuthority });
   },
 
   async sync() {
@@ -185,13 +203,14 @@ export const useScash = create<State>((set, get) => {
     set((s) => ({ activity: [act, ...s.activity], tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } }));
     try {
       const relayerKey = rl ? new PublicKey(rl.relayer) : owner;
+      const t0 = performance.now();
       const built = await wallet.buildTransact({
         asset: assetId(asset.mint), mint: asset.mint, tokenProgram: asset.tokenProgram, pool, tree, chainTree: await loadChainTree(get().connection), artifacts: ARTIFACTS,
         kind: "shield", amount, to: to ? decodeAddress(wallet.bjj, to).address : undefined,
         relayer: relayerKey, relayerDest: relayerKey, relayerFee: 0n, payer: owner, depositor: owner,
         depositorSource: asset.mint.equals(SystemProgram.programId) ? owner : undefined,
       });
-      set({ tx: { stage: "signing", message: "Approve the transaction in your wallet" } });
+      set({ lastProveMs: performance.now() - t0, tx: { stage: "signing", message: "Approve the transaction in your wallet" } });
       const conn = get().connection;
       const table = rl?.lookupTable ? await fetchLookupTable(conn, new PublicKey(rl.lookupTable)) : undefined;
       const tx = buildV0(owner, [built.instruction], (await conn.getLatestBlockhash()).blockhash, table);
@@ -241,6 +260,7 @@ async function relayedTransact(
   set((s) => ({ activity: [act, ...s.activity], tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } }));
   let consumed: bigint[] = [];
   try {
+    const t0 = performance.now();
     const built = await wallet.buildTransact({
       asset: assetId(asset.mint), mint: asset.mint, tokenProgram: asset.tokenProgram, pool, tree, chainTree: await loadChainTree(get().connection), artifacts: ARTIFACTS,
       kind, amount,
@@ -250,7 +270,7 @@ async function relayedTransact(
       memo: o.memo ? new TextEncoder().encode(o.memo) : undefined,
     });
     consumed = built.consumed;
-    set({ tx: { stage: "relaying", message: "Handing the proof to the relayer" } });
+    set({ lastProveMs: performance.now() - t0, tx: { stage: "relaying", message: "Handing the proof to the relayer" } });
     const job = await relayer.relay(
       Buffer.from(built.instruction.data).toString("base64"),
       built.instruction.keys.map((k) => ({ pubkey: k.pubkey.toBase58(), isSigner: k.isSigner, isWritable: k.isWritable }))

@@ -2,8 +2,19 @@
 import { useState } from "react";
 import dynamic from "next/dynamic";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { SPENDING_KEY_MESSAGE } from "@scash/sdk";
+import { SPENDING_KEY_MESSAGE, passphraseStrength, PASSPHRASE_MIN_BITS, PASSPHRASE_GUESSES_PER_SECOND } from "@scash/sdk";
 import { useScash } from "@/lib/store";
+
+function crackTime(seconds: number) {
+  if (seconds < 60) return "seconds";
+  if (seconds < 3600) return `${Math.round(seconds / 60)} minutes`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)} hours`;
+  if (seconds < 86400 * 365) return `${Math.round(seconds / 86400)} days`;
+  const years = seconds / (86400 * 365);
+  if (years < 1000) return `${Math.round(years)} years`;
+  if (years < 1e6) return `${Math.round(years / 1000)}k years`;
+  return "longer than the universe";
+}
 
 const WalletButton = dynamic(() => import("@solana/wallet-adapter-react-ui").then((m) => m.WalletMultiButton), { ssr: false });
 
@@ -18,7 +29,8 @@ export function Unlock() {
   const [backup, setBackup] = useState("");
   const [showMsg, setShowMsg] = useState(false);
 
-  const passOk = !usePass || (pass.length >= 8 && pass === pass2);
+  const strength = passphraseStrength(pass);
+  const passOk = !usePass || (strength.bits >= PASSPHRASE_MIN_BITS && pass === pass2);
   const label = phase === "deriving" ? "Deriving keys…" : phase === "syncing" ? `Scanning ${syncedTo.toLocaleString()} / ${(totalLeaves || 0).toLocaleString()}` : "Unlock";
   const step = !connected ? 1 : 2;
 
@@ -69,12 +81,29 @@ export function Unlock() {
                   </div>
                   <p className="mt-1.5 text-xs leading-relaxed text-dim">
                     {usePass
-                      ? "A phished signature cannot spend without it. There is no reset: losing it loses the balance."
+                      ? "If a phishing site ever gets your signature, this is all that stands between it and your balance. There is no reset: losing it loses the balance unless you export a seed backup after unlocking."
                       : "Off: anyone who gets your wallet to sign the message can spend. Not recommended."}
                   </p>
                   {usePass && (
                     <div className="mt-3 space-y-2">
-                      <input className="input" type="password" placeholder="At least 8 characters" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="new-password" />
+                      <input className="input" type="password" placeholder="Four or more words, or 12+ mixed characters" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="new-password" />
+                      {pass && (
+                        <div>
+                          <div className="flex h-1 gap-1" aria-hidden>
+                            {[0, 1, 2].map((i) => {
+                              const on = strength.level === "strong" ? 3 : strength.level === "fair" ? 2 : strength.bits > 0 ? 1 : 0;
+                              const col = strength.level === "strong" ? "bg-ok" : strength.level === "fair" ? "bg-accent" : "bg-bad";
+                              return <span key={i} className={`flex-1 rounded-full ${i < on ? col : "bg-line-strong"}`} />;
+                            })}
+                          </div>
+                          <p className="mt-1.5 text-[11px] text-dim">
+                            ~{strength.bits} bits ·{" "}
+                            {strength.level === "weak"
+                              ? `too weak — with your signature leaked this falls in ${crackTime(strength.secondsToCrack)} at ${PASSPHRASE_GUESSES_PER_SECOND.toLocaleString()} guesses/s`
+                              : `an attacker holding your signature needs about ${crackTime(strength.secondsToCrack)} at ${PASSPHRASE_GUESSES_PER_SECOND.toLocaleString()} guesses/s`}
+                          </p>
+                        </div>
+                      )}
                       <input className="input" type="password" placeholder="Repeat" value={pass2} onChange={(e) => setPass2(e.target.value)} autoComplete="new-password" />
                       {pass && pass2 && pass !== pass2 && <p className="text-xs text-bad">Passphrases do not match.</p>}
                     </div>

@@ -2,7 +2,7 @@
 
 Version 0.1 (draft). This document is normative for the circuits in `circuits/`, the on-chain program in `programs/scash_vault/`, and the client library in `sdk/`.
 
-scash is a shielded-note system on Solana. It follows the Zcash Sapling construction (notes, commitments, nullifiers, diversified addresses, incoming/outgoing viewing keys) and adapts it to what the Solana runtime can verify cheaply today: Groth16 over BN254 via the `alt_bn128` syscalls, Poseidon via the `sol_poseidon` syscall, one transaction of at most 1.4M compute units and 4096 bytes.
+scash is a shielded-note system on Solana. It follows the Zcash Sapling construction (notes, commitments, nullifiers, diversified addresses, incoming/outgoing viewing keys) and adapts it to what the Solana runtime can verify cheaply today: Groth16 over BN254 via the `alt_bn128` syscalls, Poseidon via the `sol_poseidon` syscall, one transaction of at most 1.4M compute units and 1,232 bytes in the `v0` format the client uses (4,096 in `v1`; §15).
 
 Everything below the "boundary" (shield in, unshield out) is private: sender, receiver, amount, and which notes were spent. Everything at the boundary is public, as it is in Zcash. The pool additionally enforces a per-asset turnstile so that no soundness bug in the proof system can ever release more of an asset than was deposited.
 
@@ -180,7 +180,7 @@ ext_data_hash = SHA-256(borsh(ExtData)) mod p
 
 The program recomputes `ext_data_hash` from the instruction payload before verifying the proof. A relayer therefore cannot alter the recipient, fee, exit, or ciphertexts.
 
-The `transact` instruction payload is kept compact so that a 2-in/2-out transaction fits a 1232-byte packet together with an address lookup table:
+The `transact` instruction payload is kept compact so that a 2-in/2-out transaction fits a 1,232-byte `v0` packet together with an address lookup table (§15 on why `v0` and not `v1`):
 
 ```
 TransactArgs {
@@ -299,7 +299,11 @@ Two transactions are needed because an old-vault `transact` plus a new-vault `tr
 | ext_data without memo | 32 + 32 + 8 + 32 + 4 + 4 + 2x(4 + 99) + 4 + 80 = 402 bytes |
 | Two ciphertexts | 99 + 99 (no memo) or 163 + 99 (one 64-byte memo) |
 
-Solana transactions are limited to 1,232 bytes and there is no v1 format with a larger budget. Measured on a validator (CI e2e, v0 transaction with the lookup table from §7):
+**Which limit applies.** Solana has three transaction formats. `legacy` and `v0` are capped at 1,232 bytes (the IPv6-MTU-derived `PACKET_DATA_SIZE`); `v0` adds address lookup tables. The `v1` format (SIMD-0385, size budget from SIMD-0296, feature gate `txv1aq4pp281K9um3tnPgkfX8UqtFT6wcVW3hNezGLL`) raises the cap to 4,096 bytes, lists all accounts inline instead of through lookup tables, and moves compute/priority settings into the message header. It has been active on mainnet-beta since epoch 1035 (15 September 2026) and on devnet and testnet.
+
+scash **currently builds `v0` transactions** (`sdk/src/lookup.ts: buildV0`) and therefore lives under the 1,232-byte limit; everything in this section, including the 64-byte memo ceiling, is a consequence of that client choice and not of the network. The relayer rejects anything it would serialise above 1,232 bytes (`relayer/src/index.ts`). Moving to `v1` would allow longer memos and a 4-input transaction with memos in one packet, at the cost of inlining the ~20 accounts the lookup table covers today (640 bytes, affordable in 4,096) and of wallets and RPCs that must opt in with `maxSupportedTransactionVersion: 1`; it is not scheduled, and the on-chain format does not change either way. The indexer already reads every version (§15, `indexer/src/scanner.ts`), because anyone may send the program a `v1` transaction regardless of what this client does.
+
+Measured on a validator (CI e2e, v0 transaction with the lookup table from §7):
 
 | Transaction | Bytes | CU |
 |---|---|---|

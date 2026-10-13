@@ -15,6 +15,8 @@ export interface AssetMeta {
   tokenProgram?: PublicKey;
   /** suggested standard denominations (UI nudges users towards these) */
   denominations: number[];
+  /** Only the native SCASH pool receives harvested creator fees. Everything else earns nothing. */
+  yieldBearing?: boolean;
 }
 
 export const ASSETS: AssetMeta[] = [
@@ -22,7 +24,7 @@ export const ASSETS: AssetMeta[] = [
 ];
 
 if (process.env.NEXT_PUBLIC_EXTRA_ASSETS) {
-  for (const a of JSON.parse(process.env.NEXT_PUBLIC_EXTRA_ASSETS) as { symbol: string; name: string; mint: string; decimals: number; token2022?: boolean }[]) {
+  for (const a of JSON.parse(process.env.NEXT_PUBLIC_EXTRA_ASSETS) as { symbol: string; name: string; mint: string; decimals: number; token2022?: boolean; yield?: boolean }[]) {
     ASSETS.push({
       symbol: a.symbol,
       name: a.name,
@@ -30,6 +32,7 @@ if (process.env.NEXT_PUBLIC_EXTRA_ASSETS) {
       decimals: a.decimals,
       tokenProgram: a.token2022 ? new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb") : undefined,
       denominations: [10, 100, 1000],
+      yieldBearing: a.yield === true || a.symbol === "SCASH",
     });
   }
 }

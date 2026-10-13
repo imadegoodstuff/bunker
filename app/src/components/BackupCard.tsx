@@ -29,7 +29,7 @@ export function BackupCard() {
         </>
       ) : (
         <p className="mt-3 text-[11px] leading-relaxed text-dim">
-          Your keys come from your wallet signature and passphrase. Export the raw seed to recover on any device, without either.
+          Your keys come from your wallet signature and passphrase. Lose the passphrase and this backup is the only way back in. It is the raw seed: anyone holding it can spend, so keep it offline, never in a screenshot or chat.
         </p>
       )}
     </section>

@@ -57,16 +57,40 @@ export class Scanner {
     batch.reverse(); // oldest first
     for (let i = 0; i < batch.length; i += 50) {
       const chunk = batch.slice(i, i + 50);
-      const txs = await this.conn.getParsedTransactions(
-        chunk.map((s) => s.signature),
-        { maxSupportedTransactionVersion: 0, commitment: "confirmed" }
-      );
+      const txs = await this.fetchParsed(chunk.map((s) => s.signature));
       txs.forEach((tx, j) => {
         if (tx && !tx.meta?.err) this.ingest(chunk[j].signature, tx);
       });
       this.db.setMeta("last_signature", chunk[chunk.length - 1].signature);
     }
     console.log(`[scanner] ingested ${batch.length} tx, commitments=${this.db.count()}`);
+  }
+
+  /**
+   * Anyone can send the program a transaction in any format, so the fetch must
+   * accept every version the RPC knows (legacy, v0, v1 — SIMD-0385, live since
+   * September 2026) and must never let one undecodable signature stall the
+   * scan: a batch that fails is retried one signature at a time and the
+   * offenders are skipped with a log line. Events are read from program logs,
+   * so the transaction format does not matter to `ingest`.
+   */
+  private async fetchParsed(sigs: string[]): Promise<(ParsedTransactionWithMeta | null)[]> {
+    const opts = { maxSupportedTransactionVersion: 1, commitment: "confirmed" as const };
+    try {
+      return await this.conn.getParsedTransactions(sigs, opts);
+    } catch (e) {
+      console.warn(`[scanner] batch fetch failed (${(e as Error).message}); retrying individually`);
+    }
+    const out: (ParsedTransactionWithMeta | null)[] = [];
+    for (const sig of sigs) {
+      try {
+        out.push(await this.conn.getParsedTransaction(sig, opts));
+      } catch (e) {
+        console.warn(`[scanner] skipping ${sig}: ${(e as Error).message}`);
+        out.push(null);
+      }
+    }
+    return out;
   }
 
   ingest(signature: string, tx: ParsedTransactionWithMeta) {
