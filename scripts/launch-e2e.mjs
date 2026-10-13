@@ -1,0 +1,236 @@
+// Launchpad end-to-end: a token is launched, bought from inside the shielded
+// pool, claimed into its own pool, sold back privately, and the trading fees
+// are harvested into holder yield. No buyer wallet appears anywhere.
+//   node scripts/launch-e2e.mjs [--rpc …] [--keypair …]
+import { readFileSync } from "node:fs";
+import { parseArgs } from "node:util";
+import { Connection, Keypair, PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction, LAMPORTS_PER_SOL } from "@solana/web3.js";
+import {
+  ShieldedWallet, MerkleTree, assetId, initializeIx, createPoolIx, configPda, treePda, poolPda, decodePool, decodeTree,
+  amountForBurn, amountForMint, sharesForDeposit, sharesForWithdraw, staticAddresses, PROGRAM_ID, createLookupTable, fetchLookupTable, buildV0, TOKEN_2022_PROGRAM_ID,
+  LAUNCH_PROGRAM_ID, launchpadPda, curvePda, intakePda, intakeAta, claimAta, claimKeypair, decodeCurve, decodeLaunchpad, decodeTokenMetadata,
+  defaultLaunchpadParams, initLaunchpadIx, launchIx, harvestIx, publicBuyIx, exitData, exitAccounts, EXIT_BUY, EXIT_SELL,
+  fetchClaimRents, quotePrivateBuy, quotePrivateSell, buyReserve, claimShieldAccounts, closeTokenAccountIx, launchStaticAddresses, spotPrice,
+} from "../sdk/dist/index.js";
+
+const { values } = parseArgs({ options: { rpc: { type: "string", default: "http://127.0.0.1:8899" }, keypair: { type: "string", default: "keypairs/deployer.json" } } });
+const conn = new Connection(values.rpc, "confirmed");
+const payer = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(values.keypair, "utf8"))));
+const artifacts = {
+  transact2x2: { wasm: "circuits/build/transact2x2/transact2x2_js/transact2x2.wasm", zkey: "circuits/build/transact2x2/transact2x2_dev.zkey" },
+  transact4x2: { wasm: "circuits/build/transact4x2/transact4x2_js/transact4x2.wasm", zkey: "circuits/build/transact4x2/transact4x2_dev.zkey" },
+};
+const SOL = SystemProgram.programId;
+const solAsset = assetId(SOL);
+const t0 = Date.now();
+const log = (...a) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}s]`, ...a);
+const fmt = (l) => (Number(l) / LAMPORTS_PER_SOL).toFixed(4) + " SOL";
+const fmtT = (t, d = 6) => (Number(t) / 10 ** d).toLocaleString("en-US", { maximumFractionDigits: 2 });
+const assert = (c, m) => { if (!c) throw new Error(`ASSERT: ${m}`); };
+
+let table;
+async function send(ixs, signers, label, { cu } = {}) {
+  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
+  const tx = buildV0(signers[0].publicKey, ixs, blockhash, table, { cuLimit: cu ?? 1_400_000 });
+  tx.sign(signers);
+  const size = tx.serialize().length;
+  try {
+    const sig = await conn.sendTransaction(tx, { skipPreflight: false });
+    const res = await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+    if (res.value.err) throw new Error(JSON.stringify(res.value.err));
+    const meta = (await conn.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 })).meta;
+    log(`${label}: ok  ${size}B  cu=${meta.computeUnitsConsumed}`);
+    return { sig, meta };
+  } catch (e) {
+    console.error(`${label}: FAILED`, e.message.split("\n")[0]);
+    const logs = e.logs ?? (typeof e.getLogs === "function" ? await e.getLogs(conn).catch(() => undefined) : undefined)
+      ?? (await conn.simulateTransaction(tx, { sigVerify: false })).value.logs;
+    if (logs) console.error(logs.join("\n"));
+    throw e;
+  }
+}
+const expectFail = async (p, re, label) => {
+  try { await p; } catch (e) { if (re.test(e.message) || re.test(String(e.logs ?? ""))) { log(`${label}: rejected as expected`); return; } throw e; }
+  throw new Error(`${label}: should have failed`);
+};
+
+// --- actors
+const alice = Keypair.generate(); // funds her shielded balance publicly once; never touches the token
+const relayer = Keypair.generate();
+const treasury = Keypair.generate();
+for (const k of [alice, relayer]) {
+  await sendAndConfirmTransaction(conn, new Transaction().add(SystemProgram.transfer({ fromPubkey: payer.publicKey, toPubkey: k.publicKey, lamports: 20 * LAMPORTS_PER_SOL })), [payer]);
+}
+const seed = new Uint8Array(32).fill(42);
+const aliceW = await ShieldedWallet.fromSeed(seed);
+
+// --- vault + launchpad
+if (!(await conn.getAccountInfo(configPda()))) await send([initializeIx(payer.publicKey, payer.publicKey)], [payer], "vault: initialize");
+if (!(await conn.getAccountInfo(poolPda(SOL)))) await send([createPoolIx(payer.publicKey, SOL, 100_000n * BigInt(LAMPORTS_PER_SOL))], [payer], "vault: create SOL pool");
+const params = defaultLaunchpadParams(treasury.publicKey);
+if (!(await conn.getAccountInfo(launchpadPda()))) await send([initLaunchpadIx(payer.publicKey, params)], [payer], "launchpad: initialise");
+const lp = decodeLaunchpad(new Uint8Array((await conn.getAccountInfo(launchpadPda())).data));
+assert(lp.tradeFeeBps === 100 && lp.vaultProgram.equals(PROGRAM_ID) && lp.curveSupply === params.curveSupply, "launchpad decoded");
+await expectFail(send([initLaunchpadIx(payer.publicKey, params)], [payer], "launchpad: second initialise"), /0x2\b|AlreadyInitialized/, "launchpad is write-once");
+
+// --- 1. launch: mint + curve + shielded pool in one transaction, paid by a public wallet (the creator)
+const mint = Keypair.generate();
+const meta = { name: "Shielded Test", symbol: "SHT", uri: "https://scash.example/sht.json" };
+await send([launchIx(payer.publicKey, mint.publicKey, meta)], [payer, mint], `launch ${meta.symbol}`);
+const mintInfo = await conn.getAccountInfo(mint.publicKey);
+assert(mintInfo.owner.equals(TOKEN_2022_PROGRAM_ID), "mint is Token-2022");
+assert(mintInfo.data[46] === 0, "no freeze authority (COption tag at 46)");
+assert(mintInfo.data[0] === 0, "mint authority revoked (COption tag at 0)");
+const md = decodeTokenMetadata(new Uint8Array(mintInfo.data));
+assert(md && md.name === meta.name && md.symbol === meta.symbol && md.uri === meta.uri, `metadata on the mint: ${JSON.stringify(md)}`);
+const tokenAsset = assetId(mint.publicKey);
+const tokenPool = async () => decodePool(new Uint8Array((await conn.getAccountInfo(poolPda(mint.publicKey))).data));
+const curve = async () => decodeCurve(new Uint8Array((await conn.getAccountInfo(curvePda(mint.publicKey))).data));
+let c = await curve();
+assert(c.realToken === params.curveSupply && c.virtualToken === params.virtualToken && c.realSol === 0n && !c.graduated, "fresh curve state");
+assert((await tokenPool()).totalShares === 0n, "token pool exists and is empty");
+log(`curve: ${fmtT(c.realToken)} ${meta.symbol} for sale, spot ${(spotPrice(c, 6) / LAMPORTS_PER_SOL).toExponential(3)} SOL/token`);
+
+// --- lookup table with vault + launch statics
+const addrs = [...staticAddresses([{ mint: SOL }, { mint: mint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID }], undefined, relayer.publicKey), ...launchStaticAddresses(mint.publicKey)];
+const seen = new Set();
+table = await fetchLookupTable(conn, await createLookupTable(conn, payer, addrs.filter((a) => (seen.has(a.toBase58()) ? false : seen.add(a.toBase58())))));
+await new Promise((r) => setTimeout(r, 1500));
+table = await fetchLookupTable(conn, table.key);
+
+const tree = new MerkleTree(26);
+await tree.whenReady();
+const chainTree = async () => decodeTree(new Uint8Array((await conn.getAccountInfo(treePda())).data));
+if ((await chainTree()).nextIndex !== 0n) throw new Error("this script expects an empty tree; run on a fresh validator");
+const apply = async (built, asset) => {
+  for (let i = 0; i < 2; i++) {
+    const idx = await tree.insert(built.proof.outCommitments[i]);
+    await aliceW.scan({ index: idx, commitment: built.proof.outCommitments[i], ciphertext: built.ext.ciphertexts[i] }, asset);
+  }
+  aliceW.markSpent(built.consumedNullifiers);
+};
+const solPool = async () => decodePool(new Uint8Array((await conn.getAccountInfo(poolPda(SOL))).data));
+
+// --- 2. alice shields 10 SOL (the only public act she ever performs)
+let built = await aliceW.buildTransact({
+  asset: solAsset, mint: SOL, pool: await solPool(), tree, chainTree: await chainTree(), artifacts, kind: "shield", amount: 10n * BigInt(LAMPORTS_PER_SOL),
+  relayer: alice.publicKey, relayerDest: alice.publicKey, relayerFee: 0n, payer: alice.publicKey, depositor: alice.publicKey,
+});
+await send([built.instruction], [alice], "alice: shield 10 SOL");
+await apply(built, solAsset);
+
+// --- 3. public buying is refused before graduation
+await expectFail(send([publicBuyIx(relayer.publicKey, mint.publicKey, 1_000_000n, 0n)], [relayer], "public buy before graduation"), /0xa|NotGraduated/, "curve is shielded-only");
+
+// --- 4. private buy: unshield 2 SOL to the curve, tokens land at a throwaway claim key
+const rents = await fetchClaimRents(conn);
+const claimBudget = 3_000_000n; // the claim's own tx fee plus slack; anything left stays with the claim key
+const relayerFee = 2_000_000n;
+const buyAmount = 2n * BigInt(LAMPORTS_PER_SOL);
+// what the vault will actually move: shares are rounded up, then burned at the pool rate
+const sp0 = await solPool();
+const delivered = amountForBurn(sp0, sharesForWithdraw(sp0, buyAmount)) - relayerFee;
+const claim1 = claimKeypair(seed, 0n);
+const q = quotePrivateBuy(c, delivered, rents, claimBudget);
+log(`quote: ${fmt(delivered)} delivered → reserve ${fmt(q.reserve)}, fee ${fmt(q.fee)}, net ${fmt(q.net)} → ${fmtT(q.out)} ${meta.symbol}`);
+built = await aliceW.buildTransact({
+  asset: solAsset, mint: SOL, pool: await solPool(), tree, chainTree: await chainTree(), artifacts, kind: "unshield", amount: buyAmount,
+  recipient: intakePda(mint.publicKey), relayer: relayer.publicKey, relayerDest: relayer.publicKey, relayerFee, payer: relayer.publicKey,
+  exitTarget: LAUNCH_PROGRAM_ID, exitData: exitData(EXIT_BUY, claim1.publicKey, claimBudget, q.out),
+  exitAccounts: exitAccounts(EXIT_BUY, mint.publicKey, claim1.publicKey, relayer.publicKey),
+});
+const relayerBefore = await conn.getBalance(relayer.publicKey);
+await send([built.instruction], [relayer], "alice: private buy (relayed; vault → curve → claim key)");
+await apply(built, solAsset);
+c = await curve();
+const claimTok = BigInt((await conn.getTokenAccountBalance(claimAta(claim1.publicKey, mint.publicKey))).value.amount);
+const claimLamports = BigInt(await conn.getBalance(claim1.publicKey));
+log(`claim key holds ${fmtT(claimTok)} ${meta.symbol} and ${fmt(claimLamports)}; curve real_sol=${fmt(c.realSol)} fees=${fmt(c.feesAccrued)} buys=${c.buys}`);
+assert(claimTok === q.out, `tokens at claim ${claimTok} == quote ${q.out}`);
+assert(claimLamports === rents.claimRent + 2n * rents.nullifierRent + claimBudget, "claim key funded with exactly rent + nullifier rents + budget");
+assert(c.realSol === q.net && c.feesAccrued === q.fee && c.realToken === params.curveSupply - q.out, "curve books match the quote");
+assert(BigInt(await conn.getBalance(intakePda(mint.publicKey))) === rents.claimRent, "intake keeps only its rent");
+const relayerAfter = await conn.getBalance(relayer.publicKey);
+log(`relayer net: ${fmt(BigInt(relayerAfter - relayerBefore))} (fee ${fmt(relayerFee)} minus 2 nullifier rents, tx fee; ATA rent reimbursed)`);
+
+// --- 5. claim: the claim key shields its whole token balance into the token's pool — an ordinary vault shield, self-paid
+let tp = await tokenPool();
+const shieldShares = sharesForDeposit(tp, claimTok);
+const shieldAmount = amountForMint(tp, shieldShares);
+assert(shieldAmount <= claimTok, "shield amount fits the balance");
+const claimShield = await aliceW.buildTransact({
+  asset: tokenAsset, mint: mint.publicKey, pool: tp, tree, chainTree: await chainTree(), artifacts, kind: "shield", amount: claimTok,
+  ...claimShieldAccounts(claim1.publicKey, mint.publicKey),
+});
+await send([claimShield.instruction, closeTokenAccountIx(claimAta(claim1.publicKey, mint.publicKey), relayer.publicKey, claim1.publicKey)], [claim1], "claim: shield tokens into the SHT pool (signed by the claim key only)");
+await apply(claimShield, tokenAsset);
+tp = await tokenPool();
+assert(aliceW.balance(tokenAsset) === shieldShares, `alice holds ${shieldShares} SHT shares privately`);
+assert(tp.totalIn === shieldAmount, "token pool total_in == shielded amount");
+assert((await conn.getAccountInfo(claimAta(claim1.publicKey, mint.publicKey))) === null, "claim ATA closed");
+log(`alice now privately holds ${fmtT(amountForBurn(tp, aliceW.balance(tokenAsset)))} ${meta.symbol}; claim key left with ${fmt(BigInt(await conn.getBalance(claim1.publicKey)))}`);
+
+// --- 6. harvest: fee → protocol treasury + bought-back tokens donated to the SHT pool (holders' rate rises)
+const rateBefore = amountForBurn(tp, 1_000_000n);
+await send([harvestIx(mint.publicKey, treasury.publicKey)], [relayer], "harvest");
+c = await curve();
+tp = await tokenPool();
+const rateAfter = amountForBurn(tp, 1_000_000n);
+const treasuryBal = BigInt(await conn.getBalance(treasury.publicKey));
+log(`treasury got ${fmt(treasuryBal)}; SHT pool rate ${rateBefore} → ${rateAfter} per 1e6 shares; fees left ${fmt(c.feesAccrued)}`);
+assert(treasuryBal === q.fee - (q.fee * 5000n) / 10_000n, "protocol share is half the fee");
+assert(rateAfter > rateBefore, "holders' share rate rose");
+assert(c.feesAccrued === 0n, "fees fully harvested");
+await expectFail(send([harvestIx(mint.publicKey, treasury.publicKey)], [relayer], "harvest again"), /0xc|Nothing/, "nothing to harvest twice");
+
+// --- 7. private sell: unshield half the tokens to the curve, SOL lands at a second claim key
+const claim2 = claimKeypair(seed, 1n);
+const sellShares = aliceW.balance(tokenAsset) / 2n;
+const sellAmount = amountForBurn(tp, sellShares);
+const sellDelivered = amountForBurn(tp, sharesForWithdraw(tp, sellAmount));
+const sq = quotePrivateSell(c, sellDelivered);
+log(`sell quote: ${fmtT(sellDelivered)} ${meta.symbol} -> ${fmt(sq.out)} after fee ${fmt(sq.fee)}`);
+built = await aliceW.buildTransact({
+  asset: tokenAsset, mint: mint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID, pool: tp, tree, chainTree: await chainTree(), artifacts, kind: "unshield", amount: sellAmount,
+  recipient: intakeAta(mint.publicKey), relayer: relayer.publicKey, relayerDest: relayer.publicKey, relayerFee: 0n, payer: relayer.publicKey,
+  exitTarget: LAUNCH_PROGRAM_ID, exitData: exitData(EXIT_SELL, claim2.publicKey, claimBudget, sq.out),
+  exitAccounts: exitAccounts(EXIT_SELL, mint.publicKey, claim2.publicKey, relayer.publicKey),
+});
+await send([built.instruction], [relayer], "alice: private sell (relayed; vault → curve → claim key)");
+await apply(built, tokenAsset);
+c = await curve();
+const claim2Lamports = BigInt(await conn.getBalance(claim2.publicKey));
+assert(claim2Lamports === sq.out, `SOL at claim key ${claim2Lamports} == quote ${sq.out}`);
+assert(c.sells === 1n, "sell counted");
+log(`claim key 2 holds ${fmt(claim2Lamports)}; curve real_sol=${fmt(c.realSol)}`);
+
+// --- 8. claim the SOL back into the shielded SOL pool
+const solBefore = aliceW.balance(solAsset);
+const sp = await solPool();
+const solShieldAmount = claim2Lamports - 2n * rents.nullifierRent - rents.claimRent - 50_000n; // keep rent-exempt minimum + fee slack behind
+const solShield = await aliceW.buildTransact({
+  asset: solAsset, mint: SOL, pool: sp, tree, chainTree: await chainTree(), artifacts, kind: "shield", amount: solShieldAmount,
+  ...claimShieldAccounts(claim2.publicKey, SOL),
+});
+await send([solShield.instruction], [claim2], "claim: shield SOL back into the SOL pool (signed by the claim key only)");
+await apply(solShield, solAsset);
+assert(aliceW.balance(solAsset) > solBefore, "alice's shielded SOL grew");
+log(`alice shielded SOL: ${fmt(amountForBurn(await solPool(), aliceW.balance(solAsset)))}`);
+
+// --- 9. a wrong-origin exit call is refused: a direct call to the launch program with exit-shaped data
+await expectFail(
+  send([{ programId: LAUNCH_PROGRAM_ID, keys: exitAccounts(EXIT_BUY, mint.publicKey, claim1.publicKey, relayer.publicKey), data: Buffer.from(new Uint8Array(57)) }], [relayer], "direct exit-shaped call"),
+  /error: 0x0(?![0-9a-f])|InvalidInstruction/, "exit path is CPI-only",
+);
+
+// --- 10. what is public
+const sigs = await conn.getSignaturesForAddress(LAUNCH_PROGRAM_ID, { limit: 20 });
+const buyers = new Set();
+for (const s of sigs) {
+  const tx = await conn.getTransaction(s.signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+  for (const k of tx.transaction.message.staticAccountKeys) buyers.add(k.toBase58());
+}
+assert(!buyers.has(alice.publicKey.toBase58()), "alice's wallet never appears in any launchpad transaction");
+log(`alice's public key appears in ${sigs.length} launchpad transactions: 0 — only relayer, curve PDAs and two throwaway claim keys do`);
+log("LAUNCH E2E PASSED");
+process.exit(0);

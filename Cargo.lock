@@ -1182,6 +1182,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "scash-launch"
+version = "0.1.0"
+dependencies = [
+ "borsh 1.8.1",
+ "scash-core",
+ "solana-program",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "scash-migrator"
 version = "0.1.0"
 dependencies = [

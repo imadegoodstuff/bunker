@@ -38,6 +38,7 @@ jobs:
       - run: cargo build-sbf --manifest-path programs/scash_vault/Cargo.toml
       - run: cargo build-sbf --manifest-path programs/scash_harvester/Cargo.toml
       - run: cargo build-sbf --manifest-path programs/scash_migrator/Cargo.toml
+      - run: cargo build-sbf --manifest-path programs/scash_launch/Cargo.toml
       - name: program sizes
         run: ls -la target/deploy/*.so
       - name: program digests (match these against the chain with scripts/verify-program.mjs)
@@ -178,6 +179,17 @@ jobs:
           NEW_VAULT_ID: Ht494MDFWJ64tK6PvEctEEV5dUCCUHsgqSDPSt7Hat7k
       - name: migration e2e (old vault → PDA → new vault, no public wallet on the path)
         run: node scripts/migrate-e2e.mjs --new-vault Ht494MDFWJ64tK6PvEctEEV5dUCCUHsgqSDPSt7Hat7k
+      - name: fresh validator with the vault and the launchpad
+        run: |
+          pkill -f solana-test-validator || true
+          sleep 2
+          solana-test-validator --reset --quiet \
+            --bpf-program A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ target/deploy/scash_vault.so \
+            --bpf-program BqPGKmEpvrSiMwrzh2zS2XT9rAS8k1FsjTz2uD5XSYE target/deploy/scash_launch.so \
+            --mint "$(solana-keygen pubkey keypairs/deployer.json)" &
+          for i in $(seq 1 60); do solana cluster-version -u http://127.0.0.1:8899 >/dev/null 2>&1 && break; sleep 1; done
+      - name: launchpad e2e (launch → private buy → claim → harvest → private sell → claim; buyer wallet never appears)
+        run: node scripts/launch-e2e.mjs
 
   deploy-devnet:
     name: deploy to devnet
@@ -205,6 +217,7 @@ jobs:
           VAULT_PROGRAM_KEYPAIR: ${{ secrets.VAULT_PROGRAM_KEYPAIR }}
           HARVESTER_PROGRAM_KEYPAIR: ${{ secrets.HARVESTER_PROGRAM_KEYPAIR }}
           MIGRATOR_PROGRAM_KEYPAIR: ${{ secrets.MIGRATOR_PROGRAM_KEYPAIR }}
+          LAUNCH_PROGRAM_KEYPAIR: ${{ secrets.LAUNCH_PROGRAM_KEYPAIR }}
         run: |
           if [ -z "$DEPLOYER_KEYPAIR" ]; then echo "no deployer secret, skipping"; exit 0; fi
           mkdir -p keypairs
@@ -218,6 +231,10 @@ jobs:
           solana program deploy target/deploy/scash_harvester.so --program-id keypairs/scash_harvester-keypair.json --upgrade-authority keypairs/deployer.json
           if [ -n "$MIGRATOR_PROGRAM_KEYPAIR" ]; then
             solana program deploy target/deploy/scash_migrator.so --program-id keypairs/scash_migrator-keypair.json --upgrade-authority keypairs/deployer.json
+          fi
+          if [ -n "$LAUNCH_PROGRAM_KEYPAIR" ]; then
+            echo "$LAUNCH_PROGRAM_KEYPAIR" > keypairs/scash_launch-keypair.json
+            solana program deploy target/deploy/scash_launch.so --program-id keypairs/scash_launch-keypair.json --upgrade-authority keypairs/deployer.json
           fi
       - name: verify deployed bytecode equals the built artifact
         env:

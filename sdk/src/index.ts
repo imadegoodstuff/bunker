@@ -11,3 +11,4 @@ export * from "./wallet.js";
 export * from "./lookup.js";
 export * from "./migrator.js";
 export * from "./errors.js";
+export * from "./launch.js";

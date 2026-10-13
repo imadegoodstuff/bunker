@@ -4,6 +4,7 @@ members = [
     "programs/scash_vault",
     "programs/scash_harvester",
     "programs/scash_migrator",
+    "programs/scash_launch",
     "crates/scash-core",
 ]
 

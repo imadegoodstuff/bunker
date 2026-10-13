@@ -1,0 +1,20 @@
+[package]
+name = "scash-launch"
+description = "scash launchpad: a bonding curve that is bought and sold from inside the shielded pool, so a token's buyers never appear on-chain."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "scash_launch"
+
+[features]
+no-entrypoint = []
+
+[dependencies]
+solana-program = { workspace = true }
+borsh = { workspace = true }
+thiserror = { workspace = true }
+scash-core = { path = "../../crates/scash-core" }
