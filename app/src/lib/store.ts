@@ -16,7 +16,7 @@ export type TxStage = "idle" | "building" | "proving" | "signing" | "relaying" |
 
 export interface ActivityItem {
   id: string;
-  kind: "shield" | "send" | "unshield";
+  kind: "shield" | "send" | "unshield" | "buy" | "sell" | "claim" | "launch";
   asset: string;
   amount: bigint;
   at: number;
@@ -37,6 +37,9 @@ interface State {
   /** Wall-clock proving time of the last proof made on this device, in ms. */
   lastProveMs?: number;
   balances: Record<string, bigint>;
+  /** Launched tokens the wallet also scans for, keyed by mint; their shielded balances (shares) live in `tokenBalances`. */
+  launchAssets: Record<string, AssetMeta>;
+  tokenBalances: Record<string, bigint>;
   notes: SpendableNote[];
   syncedTo: number;
   totalLeaves: number;
@@ -57,6 +60,17 @@ interface State {
   shield: (asset: AssetMeta, amount: bigint, owner: PublicKey, sendTx: (tx: VersionedTransaction) => Promise<string>, to?: string) => Promise<void>;
   send: (asset: AssetMeta, amount: bigint, to: string, memo?: string) => Promise<void>;
   unshield: (asset: AssetMeta, amount: bigint, recipient: PublicKey) => Promise<void>;
+  /**
+   * An unshield whose recipient is a program (the launchpad): the vault pays
+   * `recipient` and then calls `exit.target` with `exit.accounts`. Used for
+   * private buys and sells; `pool` and `fee` override the configured ones.
+   */
+  relayExit: (asset: AssetMeta, amount: bigint, o: { recipient: PublicKey; pool: PoolState; fee: bigint; exit: { target: PublicKey; data: Uint8Array; accounts: import("@solana/web3.js").AccountMeta[] }; kind: "buy" | "sell"; label: string }) => Promise<string | undefined>;
+  /** Register launched tokens so `sync` scans their notes too. */
+  addLaunchAssets: (assets: AssetMeta[]) => void;
+  pushActivity: (a: ActivityItem) => void;
+  updateActivity: (id: string, patch: Partial<ActivityItem>) => void;
+  setTx: (tx: State["tx"]) => void;
   resetTx: () => void;
 }
 
@@ -89,6 +103,8 @@ export const useScash = create<State>((set, get) => {
   pools: {},
   freezeAuthority: {},
   balances: {},
+  launchAssets: {},
+  tokenBalances: {},
   notes: [],
   syncedTo: 0,
   totalLeaves: 0,
@@ -122,8 +138,25 @@ export const useScash = create<State>((set, get) => {
   },
 
   lock() {
-    set({ phase: "idle", wallet: undefined, tree: undefined, address: undefined, notes: [], balances: {}, syncedTo: 0, activity: [] });
+    set({ phase: "idle", wallet: undefined, tree: undefined, address: undefined, notes: [], balances: {}, tokenBalances: {}, syncedTo: 0, activity: [] });
   },
+
+  addLaunchAssets(assets) {
+    const cur = get().launchAssets;
+    const fresh = assets.filter((a) => !cur[a.mint.toBase58()]);
+    if (fresh.length === 0) return;
+    const next = { ...cur };
+    for (const a of fresh) next[a.mint.toBase58()] = a;
+    set({ launchAssets: next });
+    // notes of a token we did not know about may already be in the scanned prefix
+    if (get().wallet && get().syncedTo > 0) {
+      set({ syncedTo: 0 });
+      void get().sync();
+    }
+  },
+  pushActivity(a) { set((s) => ({ activity: [a, ...s.activity] })); },
+  updateActivity(id, patch) { set((s) => ({ activity: s.activity.map((a) => (a.id === id ? { ...a, ...patch } : a)) })); },
+  setTx(tx) { set({ tx }); },
 
   async refreshPools() {
     const { connection } = get();
@@ -152,7 +185,8 @@ export const useScash = create<State>((set, get) => {
     const { wallet, tree } = get();
     if (!wallet || !tree) return;
     let from = get().syncedTo;
-    const assetIds = ASSETS.map((a) => ({ a, id: assetId(a.mint) }));
+    const launched = Object.values(get().launchAssets);
+    const assetIds = [...ASSETS, ...launched].map((a) => ({ a, id: assetId(a.mint) }));
     for (;;) {
       const page = await indexer.commitments(from, 1000);
       for (const row of page.items) {
@@ -171,8 +205,10 @@ export const useScash = create<State>((set, get) => {
     const nfs = await indexer.nullifiers(0);
     wallet.markSpent(nfs.map((n) => BigInt("0x" + n.nullifier)));
     const balances: Record<string, bigint> = {};
-    for (const { a, id } of assetIds) balances[a.symbol] = wallet.balance(id);
-    set({ balances, notes: [...wallet.notes.values()] });
+    for (const a of ASSETS) balances[a.symbol] = wallet.balance(assetId(a.mint));
+    const tokenBalances: Record<string, bigint> = {};
+    for (const a of launched) tokenBalances[a.mint.toBase58()] = wallet.balance(assetId(a.mint));
+    set({ balances, tokenBalances, notes: [...wallet.notes.values()] });
 
     // sanity: our local root must be one the chain knows
     try {
@@ -237,6 +273,10 @@ export const useScash = create<State>((set, get) => {
   async unshield(asset, amount, recipient) {
     await relayedTransact(get, set, asset, amount, "unshield", { recipient });
   },
+
+  async relayExit(asset, amount, o) {
+    return relayedTransact(get, set, asset, amount, "unshield", { recipient: o.recipient, pool: o.pool, fee: o.fee, exit: o.exit, activityKind: o.kind, label: o.label });
+  },
   };
 });
 
@@ -259,20 +299,27 @@ async function relayedTransact(
   asset: AssetMeta,
   amount: bigint,
   kind: "send" | "unshield",
-  o: { to?: string; memo?: string; recipient?: PublicKey }
-) {
+  o: {
+    to?: string; memo?: string; recipient?: PublicKey;
+    pool?: PoolState; fee?: bigint; exit?: { target: PublicKey; data: Uint8Array; accounts: import("@solana/web3.js").AccountMeta[] };
+    activityKind?: ActivityItem["kind"]; label?: string;
+  }
+): Promise<string | undefined> {
   const { wallet, tree, pools, relayer: rl } = get();
   if (!wallet || !tree) throw new Error("wallet locked");
   if (!rl) throw new Error("relayer unavailable");
-  const pool = pools[asset.symbol];
+  const pool = o.pool ?? pools[asset.symbol];
   if (!pool) throw new Error("pool not found on chain");
-  const feePolicy = rl.fees.find((f) => f.mint === asset.mint.toBase58());
-  if (!feePolicy) throw new Error("relayer does not support this asset");
-  const pct = (amount * BigInt(feePolicy.bps)) / 10_000n;
-  const fee = pct > BigInt(feePolicy.min) ? pct : BigInt(feePolicy.min);
+  let fee = o.fee;
+  if (fee === undefined) {
+    const feePolicy = rl.fees.find((f) => f.mint === asset.mint.toBase58());
+    if (!feePolicy) throw new Error("relayer does not support this asset");
+    const pct = (amount * BigInt(feePolicy.bps)) / 10_000n;
+    fee = pct > BigInt(feePolicy.min) ? pct : BigInt(feePolicy.min);
+  }
   const relayerKey = new PublicKey(rl.relayer);
   const id = crypto.randomUUID();
-  const act: ActivityItem = { id, kind, asset: asset.symbol, amount, at: Date.now(), status: "pending" };
+  const act: ActivityItem = { id, kind: o.activityKind ?? kind, asset: o.label ?? asset.symbol, amount, at: Date.now(), status: "pending" };
   set((s) => ({ activity: [act, ...s.activity], tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } }));
   let consumed: bigint[] = [];
   let accepted = false;
@@ -286,6 +333,7 @@ async function relayedTransact(
         recipient: o.recipient,
         relayer: relayerKey, relayerDest: relayerKey, relayerFee: fee, payer: relayerKey,
         memo: o.memo ? new TextEncoder().encode(o.memo) : undefined,
+        exitTarget: o.exit?.target, exitData: o.exit?.data, exitAccounts: o.exit?.accounts,
       });
       consumed = built.consumed;
       set({ lastProveMs: performance.now() - t0, tx: { stage: "relaying", message: "Handing the proof to the relayer" } });
@@ -321,6 +369,7 @@ async function relayedTransact(
     const wait = Math.max(0, job.releaseAt - Date.now());
     set({ tx: { stage: "confirming", message: `Queued. Relayer releases in ~${Math.ceil(wait / 1000)}s for timing privacy` } });
     let pollErrors = 0;
+    let signature: string | undefined;
     for (;;) {
       await new Promise((r) => setTimeout(r, 2500));
       let st: Awaited<ReturnType<typeof relayer.job>>;
@@ -334,6 +383,7 @@ async function relayedTransact(
         throw new Error(`lost contact with the relayer: ${(e as Error).message}`);
       }
       if (st.status === "confirmed") {
+        signature = st.signature;
         set((s) => ({ tx: { stage: "done", signature: st.signature }, activity: s.activity.map((a) => (a.id === id ? { ...a, status: "confirmed", signature: st.signature } : a)) }));
         break;
       }
@@ -341,6 +391,7 @@ async function relayedTransact(
     }
     await get().refreshPools();
     await get().sync();
+    return signature;
   } catch (e) {
     if (accepted) {
       // The relayer may have landed it anyway. Ask the chain: `sync` pulls the

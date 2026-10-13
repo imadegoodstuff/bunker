@@ -19,8 +19,18 @@ export class ApiError extends Error {
 export interface CommitmentRow { index: number; commitment: string; ciphertext: string; signature: string; slot: number; blockTime: number | null }
 export interface CommitmentsPage { from: number; next: number; total: number; items: CommitmentRow[] }
 
+export interface LaunchRow {
+  mint: string; name: string; symbol: string; uri: string; decimals: number;
+  virtual_sol: string; virtual_token0: string; curve_supply: string; total_supply: string; graduation_lamports: string;
+  real_sol: string; real_token: string; virtual_token: string; graduated: number; buys: number; sells: number; sol_volume: string;
+  fees_to_treasury: string; tokens_donated: string; signature: string; slot: number; block_time: number | null;
+}
+export interface TradeRow { signature: string; side: "buy" | "sell"; sol: string; fee: string; tokens: string; private: number; slot: number; block_time: number | null }
+
 export const indexer = {
   health: () => j<{ ok: boolean; commitments: number; program: string }>(`${INDEXER_URL}/health`),
+  launches: (limit = 50) => j<LaunchRow[]>(`${INDEXER_URL}/launches?limit=${limit}`),
+  launch: (mint: string) => j<LaunchRow & { trades: TradeRow[] }>(`${INDEXER_URL}/launches/${mint}`),
   commitments: (from: number, limit = 1000) => j<CommitmentsPage>(`${INDEXER_URL}/commitments?from=${from}&limit=${limit}`),
   nullifiers: (sinceSlot: number) => j<{ nullifier: string; slot: number }[]>(`${INDEXER_URL}/nullifiers?sinceSlot=${sinceSlot}&limit=5000`),
   roots: () => j<{ root: string; next_index: number; slot: number }[]>(`${INDEXER_URL}/roots?n=32`),
@@ -37,6 +47,8 @@ export interface RelayerInfo {
   fees: { mint: string; min: string; bps: number }[];
   delay: { minMs: number; maxMs: number };
   lookupTable: string | null;
+  /** exit target the relayer forwards to (the launchpad), or null if it refuses exits */
+  launchProgram?: string | null;
   queued: number;
 }
 
