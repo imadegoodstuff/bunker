@@ -8,12 +8,13 @@ primary_region = "sin"
 
 [env]
   PORT = "8788"
-  RPC_URL = "https://api.devnet.solana.com"
+  # Public fallback; the keyed endpoint is a Fly secret of the same name (secrets override [env]).
+  RPC_URL = "https://api.mainnet-beta.solana.com"
   # Comma-separated fallbacks tried after RPC_URL for every signature the primary
   # cannot return (SECURITY.md §14). Set via `flyctl secrets set RPC_URLS=…` when
   # the endpoints carry keys; empty means "primary only".
   # RPC_URLS = ""
-  PROGRAM_ID = "A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ"
+  PROGRAM_ID = "89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR"
   DB_PATH = "/data/scash-indexer.sqlite"
   SCAN_INTERVAL_MS = "4000"
 

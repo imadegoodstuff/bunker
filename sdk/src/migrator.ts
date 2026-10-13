@@ -4,7 +4,7 @@
 import { AccountMeta, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 import { concatBytes } from "./field.js";
 
-export const MIGRATOR_PROGRAM_ID = new PublicKey("24LLsX8qtFdSsmNarRgyPdSTvDdgTnCRa77S8rjdW4m3");
+export const MIGRATOR_PROGRAM_ID = new PublicKey("42CGrJH6QGjHjH1CK9yQLF44UhrYjN9cQwGqVvrSYz4u");
 const enc = new TextEncoder();
 
 /** Staging header size: disc(1) + authority(32) + target(32) + refund(32) + written(4) + len(4). */

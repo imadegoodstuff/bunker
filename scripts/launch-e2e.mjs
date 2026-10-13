@@ -73,11 +73,12 @@ const lp = decodeLaunchpad(new Uint8Array((await conn.getAccountInfo(launchpadPd
 assert(lp.tradeFeeBps === 100 && lp.vaultProgram.equals(PROGRAM_ID) && lp.curveSupply === params.curveSupply, "launchpad decoded");
 await expectFail(send([initLaunchpadIx(payer.publicKey, params)], [payer], "launchpad: second initialise"), /0x2\b|AlreadyInitialized/, "launchpad is write-once");
 
-// --- 1. launch: mint + curve + shielded pool + frozen lookup table in one transaction, paid by a public wallet (the creator)
+// --- 1. launch: the frozen lookup table in one transaction, then mint + curve + shielded pool in a second, paid by a public wallet (the creator)
 const mint = Keypair.generate();
 const meta = { name: "Shielded Test", symbol: "SHT", uri: "https://scash.example/sht.json" };
 const alt = launchLookupTableIxs(payer.publicKey, mint.publicKey, await conn.getSlot("finalized"));
-await send([...alt.ixs, launchIx(payer.publicKey, mint.publicKey, meta, alt.table)], [payer, mint], `launch ${meta.symbol}`);
+await send(alt.ixs, [payer], `lookup table for ${meta.symbol}`);
+await send([launchIx(payer.publicKey, mint.publicKey, meta, alt.table)], [payer, mint], `launch ${meta.symbol}`);
 const mintInfo = await conn.getAccountInfo(mint.publicKey);
 assert(mintInfo.owner.equals(TOKEN_2022_PROGRAM_ID), "mint is Token-2022");
 assert(mintInfo.data[46] === 0, "no freeze authority (COption tag at 46)");

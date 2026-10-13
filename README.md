@@ -1,10 +1,11 @@
 # scash
 
 **Shielded notes on Solana.** Sapling-style keys and diversified addresses, Groth16 proofs verified
-on-chain, relayer-paid transactions, and an immutable vault bounded by a per-asset turnstile.
+on-chain, relayer-paid transactions, and a vault bounded by a per-asset turnstile (immutable once the ceremony keys are burned in).
 
-> Status: pre-release on devnet. Not audited. Proving keys are development keys until the
-> [public phase-2 ceremony](ceremony/README.md) completes. See [SECURITY.md](SECURITY.md).
+> Status: **mainnet beta, not audited.** Proving keys are development keys until the
+> [public phase-2 ceremony](ceremony/README.md) completes, and the programs stay upgradeable until
+> then. Shield only what you can afford to lose. See [SECURITY.md](SECURITY.md) §16.
 
 ## What it does
 
@@ -65,8 +66,8 @@ cargo build-sbf --manifest-path programs/scash_vault/Cargo.toml
 
 ```bash
 # indexer
-RPC_URL=https://api.devnet.solana.com npm run -w indexer dev
-# relayer (fund the key with devnet SOL)
+RPC_URL=https://api.mainnet-beta.solana.com npm run -w indexer dev
+# relayer (fund the key with SOL on the cluster RPC_URL points at)
 RELAYER_KEYPAIR_PATH=./keypairs/relayer.json npm run -w relayer dev
 # app
 NEXT_PUBLIC_INDEXER_URL=http://localhost:8788 NEXT_PUBLIC_RELAYER_URL=http://localhost:8787 npm run -w app dev
@@ -77,20 +78,24 @@ Copy `circuits/build/<name>/<name>_js/<name>.wasm` and the `.zkey` into `app/pub
 
 ## Deploy
 
-Programs: `.github/workflows/ci.yml` builds SBF artifacts and deploys to devnet when the
-`DEVNET_DEPLOYER_KEYPAIR` / `*_PROGRAM_KEYPAIR` secrets are present.
+Programs: `.github/workflows/ci.yml` builds SBF artifacts on every push. The manual `deploy-mainnet` job
+(Actions → ci → Run workflow → `deploy_mainnet`) deploys them to mainnet-beta from the `mainnet` environment’s
+secrets (`MAINNET_DEPLOYER_KEYPAIR`, `MAINNET_RPC_URL`, `*_PROGRAM_KEYPAIR`), verifies the on-chain bytecode
+against the artifact it just built, and runs `scripts/init.mjs` (idempotent) using the variables
+`MAINNET_RELAYER_PUBKEY`, `MAINNET_TREASURY_PUBKEY`, `MAINNET_LOOKUP_TABLE`, `MAINNET_TVL_CAP_SOL`. The older
+`deploy-devnet` job runs on pushes to `main` only when `DEVNET_DEPLOYER_KEYPAIR` is present.
 
 Services: `fly deploy -c deploy/fly.indexer.toml`, `fly deploy -c deploy/fly.relayer.toml`,
-`fly deploy -c deploy/fly.app.toml` from the repo root, each with `--build-arg GIT_SHA=$(git rev-parse HEAD)` so the app footer, relayer `/info` and indexer `/health` report the commit they were built from. Set `RELAYER_KEYPAIR` as a Fly secret.
+`fly deploy -c deploy/fly.app.toml` from the repo root, each with `--build-arg GIT_SHA=$(git rev-parse HEAD)` so the app footer, relayer `/info` and indexer `/health` report the commit they were built from. Set `RELAYER_KEYPAIR`, `RPC_URL` (keyed endpoint) and, after `init.mjs`, `LOOKUP_TABLE` as Fly secrets on the relayer; `RPC_URL` on the indexer; pass the keyed endpoint to the app build as `--build-arg NEXT_PUBLIC_RPC_URL=…`.
 
-## Program IDs (devnet)
+## Program IDs (mainnet-beta; the same keypairs are used on devnet when that job is funded)
 
 | program | id |
 |---|---|
-| scash_vault | `A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ` |
-| scash_harvester | `9TorUNxbdb4vwNXNB6R487Th94616xGtvsBHpaETcqGi` |
-| scash_migrator | `24LLsX8qtFdSsmNarRgyPdSTvDdgTnCRa77S8rjdW4m3` |
-| scash_launch | `BqPGKmEpvrSiMwrzh2zS2XT9rAS8k1FsjTz2uD5XSYE` |
+| scash_vault | `89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR` |
+| scash_harvester | `Cmvzy6Acq5QsnzpWGYEbUCwgzMK6AHFRJkAL2LgMURqK` |
+| scash_migrator | `42CGrJH6QGjHjH1CK9yQLF44UhrYjN9cQwGqVvrSYz4u` |
+| scash_launch | `861VJkPL2yUYL1DTCToeziREP4XyraihkqbTM1irFZ3k` |
 
 ## License
 

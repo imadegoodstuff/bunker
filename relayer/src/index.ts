@@ -11,7 +11,7 @@ import { FeePolicy } from "./policy.js";
 import { SubmitQueue } from "./queue.js";
 import { PriorityFeeOracle } from "./fees.js";
 
-const RPC = process.env.RPC_URL ?? "https://api.devnet.solana.com";
+const RPC = process.env.RPC_URL ?? "https://api.mainnet-beta.solana.com";
 const PROGRAM = new PublicKey(process.env.PROGRAM_ID ?? DEFAULT_PROGRAM.toBase58());
 // The one exit target the relayer will forward to: the launchpad. Set to "" to refuse all exits.
 const LAUNCH = process.env.LAUNCH_PROGRAM_ID === "" ? undefined : new PublicKey(process.env.LAUNCH_PROGRAM_ID ?? DEFAULT_LAUNCH.toBase58());

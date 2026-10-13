@@ -6,8 +6,8 @@ import { Scanner } from "./scanner.js";
 import { contiguousPrefix } from "./paging.js";
 import { inspectProgram, type ProgramInfo } from "./program.js";
 
-const RPC = process.env.RPC_URL ?? "https://api.devnet.solana.com";
-const PROGRAM = new PublicKey(process.env.PROGRAM_ID ?? "A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ");
+const RPC = process.env.RPC_URL ?? "https://api.mainnet-beta.solana.com";
+const PROGRAM = new PublicKey(process.env.PROGRAM_ID ?? "89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR");
 const DB_PATH = process.env.DB_PATH ?? "./scash-indexer.sqlite";
 const PORT = Number(process.env.PORT ?? 8788);
 

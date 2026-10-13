@@ -1,12 +1,14 @@
 # Security
 
-scash is pre-release software. The circuits and programs are **not audited**
-and the current proving keys come from a **development setup** whose toxic
-waste is public by construction (see `circuits/scripts/setup-dev.mjs`). Do not
-use with real value until the public phase-2 ceremony (`ceremony/README.md`;
-open, one contribution per circuit so far, chain verified in CI) has
-concluded, the mainnet verifying keys are pinned in a tagged release, and an
-independent audit report is linked from this file. No audit has taken place;
+scash is beta software running on mainnet-beta. The circuits and programs are
+**not audited** and the current proving keys come from a **development
+setup** whose toxic waste is public by construction (see
+`circuits/scripts/setup-dev.mjs`). Shield only what you can afford to lose
+until the public phase-2 ceremony (`ceremony/README.md`; open, one
+contribution per circuit so far, chain verified in CI) has concluded, the
+ceremony verifying keys are pinned in a tagged release and burned into the
+programs with the upgrade authority revoked, and an independent audit report
+is linked from this file. §16 states the interim precisely. No audit has taken place;
 the scoping package for one (threat model, invariants with their tests, test
 matrix, known issues) is in `audit/`.
 
@@ -692,10 +694,55 @@ so this section states its boundary rather than its marketing.
   same curve). The harvester for the native token (§13 of SPEC) and the
   launchpad's harvest are separate code paths that do the same thing.
 
+### 16. Mainnet beta: what is deployed, under which keys, and why the upgrade authority is still held
+
+The project owner decided to run every path on mainnet-beta before the
+phase-2 ceremony has concluded and before any audit. This section records
+exactly what that means so nobody has to infer it.
+
+- **Same code, same keys as CI tests.** The four programs (`scash_vault`,
+  `scash_harvester`, `scash_migrator`, `scash_launch`) are deployed by the
+  manual `deploy-mainnet` job from the SBF artifacts of the chosen commit,
+  after `rust`, `sbf`, `ts` and the local-validator `e2e` job have passed on
+  that commit. The job refuses a program keypair whose public key is not the
+  id `declare_id!` in the source, verifies the on-chain ELF against the built
+  artifact with `scripts/verify-program.mjs`, and runs the idempotent
+  `scripts/init.mjs` (config + tree, SOL pool with its permanent TVL cap,
+  launchpad parameters, relayer lookup table). The program ids are in the
+  README; the keypairs live only in the GitHub `mainnet` environment and with
+  the owner.
+- **The proving keys are still the development keys.** Their toxic waste is
+  public (`circuits/scripts/setup-dev.mjs`). Anyone can forge a proof for
+  these verifying keys. What limits the damage is the turnstile: a forged
+  unshield cannot take more than the pool's `total_in − total_out` for that
+  asset, so the exposure is bounded by the pool's own TVL. The SOL pool's cap
+  (`MAINNET_TVL_CAP_SOL`, default 1,000 SOL) is set once at creation and can
+  only ever be lowered by the guardian, never raised, so it is both the loss
+  bound and a permanent ceiling; a higher one needs a new vault program. The
+  app's banner, FAQ and footer say so
+  on every page; the honest summary is **"only shield what you can afford to
+  lose"**.
+- **The upgrade authority is held, not burned.** The immutability guarantee
+  below is the end state, not the current one: replacing the development
+  verifying keys with the ceremony's requires either an upgrade or a new
+  program plus a migration. Until the ceremony keys are the ones burned in,
+  the deployer key can upgrade all four programs, and that key is therefore a
+  trust assumption on top of the code. It is the only one; it cannot be hidden
+  from (`solana program show` prints it) and the plan is to revoke it in the
+  same transaction batch that ships the ceremony keys.
+- **The relayer pays mainnet gas.** Its key is funded by the owner; `/health`
+  reports its runway. The keyed RPC endpoints are Fly secrets (relayer,
+  indexer) and a build argument for the app, where it is necessarily public in
+  the bundle and is restricted by origin at the provider.
+- **Devnet is no longer a target.** The former `deploy-devnet` job is kept for
+  anyone who funds it, but the hosted services, the SDK defaults and the app
+  all point at mainnet-beta; addresses use the `scash` HRP.
+
 ## Design-level guarantees
 
 - **Immutability**: the vault program is deployed without an upgrade authority
-  on mainnet. Bug fixes ship as a new program plus an opt-in migrator.
+  once the ceremony keys are burned in (§16 describes the interim). Bug fixes
+  then ship as a new program plus an opt-in migrator.
 - **Turnstile**: per asset, `total_out ≤ total_in` is enforced on-chain.
 - **Guardian limits**: the guardian can only pause *shielding* and *lower* the
   TVL cap. It can never pause withdrawals, change verifying keys, or move funds.

@@ -9,8 +9,8 @@ entry says whether it is accepted, planned, or blocked on something external.
 |---|---|---|
 | Phase-2 ceremony | open; coordinator contribution #1 for both circuits; tooling and CI verification in place | contributions from parties unrelated to the coordinator, then the beacon (`ceremony/README.md`) |
 | Independent audit | not started; this package is the input | an external team; report goes to `audit/reports/` |
-| Mainnet deployment | not done | the two items above |
-| **Devnet deployment** | **not done**: the program id the hosted app/relayer/indexer use (`A827Zi2V…`) has no account on devnet; CI `deploy-devnet` skips for lack of `DEVNET_DEPLOYER_KEYPAIR`. All e2e runs are on `solana-test-validator` in CI. The footer reports "not deployed on this cluster". | a funded devnet deployer keypair set as the CI secret; the job then deploys and runs `scripts/verify-program.mjs` |
+| **Mainnet deployment with development keys** | **owner's decision**: the hosted app/relayer/indexer point at mainnet-beta and the manual `deploy-mainnet` CI job deploys the four programs under the ids in the README once the `mainnet` environment secrets are set; until that job has run the footer reports "not deployed on this cluster". The verifying keys are the development keys (toxic waste public), the SOL pool cap is the loss bound and can only be lowered, and the deployer keeps the upgrade authority so the ceremony keys can replace them. `SECURITY.md` §16. | the two items above; then a release that burns in the ceremony keys and revokes the upgrade authority |
+| Devnet deployment | not a target any more; the `deploy-devnet` job remains for anyone who funds `DEVNET_DEPLOYER_KEYPAIR`. All e2e runs are on `solana-test-validator` in CI. | — |
 
 ## Accepted for the current release
 
@@ -39,7 +39,8 @@ entry says whether it is accepted, planned, or blocked on something external.
 | Anonymity set is per asset (and per amount distribution) | `asset` is public; sharing one tree is an engineering choice. SPEC §8. |
 | Migration is two transactions, not one | Two proofs do not fit one packet. Between them funds sit in a PDA whose only destination is the staged shield; Execute is permissionless. |
 | Migrator does not hide that X left pool A and X entered pool B | Same information as any public shield; old notes spent and new note owner remain hidden. |
-| Dev keys in the deployed devnet programs | Deterministic by design so CI can detect VK drift; toxic waste is public; never for value. |
+| Dev keys in the deployed programs (mainnet included) | Deterministic by design so CI can detect VK drift; toxic waste is public, so proofs are forgeable and the turnstile plus the pool cap bound the loss to the pool's own TVL. Users are told to shield only what they can afford to lose until the ceremony keys ship. `SECURITY.md` §16. |
+| Upgrade authority held until the ceremony keys ship | Needed to replace the development verifying keys; revoked in the release that burns the ceremony keys in. Until then the deployer key is a trust assumption, visible via `solana program show`. `SECURITY.md` §16. |
 | Relayer learns recipient of unshields | Inherent in relaying a public unshield; the relayer learns nothing about which notes were spent. Users can self-relay. |
 | Indexer is a trusted-for-availability component | Every leaf, ciphertext and root it returns is re-verified by the client. |
 

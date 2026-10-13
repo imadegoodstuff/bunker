@@ -5,7 +5,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bigIntToBytesLE, concatBytes } from "./field.js";
 import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, PROGRAM_ID as VAULT_PROGRAM_ID, associatedTokenAddress, configPda, poolPda, vaultFor } from "./program.js";
 
-export const LAUNCH_PROGRAM_ID = new PublicKey("BqPGKmEpvrSiMwrzh2zS2XT9rAS8k1FsjTz2uD5XSYE");
+export const LAUNCH_PROGRAM_ID = new PublicKey("861VJkPL2yUYL1DTCToeziREP4XyraihkqbTM1irFZ3k");
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 

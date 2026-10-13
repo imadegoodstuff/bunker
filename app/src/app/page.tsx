@@ -16,7 +16,7 @@ const steps = [
 ];
 
 const guarantees = [
-  ["Nobody can freeze a note", "No upgrade authority, no admin path to a note. The one privileged key can only pause new deposits or lower the cap."],
+  ["Nobody can freeze a note", "No admin path to a note. The one privileged key can only pause new deposits or lower the cap. The upgrade authority is kept only until the ceremony keys are burned in, then revoked; until then it is the one thing to trust."],
   ["The pool cannot overpay", "A per-asset turnstile enforces total out ≤ total in outside the circuit. A broken proof could never drain more than was deposited."],
   ["Proofs never leave your device", "Keys, notes and proofs live in the page. The indexer serves ciphertext, the relayer forwards bytes. Neither can read a thing."],
   ["Private, still provable", "Show one payment to one party with a receipt, and nothing else, when you must."],
@@ -27,7 +27,7 @@ const faq = [
   ["Who pays the network fee?", "A relayer. Its fee is deducted inside the proof from your notes, so the address that receives funds never needs SOL for gas."],
   ["Where does the yield come from?", "Creator fees from SCASH trading are harvested and donated into the SCASH pool. Balances there are shares, so every SCASH note grows at once. It only applies to the SCASH pool and depends on trading volume."],
   ["What if this site disappears?", "Your keys come from your wallet signature (plus passphrase), and every ciphertext is on-chain. Any copy of the open-source app recovers the same notes."],
-  ["Is it audited?", "Not yet. This is a devnet pre-release with development proving keys. The code, the ceremony transcript and the audit package are public; SECURITY.md lists every known limitation."],
+  ["Is it audited?", "Not yet. This is an unaudited beta on mainnet with development proving keys until the public ceremony completes, and the programs stay upgradeable until then. Only shield what you can afford to lose. The code, the ceremony transcript and the audit package are public; SECURITY.md lists every known limitation."],
   ["Can a phishing site steal my keys?", "Any site can ask your wallet to sign the fixed message, which is why the app asks for a passphrase mixed into the key. With a passphrase set, a stolen signature alone is useless; if you turned the passphrase off, it is the whole key. If another site asks you to sign it, refuse."],
   ["What can the relayer and indexer see?", "Not your notes or keys. They do see your IP address, when you ask and what you ask for: the indexer sees which pages of ciphertext you fetch, the relayer sees when a proof arrives. The relayer's random delay weakens timing correlation; it does not remove it. Use a VPN or Tor and avoid withdrawing right after depositing if that matters to you."],
 ];
@@ -58,7 +58,7 @@ export default function Landing() {
                   <Link href="/app" className="btn-primary px-6">Open app</Link>
                   <a href="#how" className="btn-ghost">See how it works</a>
                 </div>
-                <p className="mt-5 text-xs text-dim">Devnet pre-release · open source · Zcash Sapling design</p>
+                <p className="mt-5 text-xs text-dim">Mainnet beta · open source · Zcash Sapling design</p>
               </Reveal>
             </div>
             <Reveal delay={0.15}><Veil /></Reveal>
@@ -208,7 +208,7 @@ export default function Landing() {
           <div className="mx-auto grid max-w-6xl gap-10 px-6 py-14 text-sm md:grid-cols-[1fr_repeat(3,10rem)]">
             <div>
               <div className="flex items-center gap-2 font-medium"><img src="/icon.svg" alt="" className="h-5 w-5 rounded-md" /> scash</div>
-              <p className="mt-3 max-w-xs text-xs leading-relaxed text-dim">Shielded notes on Solana. Pre-release: not audited, development proving keys. MIT licensed.</p>
+              <p className="mt-3 max-w-xs text-xs leading-relaxed text-dim">Shielded notes on Solana. Beta: not audited, development proving keys until the ceremony completes. MIT licensed.</p>
               <Builds />
             </div>
             <Col title="Product" links={[["App", "/app"], ["Spec", `${GH}/blob/main/SPEC.md`]]} />

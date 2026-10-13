@@ -5,7 +5,7 @@ import { bigIntToBytesBE, bigIntToBytesLE, concatBytes } from "./field.js";
 import { serializeExtData, type ExtData } from "./extdata.js";
 import type { TransactProof } from "./prover.js";
 
-export const PROGRAM_ID = new PublicKey("A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ");
+export const PROGRAM_ID = new PublicKey("89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR");
 export const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 export const TOKEN_2022_PROGRAM_ID = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 export const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");

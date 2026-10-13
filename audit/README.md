@@ -64,7 +64,7 @@ node scripts/e2e.mjs            # needs solana-test-validator, see .github/workf
 
 Toolchain versions are pinned in `rust-toolchain.toml`, `circuits/package.json`
 (circom2, snarkjs) and `.github/workflows/ci.yml` (Solana CLI). Program ids
-are in `README.md`; the devnet deployment is redeployed from `main` by CI.
+are in `README.md`; the mainnet deployment is made by the manual `deploy-mainnet` CI job from a chosen commit (SECURITY.md §16).
 
 ## Documents
 

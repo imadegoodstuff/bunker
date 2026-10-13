@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      deploy_mainnet:
+        description: "deploy the SBF artifacts of this commit to mainnet-beta and initialise the protocol (needs the mainnet environment secrets)"
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -150,8 +156,8 @@ jobs:
           mkdir -p keypairs
           solana-keygen new --no-bip39-passphrase --silent -o keypairs/deployer.json
           solana-test-validator --reset --quiet \
-            --bpf-program A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ target/deploy/scash_vault.so \
-            --bpf-program 9TorUNxbdb4vwNXNB6R487Th94616xGtvsBHpaETcqGi target/deploy/scash_harvester.so \
+            --bpf-program 89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR target/deploy/scash_vault.so \
+            --bpf-program Cmvzy6Acq5QsnzpWGYEbUCwgzMK6AHFRJkAL2LgMURqK target/deploy/scash_harvester.so \
             --mint "$(solana-keygen pubkey keypairs/deployer.json)" &
           for i in $(seq 1 60); do solana cluster-version -u http://127.0.0.1:8899 >/dev/null 2>&1 && break; sleep 1; done
           solana cluster-version -u http://127.0.0.1:8899
@@ -170,9 +176,9 @@ jobs:
           pkill -f solana-test-validator || true
           sleep 2
           solana-test-validator --reset --quiet \
-            --bpf-program A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ target/deploy/scash_vault.so \
+            --bpf-program 89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR target/deploy/scash_vault.so \
             --bpf-program ${NEW_VAULT_ID} target/deploy/scash_vault.so \
-            --bpf-program 24LLsX8qtFdSsmNarRgyPdSTvDdgTnCRa77S8rjdW4m3 target/deploy/scash_migrator.so \
+            --bpf-program 42CGrJH6QGjHjH1CK9yQLF44UhrYjN9cQwGqVvrSYz4u target/deploy/scash_migrator.so \
             --mint "$(solana-keygen pubkey keypairs/deployer.json)" &
           for i in $(seq 1 60); do solana cluster-version -u http://127.0.0.1:8899 >/dev/null 2>&1 && break; sleep 1; done
         env:
@@ -184,8 +190,8 @@ jobs:
           pkill -f solana-test-validator || true
           sleep 2
           solana-test-validator --reset --quiet \
-            --bpf-program A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ target/deploy/scash_vault.so \
-            --bpf-program BqPGKmEpvrSiMwrzh2zS2XT9rAS8k1FsjTz2uD5XSYE target/deploy/scash_launch.so \
+            --bpf-program 89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR target/deploy/scash_vault.so \
+            --bpf-program 861VJkPL2yUYL1DTCToeziREP4XyraihkqbTM1irFZ3k target/deploy/scash_launch.so \
             --mint "$(solana-keygen pubkey keypairs/deployer.json)" &
           for i in $(seq 1 60); do solana cluster-version -u http://127.0.0.1:8899 >/dev/null 2>&1 && break; sleep 1; done
       - name: launchpad e2e (launch → private buy → claim → harvest → private sell → claim; buyer wallet never appears)
@@ -244,3 +250,85 @@ jobs:
           npm ci
           node scripts/verify-program.mjs "$(solana-keygen pubkey keypairs/scash_vault-keypair.json)" target/deploy/scash_vault.so --rpc https://api.devnet.solana.com
           node scripts/verify-program.mjs "$(solana-keygen pubkey keypairs/scash_harvester-keypair.json)" target/deploy/scash_harvester.so --rpc https://api.devnet.solana.com
+
+  # Manual, gated on the `mainnet` environment: deploys the four programs under the ids declared in
+  # the source (the program keypairs are environment secrets), verifies the on-chain bytecode against
+  # the artifact built by this very run, and initialises config/tree, the SOL pool, the launchpad and
+  # the relayer lookup table (all idempotent). Programs stay upgradeable by the deployer until the
+  # phase-2 ceremony's keys are the ones burned in (SECURITY.md §16).
+  deploy-mainnet:
+    name: deploy to mainnet-beta
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_mainnet
+    needs: [rust, sbf, ts, e2e]
+    runs-on: ubuntu-latest
+    environment: mainnet
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: programs
+          path: target/deploy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: install solana
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/${SOLANA_VERSION}/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+      - name: deploy
+        env:
+          DEPLOYER_KEYPAIR: ${{ secrets.MAINNET_DEPLOYER_KEYPAIR }}
+          RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
+          VAULT_PROGRAM_KEYPAIR: ${{ secrets.VAULT_PROGRAM_KEYPAIR }}
+          HARVESTER_PROGRAM_KEYPAIR: ${{ secrets.HARVESTER_PROGRAM_KEYPAIR }}
+          MIGRATOR_PROGRAM_KEYPAIR: ${{ secrets.MIGRATOR_PROGRAM_KEYPAIR }}
+          LAUNCH_PROGRAM_KEYPAIR: ${{ secrets.LAUNCH_PROGRAM_KEYPAIR }}
+        run: |
+          if [ -z "$DEPLOYER_KEYPAIR" ]; then echo "MAINNET_DEPLOYER_KEYPAIR is not set"; exit 1; fi
+          RPC="${RPC_URL:-https://api.mainnet-beta.solana.com}"
+          mkdir -p keypairs
+          echo "$DEPLOYER_KEYPAIR" > keypairs/deployer.json
+          echo "$VAULT_PROGRAM_KEYPAIR" > keypairs/scash_vault-keypair.json
+          echo "$HARVESTER_PROGRAM_KEYPAIR" > keypairs/scash_harvester-keypair.json
+          echo "$MIGRATOR_PROGRAM_KEYPAIR" > keypairs/scash_migrator-keypair.json
+          echo "$LAUNCH_PROGRAM_KEYPAIR" > keypairs/scash_launch-keypair.json
+          # the keypairs must be the ids the source declares, or the PDAs every client derives are wrong
+          for p in vault harvester migrator launch; do
+            want=$(grep -o 'declare_id!("[^"]*")' programs/scash_$p/src/lib.rs | cut -d'"' -f2)
+            have=$(solana-keygen pubkey keypairs/scash_$p-keypair.json)
+            [ "$want" = "$have" ] || { echo "scash_$p keypair is $have, source declares $want"; exit 1; }
+          done
+          solana config set --url "$RPC" --keypair keypairs/deployer.json >/dev/null
+          echo "deployer $(solana address) balance $(solana balance)"
+          for p in vault harvester migrator launch; do
+            solana program deploy target/deploy/scash_$p.so --program-id keypairs/scash_$p-keypair.json \
+              --upgrade-authority keypairs/deployer.json --with-compute-unit-price 20000 --max-sign-attempts 60
+          done
+      - name: verify deployed bytecode equals the built artifact
+        env:
+          RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
+        run: |
+          RPC="${RPC_URL:-https://api.mainnet-beta.solana.com}"
+          npm ci
+          npm run -w sdk build
+          for p in vault harvester migrator launch; do
+            node scripts/verify-program.mjs "$(solana-keygen pubkey keypairs/scash_$p-keypair.json)" target/deploy/scash_$p.so --rpc "$RPC"
+          done
+      - name: initialise config, tree, SOL pool, launchpad, lookup table
+        env:
+          RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
+          RELAYER_PUBKEY: ${{ vars.MAINNET_RELAYER_PUBKEY }}
+          TREASURY_PUBKEY: ${{ vars.MAINNET_TREASURY_PUBKEY }}
+          LOOKUP_TABLE: ${{ vars.MAINNET_LOOKUP_TABLE }}
+          TVL_CAP_SOL: ${{ vars.MAINNET_TVL_CAP_SOL }}
+        run: |
+          RPC="${RPC_URL:-https://api.mainnet-beta.solana.com}"
+          set -- --keypair keypairs/deployer.json --rpc "$RPC" --tvl-cap-sol "${TVL_CAP_SOL:-1000}"
+          [ -n "$RELAYER_PUBKEY" ] && set -- "$@" --relayer "$RELAYER_PUBKEY"
+          [ -n "$TREASURY_PUBKEY" ] && set -- "$@" --treasury "$TREASURY_PUBKEY"
+          [ -n "$LOOKUP_TABLE" ] && set -- "$@" --lookup-table "$LOOKUP_TABLE"
+          node scripts/init.mjs "$@"
+      - name: scrub keypairs
+        if: always()
+        run: rm -rf keypairs

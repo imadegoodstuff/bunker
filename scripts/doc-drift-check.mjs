@@ -66,7 +66,8 @@ const facts = [
   { doc: "SECURITY.md", re: /re-syncs and re-proves once/, what: "automatic re-prove on stale root" },
   { doc: "SECURITY.md", re: /idempotent on nullifiers/, what: "relayer idempotency" },
   { doc: "SECURITY.md", re: /`null` and thrown errors both defer|`null`.*defer/, what: "indexer defers null" },
-  { doc: "audit/KNOWN_ISSUES.md", re: /Devnet deployment/, what: "devnet deployment status" },
+  { doc: "audit/KNOWN_ISSUES.md", re: /Mainnet deployment with development keys/, what: "mainnet deployment status" },
+  { doc: "SECURITY.md", re: /upgrade authority is held, not burned/, what: "interim upgrade authority (mainnet beta)" },
   { doc: "SECURITY.md", re: /`RPC_URLS` takes a comma-separated list/, what: "indexer RPC failover" },
   { doc: "SECURITY.md", re: new RegExp("\\[CU_PRICE, CU_PRICE_MAX\\]` \\(defaults 0 and " + cuPriceMax.toLocaleString("en-US").replace(/,/g, " ")), what: `relayer priority fee cap ${cuPriceMax}` },
 ];

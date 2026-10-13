@@ -8,8 +8,10 @@ primary_region = "sin"
 
 [env]
   PORT = "8787"
-  RPC_URL = "https://api.devnet.solana.com"
-  PROGRAM_ID = "A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ"
+  # Public fallback; the keyed endpoint is a Fly secret of the same name (secrets override [env]).
+  RPC_URL = "https://api.mainnet-beta.solana.com"
+  PROGRAM_ID = "89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR"
+  LAUNCH_PROGRAM_ID = "861VJkPL2yUYL1DTCToeziREP4XyraihkqbTM1irFZ3k"
   MIN_DELAY_MS = "5000"
   MAX_DELAY_MS = "90000"
   MIN_FEE_LAMPORTS = "1500000"

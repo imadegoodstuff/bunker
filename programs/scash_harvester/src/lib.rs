@@ -32,7 +32,7 @@ use solana_program::{
     sysvar::Sysvar,
 };
 
-solana_program::declare_id!("9TorUNxbdb4vwNXNB6R487Th94616xGtvsBHpaETcqGi");
+solana_program::declare_id!("Cmvzy6Acq5QsnzpWGYEbUCwgzMK6AHFRJkAL2LgMURqK");
 
 pub const SEED_CONFIG: &[u8] = b"harvester";
 pub const SEED_AUTHORITY: &[u8] = b"authority";

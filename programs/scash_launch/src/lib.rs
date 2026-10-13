@@ -43,7 +43,7 @@ pub mod token;
 use solana_program::program_error::ProgramError;
 use thiserror::Error;
 
-solana_program::declare_id!("BqPGKmEpvrSiMwrzh2zS2XT9rAS8k1FsjTz2uD5XSYE");
+solana_program::declare_id!("861VJkPL2yUYL1DTCToeziREP4XyraihkqbTM1irFZ3k");
 
 pub mod seeds {
     pub const LAUNCHPAD: &[u8] = b"launchpad";

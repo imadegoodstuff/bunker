@@ -32,4 +32,4 @@ mod entrypoint {
     }
 }
 
-solana_program::declare_id!("A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ");
+solana_program::declare_id!("89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR");

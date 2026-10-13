@@ -48,7 +48,7 @@ use solana_program::{
 };
 use thiserror::Error;
 
-solana_program::declare_id!("24LLsX8qtFdSsmNarRgyPdSTvDdgTnCRa77S8rjdW4m3");
+solana_program::declare_id!("42CGrJH6QGjHjH1CK9yQLF44UhrYjN9cQwGqVvrSYz4u");
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum MigratorError {

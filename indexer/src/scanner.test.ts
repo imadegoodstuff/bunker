@@ -8,7 +8,7 @@ import { Db } from "./db.js";
 import { Scanner, DEGRADED_AFTER_MS } from "./scanner.js";
 import { contiguousPrefix } from "./paging.js";
 
-const PROGRAM = new PublicKey("A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ");
+const PROGRAM = new PublicKey("89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR");
 const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64");
 const bytes32 = (fill: number) => new Uint8Array(32).fill(fill);
 
