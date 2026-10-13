@@ -93,7 +93,7 @@ const applyOutputs = async (built) => {
 // --- 1. Alice shields 1 SOL
 let p = await pool();
 let built = await aliceW.buildTransact({
-  asset, mint: SOL, pool: p, tree, artifacts, kind: "shield", amount: 1n * BigInt(LAMPORTS_PER_SOL),
+  asset, mint: SOL, pool: p, tree, chainTree: await chainTree(), artifacts, kind: "shield", amount: 1n * BigInt(LAMPORTS_PER_SOL),
   relayer: alice.publicKey, relayerDest: alice.publicKey, relayerFee: 0n, payer: alice.publicKey, depositor: alice.publicKey,
 });
 log(`shield proof built (${built.proof.circuit})`);
@@ -105,7 +105,7 @@ log("alice shielded balance:", fmt(amountForBurn(await pool(), aliceW.balance(as
 p = await pool();
 const fee = 2_000_000n;
 built = await aliceW.buildTransact({
-  asset, mint: SOL, pool: p, tree, artifacts, kind: "send", amount: 400_000_000n, to: decodeAddress(bobW.bjj, bobAddr).address,
+  asset, mint: SOL, pool: p, tree, chainTree: await chainTree(), artifacts, kind: "send", amount: 400_000_000n, to: decodeAddress(bobW.bjj, bobAddr).address,
   relayer: relayer.publicKey, relayerDest: relayer.publicKey, relayerFee: fee, payer: relayer.publicKey,
   memo: new TextEncoder().encode("invoice #42"),
 });
@@ -120,7 +120,7 @@ log("relayer net:", fmt(BigInt((await conn.getBalance(relayer.publicKey)) - rela
 // --- 3. Bob unshields 0.25 SOL to a fresh public key via the relayer
 p = await pool();
 built = await bobW.buildTransact({
-  asset, mint: SOL, pool: p, tree, artifacts, kind: "unshield", amount: 250_000_000n, recipient: bobPublic.publicKey,
+  asset, mint: SOL, pool: p, tree, chainTree: await chainTree(), artifacts, kind: "unshield", amount: 250_000_000n, recipient: bobPublic.publicKey,
   relayer: relayer.publicKey, relayerDest: relayer.publicKey, relayerFee: fee, payer: relayer.publicKey,
 });
 await send([built.instruction], [relayer], "unshield 0.25 SOL → fresh key (relayed)");

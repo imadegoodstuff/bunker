@@ -9,7 +9,7 @@ import { fullViewingKey, groupHash, newAddress, spendingKeyFromSeed, type Addres
 import { MerkleTree } from "./merkle.js";
 import { noteCommitment, nullifier, type Note, type SpendableNote } from "./note.js";
 import { prove, type CircuitArtifacts, type CircuitName, type SpendInput, type TransactProof } from "./prover.js";
-import { transactIx, type PoolState, type TransactAccounts, sharesForDeposit, sharesForWithdraw, amountForMint } from "./program.js";
+import { transactIx, findRootIndex, type PoolState, type TreeState, type TransactAccounts, sharesForDeposit, sharesForWithdraw, amountForMint } from "./program.js";
 
 export interface IndexedOutput {
   index: number; // leaf index
@@ -26,7 +26,8 @@ export interface BuiltTransact {
   proof: TransactProof;
   ext: ExtData;
   root: bigint;
-  publicAmountFe: bigint;
+  rootIndex: number;
+  publicAmount: bigint;
   aspRoot: bigint;
   instruction: TransactionInstruction;
   outputs: Note[];
@@ -132,6 +133,9 @@ export class ShieldedWallet {
     tokenProgram?: PublicKey;
     pool: PoolState;
     tree: MerkleTree;
+    /** On-chain tree state, used to locate the root in the ring (or pass rootIndex). */
+    chainTree?: TreeState;
+    rootIndex?: number;
     artifacts: Record<CircuitName, CircuitArtifacts>;
     kind: "shield" | "send" | "unshield";
     amount: bigint; // asset base units
@@ -239,7 +243,8 @@ export class ShieldedWallet {
       opts.artifacts
     );
 
-    const publicAmountFe = proof.publicSignals[1];
+    const rootIndex = opts.rootIndex ?? findRootIndex(opts.chainTree!, root);
+    if (rootIndex < 0) throw new Error("local root is not in the on-chain ring; resync");
     const accounts: TransactAccounts = {
       payer: opts.payer,
       mint: opts.mint,
@@ -251,10 +256,10 @@ export class ShieldedWallet {
       exitTarget: opts.exitTarget,
       exitAccounts: opts.exitAccounts,
     };
-    const instruction = transactIx(accounts, proof, root, publicAmountFe, opts.aspRoot ?? 0n, ext);
+    const instruction = transactIx(accounts, proof, rootIndex, publicShares, opts.aspRoot ?? 0n, ext);
 
     for (const n of inputs) this.pending.add(n.commitment.toString(16));
-    return { proof, ext, root, publicAmountFe, aspRoot: opts.aspRoot ?? 0n, instruction, outputs, consumed: proof.nullifiers.slice(0, inputs.length) };
+    return { proof, ext, root, rootIndex, publicAmount: publicShares, aspRoot: opts.aspRoot ?? 0n, instruction, outputs, consumed: proof.nullifiers.slice(0, inputs.length) };
   }
 
   /** Undo a pending mark if a built transaction was never submitted. */

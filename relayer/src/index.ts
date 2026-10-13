@@ -3,7 +3,7 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { readFileSync } from "node:fs";
 import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction, type AccountMeta } from "@solana/web3.js";
-import { deserializeExtData, PROGRAM_ID as DEFAULT_PROGRAM, decodePool, poolPda, P, buildV0, fetchLookupTable } from "@scash/sdk";
+import { deserializeExtData, PROGRAM_ID as DEFAULT_PROGRAM, decodePool, poolPda, buildV0, fetchLookupTable } from "@scash/sdk";
 import { FeePolicy } from "./policy.js";
 import { SubmitQueue } from "./queue.js";
 
@@ -49,16 +49,12 @@ function parseTransact(data: Uint8Array) {
   let o = 1;
   const dv = () => new DataView(data.buffer, data.byteOffset);
   const proofLen = dv().getUint32(o, true); o += 4 + proofLen;
-  o += 32; // root
-  const pa = data.slice(o, o + 32); o += 32;
-  o += 32; // asp root
+  o += 1; // root index
+  const signedShares = dv().getBigInt64(o, true); o += 8;
+  const hasAsp = data[o]; o += 1 + (hasAsp ? 32 : 0);
   const nNf = dv().getUint32(o, true); o += 4 + 32 * nNf;
   const nCm = dv().getUint32(o, true); o += 4 + 32 * nCm;
   const ext = deserializeExtData(data.slice(o));
-  let fe = 0n;
-  for (const b of pa) fe = (fe << 8n) | BigInt(b);
-  const half = P >> 1n;
-  const signedShares = fe > half ? fe - P : fe;
   return { signedShares, ext, nNf };
 }
 

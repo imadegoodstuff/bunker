@@ -37,10 +37,12 @@ pub struct ExtData {
 pub struct TransactArgs {
     /// Groth16 proof: -A (64) || B (128) || C (64), big-endian coordinates.
     pub proof: Vec<u8>,
-    pub root: [u8; 32],
-    /// Field element, big-endian. Positive values below 2^64 or `p - v`.
-    pub public_amount: [u8; 32],
-    pub asp_root: [u8; 32],
+    /// Index into the tree's root ring; the program reads the root itself.
+    pub root_index: u8,
+    /// Signed shares: + shield, - unshield, 0 private send. Encoded to a field element on-chain.
+    pub public_amount: i64,
+    /// Association-set root, if the proof was made against one.
+    pub asp_root: Option<[u8; 32]>,
     pub nullifiers: Vec<[u8; 32]>,
     pub out_commitments: Vec<[u8; 32]>,
     pub ext_data: ExtData,

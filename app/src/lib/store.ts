@@ -53,6 +53,12 @@ interface State {
 
 const bjjAddress = (w: ShieldedWallet) => encodeAddress(w.bjj, w.address(), CLUSTER === "mainnet-beta" ? "scash" : "tscash");
 
+async function loadChainTree(conn: Connection) {
+  const info = await conn.getAccountInfo(treePda(PROGRAM_ID));
+  if (!info) throw new Error("protocol not initialized on this cluster");
+  return decodeTree(new Uint8Array(info.data));
+}
+
 function b64ToBytes(s: string) {
   return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 }
@@ -158,7 +164,7 @@ export const useScash = create<State>((set, get) => ({
     try {
       const relayerKey = rl ? new PublicKey(rl.relayer) : owner;
       const built = await wallet.buildTransact({
-        asset: assetId(asset.mint), mint: asset.mint, tokenProgram: asset.tokenProgram, pool, tree, artifacts: ARTIFACTS,
+        asset: assetId(asset.mint), mint: asset.mint, tokenProgram: asset.tokenProgram, pool, tree, chainTree: await loadChainTree(get().connection), artifacts: ARTIFACTS,
         kind: "shield", amount, to: to ? decodeAddress(wallet.bjj, to).address : undefined,
         relayer: relayerKey, relayerDest: relayerKey, relayerFee: 0n, payer: owner, depositor: owner,
         depositorSource: asset.mint.equals(SystemProgram.programId) ? owner : undefined,
@@ -213,7 +219,7 @@ async function relayedTransact(
   let consumed: bigint[] = [];
   try {
     const built = await wallet.buildTransact({
-      asset: assetId(asset.mint), mint: asset.mint, tokenProgram: asset.tokenProgram, pool, tree, artifacts: ARTIFACTS,
+      asset: assetId(asset.mint), mint: asset.mint, tokenProgram: asset.tokenProgram, pool, tree, chainTree: await loadChainTree(get().connection), artifacts: ARTIFACTS,
       kind, amount,
       to: o.to ? decodeAddress(wallet.bjj, o.to).address : undefined,
       recipient: o.recipient,

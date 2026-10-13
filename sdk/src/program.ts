@@ -108,15 +108,18 @@ export interface TransactAccounts {
 export function transactIx(
   acc: TransactAccounts,
   proof: TransactProof,
-  root: bigint,
-  publicAmountFe: bigint,
-  aspRoot: bigint,
+  rootIndex: number,
+  publicAmount: bigint, // signed shares
+  aspRoot: bigint, // 0 = none
   ext: ExtData,
   programId = PROGRAM_ID
 ): TransactionInstruction {
   const native = acc.mint.equals(SystemProgram.programId);
   const tokenProgram = native ? SystemProgram.programId : acc.tokenProgram ?? TOKEN_PROGRAM_ID;
-  const shield = publicAmountFe > 0n && publicAmountFe < 1n << 64n;
+  const shield = publicAmount > 0n;
+  if (rootIndex < 0 || rootIndex > 255) throw new Error("root index out of range");
+  const i64 = new Uint8Array(8);
+  new DataView(i64.buffer).setBigInt64(0, publicAmount, true);
   const keys: AccountMeta[] = [
     { pubkey: acc.payer, isSigner: true, isWritable: true },
     { pubkey: configPda(programId), isSigner: false, isWritable: false },
@@ -139,9 +142,9 @@ export function transactIx(
   const data = concatBytes(
     new Uint8Array([IX_TRANSACT]),
     vec(proof.proofBytes),
-    bigIntToBytesBE(root),
-    bigIntToBytesBE(publicAmountFe),
-    bigIntToBytesBE(aspRoot),
+    new Uint8Array([rootIndex]),
+    i64,
+    aspRoot === 0n ? new Uint8Array([0]) : concatBytes(new Uint8Array([1]), bigIntToBytesBE(aspRoot)),
     u32(proof.nullifiers.length),
     ...proof.nullifiers.map((n) => bigIntToBytesBE(n)),
     u32(proof.outCommitments.length),
@@ -259,6 +262,11 @@ export function decodeTree(d: Uint8Array): TreeState {
     roots.push(x);
   }
   return { nextIndex, rootIndex, roots, currentRoot: roots[Number(rootIndex) % 128] };
+}
+
+/** Position of `root` in the on-chain ring, or -1 if it has already been evicted. */
+export function findRootIndex(t: TreeState, root: bigint): number {
+  return t.roots.findIndex((r) => r === root);
 }
 
 /** Shares <-> amount using the pool's current rate, matching on-chain rounding. */

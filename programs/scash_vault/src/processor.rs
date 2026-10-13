@@ -230,24 +230,28 @@ pub fn process_transact(program_id: &Pubkey, accounts: &[AccountInfo], args: Tra
     drop(pool_data_ro);
     let asset = asset_id(mint.key);
 
-    // ---- root
-    {
+    // ---- root: read from the ring at the index the prover used
+    let root = {
         let td = tree_acc.try_borrow_data()?;
         Tree::check(&td)?;
-        if !Tree::is_known_root(&td, &args.root) {
+        let r = Tree::root_at(&td, args.root_index as usize);
+        if field::is_zero(&r) {
             return Err(VaultError::UnknownRoot.into());
         }
-    }
+        r
+    };
 
     // ---- association set
-    if !field::is_zero(&args.asp_root) {
+    let asp_root = args.asp_root.unwrap_or([0u8; 32]);
+    if let Some(ar) = args.asp_root {
         expect_owned(asp, program_id)?;
         let ad = asp.try_borrow_data()?;
         Asp::check(&ad)?;
-        if !Asp::has_root(&ad, &args.asp_root) {
+        if !Asp::has_root(&ad, &ar) {
             return Err(VaultError::UnknownAspRoot.into());
         }
     }
+    let public_amount = field::encode_signed(args.public_amount);
 
     // ---- ext data binding
     let ext = &args.ext_data;
@@ -269,11 +273,11 @@ pub fn process_transact(program_id: &Pubkey, accounts: &[AccountInfo], args: Tra
 
     // ---- public inputs & proof
     let mut public_inputs: Vec<[u8; 32]> = Vec::with_capacity(5 + n_ins + OUTPUTS);
-    public_inputs.push(args.root);
-    public_inputs.push(args.public_amount);
+    public_inputs.push(root);
+    public_inputs.push(public_amount);
     public_inputs.push(asset);
     public_inputs.push(ext_hash);
-    public_inputs.push(args.asp_root);
+    public_inputs.push(asp_root);
     public_inputs.extend_from_slice(&args.nullifiers);
     public_inputs.extend_from_slice(&args.out_commitments);
     verifier::verify(n_ins, &args.proof, &public_inputs)?;
@@ -290,7 +294,7 @@ pub fn process_transact(program_id: &Pubkey, accounts: &[AccountInfo], args: Tra
     }
 
     // ---- value flow
-    let signed_shares = field::decode_signed_u64(&args.public_amount).ok_or(VaultError::PublicAmountOutOfRange)?;
+    let signed_shares = args.public_amount as i128;
     let pool_seeds: &[&[u8]] = &[seeds::POOL, mint.key.as_ref(), &[pool_bump]];
 
     if signed_shares > 0 {

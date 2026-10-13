@@ -47,6 +47,22 @@ pub fn is_zero(x: &[u8; 32]) -> bool {
 
 /// Decode a field element that encodes a signed 64-bit amount:
 /// `v` for `0 <= v < 2^64`, `p - v` for `-2^64 < -v < 0`.
+/// Encode a signed amount as the field element the circuit expects:
+/// `v` for v >= 0, `p - |v|` for v < 0.
+pub fn encode_signed(v: i64) -> [u8; 32] {
+    if v >= 0 {
+        u64_to_be32(v as u64)
+    } else {
+        sub_be(&P_BE, &u64_to_be32(v.unsigned_abs()))
+    }
+}
+
+pub fn u64_to_be32(v: u64) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[24..].copy_from_slice(&v.to_be_bytes());
+    out
+}
+
 pub fn decode_signed_u64(x: &[u8; 32]) -> Option<i128> {
     if cmp_be(x, &P_BE) != core::cmp::Ordering::Less {
         return None;
@@ -61,12 +77,6 @@ pub fn decode_signed_u64(x: &[u8; 32]) -> Option<i128> {
     None
 }
 
-pub fn u64_to_be32(v: u64) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    out[24..].copy_from_slice(&v.to_be_bytes());
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,6 +84,8 @@ mod tests {
     #[test]
     fn signed_roundtrip() {
         assert_eq!(decode_signed_u64(&u64_to_be32(5)), Some(5));
+        assert_eq!(decode_signed_u64(&encode_signed(-9)), Some(-9));
+        assert_eq!(decode_signed_u64(&encode_signed(i64::MAX)), Some(i64::MAX as i128));
         let neg = sub_be(&P_BE, &u64_to_be32(7));
         assert_eq!(decode_signed_u64(&neg), Some(-7));
         assert_eq!(decode_signed_u64(&P_BE), None);
