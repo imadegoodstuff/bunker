@@ -2,12 +2,12 @@
 // builds shield / send / unshield transactions through a relayer.
 import { PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 import { BabyJub, type Point } from "./crypto.js";
-import { MAX_U64, randomField } from "./field.js";
+import { MAX_U64 } from "./field.js";
 import { encryptNote, encryptOutgoing, tryDecryptNote, NOTE_CIPHERTEXT_LEN_NO_MEMO } from "./encryption.js";
 import { extDataHash, NO_EXIT, type ExtData } from "./extdata.js";
 import { fullViewingKey, groupHash, newAddress, spendingKeyFromSeed, type Address, type FullViewingKey, type SpendingKey } from "./keys.js";
 import { MerkleTree } from "./merkle.js";
-import { noteCommitment, nullifier, type Note, type SpendableNote } from "./note.js";
+import { noteCommitment, nullifier, freshRandomness, type Note, type SpendableNote } from "./note.js";
 import { prove, type CircuitArtifacts, type CircuitName, type SpendInput, type TransactProof } from "./prover.js";
 import { transactIx, findRootIndex, type PoolState, type TreeState, type TransactAccounts, sharesForDeposit, sharesForWithdraw, amountForMint } from "./program.js";
 
@@ -71,7 +71,7 @@ export class ShieldedWallet {
     const gd = groupHash(this.bjj, r.plaintext.d);
     if (!gd) return null;
     const pkd = this.bjj.mulScalar(gd, this.fvk.ivk);
-    const note: Note = { asset, value: r.plaintext.value, gd, pkd, rho: r.plaintext.rho, rcm: r.plaintext.rcm };
+    const note: Note = { asset, value: r.plaintext.value, gd, pkd, rseed: r.plaintext.rseed, rho: r.plaintext.rho, rcm: r.plaintext.rcm };
     const cm = await noteCommitment(note);
     if (cm !== out.commitment) return null;
     const sn: SpendableNote = { ...note, commitment: cm, position: out.index, memo: r.plaintext.memo };
@@ -170,8 +170,8 @@ export class ShieldedWallet {
       toAddr = opts.to ?? self;
       toGd = groupHash(this.bjj, toAddr.d)!;
       outputs = [
-        { asset, value: publicShares, gd: toGd, pkd: toAddr.pkd, rho: randomField(), rcm: randomField() },
-        { asset, value: 0n, gd: selfGd, pkd: self.pkd, rho: randomField(), rcm: randomField() },
+        { asset, value: publicShares, gd: toGd, pkd: toAddr.pkd, ...freshRandomness() },
+        { asset, value: 0n, gd: selfGd, pkd: self.pkd, ...freshRandomness() },
       ];
     } else if (kind === "send") {
       if (!opts.to) throw new Error("recipient address required");
@@ -183,8 +183,8 @@ export class ShieldedWallet {
       toAddr = opts.to;
       toGd = groupHash(this.bjj, toAddr.d)!;
       outputs = [
-        { asset, value: sharesOut, gd: toGd, pkd: toAddr.pkd, rho: randomField(), rcm: randomField() },
-        { asset, value: inSum - sharesOut - feeShares, gd: selfGd, pkd: self.pkd, rho: randomField(), rcm: randomField() },
+        { asset, value: sharesOut, gd: toGd, pkd: toAddr.pkd, ...freshRandomness() },
+        { asset, value: inSum - sharesOut - feeShares, gd: selfGd, pkd: self.pkd, ...freshRandomness() },
       ];
     } else {
       if (!opts.recipient) throw new Error("public recipient required");
@@ -195,8 +195,8 @@ export class ShieldedWallet {
       toAddr = self;
       toGd = selfGd;
       outputs = [
-        { asset, value: inSum - sharesOut, gd: selfGd, pkd: self.pkd, rho: randomField(), rcm: randomField() },
-        { asset, value: 0n, gd: selfGd, pkd: self.pkd, rho: randomField(), rcm: randomField() },
+        { asset, value: inSum - sharesOut, gd: selfGd, pkd: self.pkd, ...freshRandomness() },
+        { asset, value: 0n, gd: selfGd, pkd: self.pkd, ...freshRandomness() },
       ];
     }
     if (outputs.some((o) => o.value < 0n || o.value > MAX_U64)) throw new Error("output value out of range");

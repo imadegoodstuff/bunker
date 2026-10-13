@@ -4,7 +4,7 @@ import { PublicKey } from "@solana/web3.js";
 import { BabyJub, poseidon } from "./crypto.js";
 import { spendingKeyFromSeed, fullViewingKey, newAddress, encodeAddress, decodeAddress, groupHash } from "./keys.js";
 import { encryptNote, tryDecryptNote, encryptOutgoing, decryptOutgoing, decryptNoteAsSender, NOTE_CIPHERTEXT_LEN, NOTE_CIPHERTEXT_LEN_NO_MEMO } from "./encryption.js";
-import { noteCommitment, nullifier, assetId } from "./note.js";
+import { noteCommitment, nullifier, assetId, freshRandomness, noteRandomness } from "./note.js";
 import { MerkleTree, verifyPath } from "./merkle.js";
 import { extDataHash, serializeExtData, deserializeExtData, NO_EXIT } from "./extdata.js";
 import { encodePublicAmount, decodePublicAmount, P, randomField } from "./field.js";
@@ -47,7 +47,7 @@ test("note encryption: receiver decrypts with ivk, strangers cannot, sender reco
   const to = newAddress(bjj, receiver.ivk);
   const gd = groupHash(bjj, to.d)!;
   const asset = assetId(new PublicKey("11111111111111111111111111111111"));
-  const note = { asset, value: 1234n, gd, pkd: to.pkd, rho: randomField(), rcm: randomField() };
+  const note = { asset, value: 1234n, gd, pkd: to.pkd, ...freshRandomness() };
   const memo = new TextEncoder().encode("hello");
   const { ciphertext, esk } = encryptNote(bjj, to, note, memo, true);
   assert.equal(ciphertext.length, NOTE_CIPHERTEXT_LEN_NO_MEMO + 64); // 5-byte memo → one 64-byte bucket
@@ -57,6 +57,11 @@ test("note encryption: receiver decrypts with ivk, strangers cannot, sender reco
   assert.ok(got);
   assert.equal(got!.plaintext.value, 1234n);
   assert.equal(got!.plaintext.rho, note.rho);
+  assert.equal(got!.plaintext.rcm, note.rcm);
+  assert.deepEqual(got!.plaintext.rseed, note.rseed);
+  assert.deepEqual(noteRandomness(note.rseed), { rho: note.rho, rcm: note.rcm });
+  assert.notEqual(note.rho, note.rcm);
+  assert.ok(note.rho < P && note.rcm < P);
   assert.deepEqual(got!.plaintext.d, to.d);
   assert.equal(new TextDecoder().decode(got!.plaintext.memo.slice(0, 5)), "hello");
   assert.equal(tryDecryptNote(bjj, stranger.ivk, ciphertext), null);

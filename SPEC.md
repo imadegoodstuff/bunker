@@ -70,6 +70,17 @@ rho   : F_p    random, unique per note; input to the nullifier
 rcm   : F_p    random commitment trapdoor
 ```
 
+`rho` and `rcm` are not sampled independently. Each note carries a 32-byte
+`rseed`, and (as in ZIP 212):
+
+```
+rho = BLAKE2b-512(rseed, personal = "scash_rho_______")  mod p
+rcm = BLAKE2b-512(rseed, personal = "scash_rcm_______")  mod p
+```
+
+so the encrypted note only has to transmit `rseed` (32 bytes instead of 64).
+The circuit sees `rho` and `rcm` directly; the derivation is off-circuit.
+
 Note commitment:
 
 ```
@@ -200,8 +211,12 @@ epk          = [esk] g_d
 shared       = [esk] pk_d                 = [ivk] epk on the receiver side
 K_enc        = H_blake("scash_NoteEncKey", compress(shared) || compress(epk))
 ciphertext   = compress(epk) || ChaCha20-Poly1305(K_enc, nonce = 0, plaintext)
-plaintext    = d || value (8 LE) || rho || rcm || memo (512 bytes)
+plaintext    = d || value (8 LE) || rseed (32) || memo
 ```
+
+The memo is optional. When present it is zero-padded to the next multiple of
+64 bytes (max 512) so that only a length bucket leaks. A ciphertext without a
+memo is `32 + 16 + 11 + 8 + 32 = 99` bytes.
 
 The receiver trial-decrypts every ciphertext in every `transact` with `ivk`, recomputes `g_d = GroupHash(d)`, `pk_d = [ivk] g_d`, `cm`, and accepts the note only if `cm` matches the on-chain commitment at that leaf.
 

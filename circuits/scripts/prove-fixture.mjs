@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { PublicKey } from "@solana/web3.js";
 import {
   BabyJub, MerkleTree, ShieldedWallet, assetId, extDataHash, NO_EXIT, toHex, bigIntToBytesBE,
-  groupHash, noteCommitment, randomField, prove, encryptNote,
+  groupHash, noteCommitment, freshRandomness, prove, encryptNote,
 } from "../../sdk/dist/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -27,8 +27,8 @@ await tree.whenReady();
 // 1. shield 1_000 shares into a note for ourselves
 const self = wallet.address();
 const selfGd = groupHash(bjj, self.d);
-const n0 = { asset, value: 1000n, gd: selfGd, pkd: self.pkd, rho: randomField(), rcm: randomField() };
-const n1 = { asset, value: 0n, gd: selfGd, pkd: self.pkd, rho: randomField(), rcm: randomField() };
+const n0 = { asset, value: 1000n, gd: selfGd, pkd: self.pkd, ...freshRandomness() };
+const n1 = { asset, value: 0n, gd: selfGd, pkd: self.pkd, ...freshRandomness() };
 const c0 = encryptNote(bjj, self, n0, undefined, false);
 const c1 = encryptNote(bjj, self, n1, undefined, false);
 const ext = {
@@ -51,8 +51,8 @@ const cm1 = await noteCommitment(n1);
 if (cm0 !== shield.outCommitments[0] || cm1 !== shield.outCommitments[1]) throw new Error("commitment mismatch");
 const pos0 = await tree.insert(cm0);
 await tree.insert(cm1);
-const change = { asset, value: 600n, gd: selfGd, pkd: self.pkd, rho: randomField(), rcm: randomField() };
-const zero = { asset, value: 0n, gd: selfGd, pkd: self.pkd, rho: randomField(), rcm: randomField() };
+const change = { asset, value: 600n, gd: selfGd, pkd: self.pkd, ...freshRandomness() };
+const zero = { asset, value: 0n, gd: selfGd, pkd: self.pkd, ...freshRandomness() };
 const ext2 = { ...ext, relayerFee: 10n };
 console.time("prove unshield (2x2)");
 const spend = await prove({

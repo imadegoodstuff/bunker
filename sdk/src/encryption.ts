@@ -5,7 +5,7 @@ import { chacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { BabyJub, type Point } from "./crypto.js";
 import { BJJ_SUBGROUP_ORDER, bigIntToBytesBE, bigIntToBytesLE, bytesToBigIntBE, bytesToBigIntLE, concatBytes, randomBytes } from "./field.js";
 import type { Address } from "./keys.js";
-import type { Note } from "./note.js";
+import { noteRandomness, type Note } from "./note.js";
 
 const PERSON_ENC = new TextEncoder().encode("scash_NoteEncKey");
 const PERSON_OUT = new TextEncoder().encode("scash_OutKey____");
@@ -14,8 +14,8 @@ const NONCE = new Uint8Array(12);
 export const MEMO_MAX = 512;
 /** Memos are padded to the next multiple of this so lengths leak only a bucket. */
 export const MEMO_BUCKET = 64;
-/** epk(32) + tag(16) + d(11) + value(8) + rho(32) + rcm(32) [+ memo bucket] */
-export const NOTE_CIPHERTEXT_LEN_NO_MEMO = 32 + 16 + 11 + 8 + 32 + 32;
+/** epk(32) + tag(16) + d(11) + value(8) + rseed(32) [+ memo bucket] */
+export const NOTE_CIPHERTEXT_LEN_NO_MEMO = 32 + 16 + 11 + 8 + 32;
 export const NOTE_CIPHERTEXT_LEN = NOTE_CIPHERTEXT_LEN_NO_MEMO + MEMO_MAX;
 
 export function memoBucketLen(memoLen: number): number {
@@ -28,6 +28,7 @@ export const OUT_CIPHERTEXT_LEN = 16 + 32 + 32;
 export interface NotePlaintext {
   d: Uint8Array;
   value: bigint;
+  rseed: Uint8Array;
   rho: bigint;
   rcm: bigint;
   memo: Uint8Array;
@@ -58,7 +59,7 @@ export function encryptNote(
   const key = encKey(bjj, shared, epk);
   const memoBuf = new Uint8Array(includeMemo ? memoBucketLen(memo.length) : 0);
   if (includeMemo) memoBuf.set(memo.slice(0, MEMO_MAX));
-  const pt = concatBytes(to.d, bigIntToBytesLE(note.value, 8), bigIntToBytesBE(note.rho), bigIntToBytesBE(note.rcm), memoBuf);
+  const pt = concatBytes(to.d, bigIntToBytesLE(note.value, 8), note.rseed, memoBuf);
   const ct = chacha20poly1305(key, NONCE).encrypt(pt);
   return { ciphertext: concatBytes(bjj.compress(epk), ct), esk, epk };
 }
@@ -81,12 +82,13 @@ export function tryDecryptNote(bjj: BabyJub, ivk: bigint, ciphertext: Uint8Array
 }
 
 function parsePlaintext(pt: Uint8Array): NotePlaintext {
+  const rseed = pt.slice(19, 51);
   return {
     d: pt.slice(0, 11),
     value: bytesToBigIntLE(pt.slice(11, 19)),
-    rho: bytesToBigIntBE(pt.slice(19, 51)),
-    rcm: bytesToBigIntBE(pt.slice(51, 83)),
-    memo: pt.slice(83),
+    rseed,
+    ...noteRandomness(rseed),
+    memo: pt.slice(51),
   };
 }
 
