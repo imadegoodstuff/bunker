@@ -38,8 +38,16 @@ async function send(ixs, signers, label) {
     log(`${label}: ok  ${size}B  cu=${meta.computeUnitsConsumed}  sig=${sig.slice(0, 16)}…`);
     return sig;
   } catch (e) {
-    console.error(`${label}: FAILED`, e.message);
-    if (e.logs) console.error(e.logs.slice(-12).join("\n"));
+    console.error(`${label}: FAILED`, e.message.split("\n")[0]);
+    let logs = e.logs;
+    if (!logs && typeof e.getLogs === "function") logs = await e.getLogs(conn).catch(() => undefined);
+    if (!logs) {
+      const { blockhash } = await conn.getLatestBlockhash();
+      const tx = buildV0(signers[0].publicKey, ixs, blockhash, table);
+      tx.sign(signers);
+      logs = (await conn.simulateTransaction(tx, { sigVerify: false })).value.logs;
+    }
+    if (logs) console.error(logs.join("\n"));
     throw e;
   }
 }
