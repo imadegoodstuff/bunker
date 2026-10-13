@@ -22,6 +22,8 @@
 | pool creator | pick the mint and initial cap | pick a mint with fee/hook/delegate/pausable extensions (refused) |
 | ceremony coordinator | order contributions; apply the beacon | produce a sound key with a trapdoor if at least one other contributor was honest |
 | exit target program | receive a CPI with funds already at `recipient` | hold any authority over the vault; re-enter `transact` with the same nullifiers (they are already recorded) |
+| launchpad (as exit target) | price what the vault just paid its intake PDA; hand tokens or SOL to the claim key the proof named; keep its fee | touch pool funds; run at the top level or behind any program but the vault; change who receives (claim key is under `ext_data_hash`) |
+| token creator | pay the launch rent; pick name, symbol, URI | hold an allocation, a mint or freeze authority, a fee switch, or any later power over the curve or the pool |
 | Solana validator / RPC | censor, reorder, delay; see ciphertexts and public inputs | decrypt notes; forge proofs |
 
 ## Trust assumptions
@@ -52,6 +54,7 @@
 | relayer | censorship, delay | anyone can run one; the app can self-relay |
 | indexer | stale view, denial | client verifies everything it is told against the chain |
 | migrator | strand funds in the PDA | Execute is permissionless; target and refund fixed at staging |
+| launchpad | lose one trade's proceeds; misprice a trade | bounded to what that user just unshielded (vault pays `recipient` first, nullifiers spend only on success); curve balance invariant and `min_out` checked on-chain; claim keys are seed-derived and recoverable |
 
 ## Explicitly out of scope
 

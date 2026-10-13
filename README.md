@@ -14,6 +14,7 @@ on-chain, relayer-paid transactions, and an immutable vault bounded by a per-ass
 | **Send** | Pay any `scash1…` address privately. Amount, sender, recipient: all hidden. Relayer pays the fee. |
 | **Unshield** | Withdraw to any public address from a relayer-signed transaction. Your public wallet never appears. |
 | **Swap** | Exit through a CPI adapter bound inside the proof (adapter program in review). |
+| **Launch** | A token launchpad whose primary market exists only inside the pool: buys and sells are unshields whose exit target is the curve, proceeds land at a one-use key derived from your seed and are shielded straight back. Each token gets its own shielded pool at launch, the mint has no authorities, and half the trading fee is donated to that pool's holders. Until graduation there is no public route in. [SPEC §16](SPEC.md#16-the-launchpad). |
 | **Yield** | Notes hold shares; `donate()` raises a pool's share rate. SCASH creator fees are donated to the **SCASH pool only**: SOL or USDC notes do not earn from it. The share rate measures tokens per share, not fiat value. |
 
 ## Why it is different
@@ -35,7 +36,7 @@ Full protocol: [SPEC.md](SPEC.md).
 ```
 circuits/     circom 2 circuits (transact2x2: 33,515 constraints · transact4x2: 64,860), build/setup/ceremony scripts
 crates/       scash-core: shared instruction & state layouts
-programs/     scash_vault (pool, verifier, tree, turnstile, exits) · scash_harvester (SCASH fee router) · scash_migrator (old vault → new vault without a public hop)
+programs/     scash_vault (pool, verifier, tree, turnstile, exits) · scash_harvester (SCASH fee router) · scash_migrator (old vault → new vault without a public hop) · scash_launch (shielded-only bonding-curve launchpad behind the vault's exit target)
 sdk/          TypeScript: keys, addresses, notes, encryption, Merkle, proving, tx building, wallet
 relayer/      Fee-paying relayer with policy checks, simulation, randomized delay queue
 indexer/      Event scanner → SQLite, HTTP API for commitments / nullifiers / roots / stats
@@ -89,6 +90,7 @@ Services: `fly deploy -c deploy/fly.indexer.toml`, `fly deploy -c deploy/fly.rel
 | scash_vault | `A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ` |
 | scash_harvester | `9TorUNxbdb4vwNXNB6R487Th94616xGtvsBHpaETcqGi` |
 | scash_migrator | `24LLsX8qtFdSsmNarRgyPdSTvDdgTnCRa77S8rjdW4m3` |
+| scash_launch | `BqPGKmEpvrSiMwrzh2zS2XT9rAS8k1FsjTz2uD5XSYE` |
 
 ## License
 

@@ -15,6 +15,7 @@ linked from `SECURITY.md` and copied to `audit/reports/`.
 | vault program | `programs/scash_vault/src` | ~2,100 lines (incl. generated VK constants) | Rust, no framework |
 | migrator program | `programs/scash_migrator/src/lib.rs` | ~330 lines | Rust |
 | harvester program | `programs/scash_harvester/src/lib.rs` | ~150 lines | Rust |
+| launchpad program | `programs/scash_launch/src` | ~1,270 lines (curve, state, Token-2022 CPIs, processor) | Rust |
 | circuits | `circuits/src/*.circom` | `transact2x2` 33,515 constraints, `transact4x2` 64,860 | circom 2 |
 | SDK (key derivation, note encryption, witness building) | `sdk/src` | ~2,000 lines | TypeScript |
 | relayer | `relayer/src` | ~500 lines | TypeScript |
@@ -40,6 +41,13 @@ note it returns), Fly.io deployment config.
    instruction forwarding, leftover handling.
 5. **Relayer**: fee logic, simulation-before-submit, no ability to redirect
    funds (it should be impossible by construction; confirm).
+6. **Launchpad** (`programs/scash_launch`, SPEC §16, `SECURITY.md` §15): the
+   exit handler's vault-origin check (stack height + instructions sysvar),
+   intake sweep, curve arithmetic and the lamport-balance invariant, the
+   claim-key reserve, harvest's donate path, graduation gating of the public
+   instructions. The vault bounds the damage to what one user just
+   unshielded; confirm that bound holds and that nothing in the launchpad
+   can reach pool funds.
 
 ## Reproducing the build
 

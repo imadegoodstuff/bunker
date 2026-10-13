@@ -175,6 +175,11 @@ ExtData {
   ciphertexts   : [bytes; nOuts]   note ciphertexts for recipients (§12)
   out_ciphertext: bytes       sender-side record under ovk
 }
+```
+
+The program requires exactly `nOuts` ciphertexts but does not fix their lengths. An unshield's two outputs are the sender's own change and a zero-value dummy, so the client sends the dummy's ciphertext and `out_ciphertext` empty (`sdk/src/wallet.ts`); the 179 bytes saved are what lets an unshield that carries an exit target (§11, §16) fit one `v0` packet. Shields and private sends carry both ciphertexts and the outgoing record.
+
+```
 ext_data_hash = SHA-256(borsh(ExtData)) mod p
 ```
 
@@ -233,7 +238,7 @@ An association set provider (ASP) publishes a Merkle root over note commitments 
 
 ## 11. Exits
 
-If `exit_target != 0`, the program transfers the unshielded amount (after `relayer_fee`) to a transient program-owned token account and CPIs `exit_target` with `exit_data`, the transient account, and `recipient`. The exit program (for example the swap adapter in `programs/scash_swap/`) must leave the transient account empty; any remainder is forwarded to `recipient`. The exit program may re-shield its result by calling `transact` on its own, which puts the swapped asset back in the pool in the same transaction.
+If `exit_target != 0`, the program first pays the unshielded amount (after `relayer_fee`) to `recipient` exactly as for a plain unshield, then invokes `exit_target` with every account that follows the nullifier PDAs in the instruction (signer and writable flags preserved) and `data = to_recipient (u64 LE) || exit_data`. `recipient`, `exit_target` and `exit_data` are all under `ext_data_hash`, so a relayer can neither redirect the funds nor change what the exit program is told. The exit program sees the funds already sitting at `recipient` (typically one of its own PDAs) and acts on them in the same transaction; if it fails, the whole transaction fails and nothing was spent. The launchpad (§16) is the first exit program; `programs/scash_launch/src/processor.rs: process_exit` shows the shape: it refuses to run at the top level of a transaction and checks through the instructions sysvar that the outer instruction belongs to the vault, so that only money the vault just delivered can be acted on.
 
 ## 12. Note encryption
 
@@ -261,7 +266,7 @@ Trial decryption happens on the client. The indexer serves raw ciphertexts and n
 
 ## 13. The native token and the harvester
 
-The `SCASH` token is a Token-2022 mint launched on Meteora's Dynamic Bonding Curve and graduated to DAMM v2. Creator trading fees accrue to the `scash_harvester` program. Anyone may call `harvest`, which claims the fees, swaps the quote half to `SCASH`, and calls `donate` on the `SCASH` pool. Every private holder's shares appreciate; the other half funds the relayer gas pool and the team, at fixed percentages set at deployment and not changeable.
+The `SCASH` token is a Token-2022 mint launched on Meteora's Dynamic Bonding Curve and graduated to DAMM v2. Creator trading fees accrue to the `scash_harvester` program. Anyone may call `harvest`, which claims the fees, swaps the quote half to `SCASH`, and calls `donate` on the `SCASH` pool. Every private holder's shares appreciate; the other half goes to the team wallet fixed at deployment (`programs/scash_harvester/src/lib.rs: Distribute` splits vault/team only; the split is set once and not changeable). Relayer operating costs are covered by relayer fees (§15, `SECURITY.md` §14), not by the harvester.
 
 ## 14. Turnstile and immutability
 
@@ -297,6 +302,7 @@ Two transactions are needed because an old-vault `transact` plus a new-vault `tr
 | Proof | 256 bytes (uncompressed G1, G2, G1) |
 | Instruction args besides ext_data | 1 + 4 + 1 + 8 + 1 + 4 + 2x32 + 4 + 2x32 = 152 bytes |
 | ext_data without memo | 32 + 32 + 8 + 32 + 4 + 4 + 2x(4 + 99) + 4 + 80 = 402 bytes |
+| ext_data of an unshield (empty dummy ciphertext and outgoing record, §7) | 402 − 179 = 223 bytes, + 49 of exit data for a launchpad trade |
 | Two ciphertexts | 99 + 99 (no memo) or 163 + 99 (one 64-byte memo) |
 
 **Which limit applies.** Solana has three transaction formats. `legacy` and `v0` are capped at 1,232 bytes (the IPv6-MTU-derived `PACKET_DATA_SIZE`); `v0` adds address lookup tables. The `v1` format (SIMD-0385, size budget from SIMD-0296, feature gate `txv1aq4pp281K9um3tnPgkfX8UqtFT6wcVW3hNezGLL`) raises the cap to 4,096 bytes, lists all accounts inline instead of through lookup tables, and moves compute/priority settings into the message header. It has been active on mainnet-beta since epoch 1035 (15 September 2026) and on devnet and testnet.
@@ -312,3 +318,40 @@ Measured on a validator (CI e2e, v0 transaction with the lookup table from §7):
 | unshield, no memo | 1,172 | 203k |
 
 The lookup table must hold the program, config, tree, system/compute/token programs, each pool's mint, pool PDA and vault, **and the relayer's fee destinations** (its key and its token account per SPL pool). The program id and the signers cannot be table-loaded. With everything else in the table, one 64-byte memo bucket fits and a second does not; `sdk/src/sdk.test.ts` serialises the real instruction for both the SOL and SPL cases and asserts exactly this, so `MEMO_MAX` cannot drift from the packet limit without a test failing. Longer memos require a second transaction (a memo-only note) or a change to the on-chain format; neither is specified yet.
+
+## 16. The launchpad
+
+`programs/scash_launch` is a token launchpad whose primary market exists only inside the shielded pool. It is the worked example of §11: a program that receives money from the vault and sends the result back into the vault, with no user-held public key anywhere on the path.
+
+**Launch.** Anyone sends one transaction (two from a browser wallet, see below) that creates a Token-2022 mint with the metadata extension, mints the whole supply, revokes the mint authority, sets no freeze authority and no other extension (the vault refuses mints with transfer fees, permanent delegates, transfer hooks, default account state, non-transferability or pausability, §8), creates the curve PDA and its token vault, CPIs the vault's `create_pool` so the token has a shielded pool from its first block, and records a frozen address lookup table holding the token's static accounts. The creator pays rent and receives nothing: no allocation, no authority, no fee switch. Parameters are global and fixed when the launchpad is initialised (`Launchpad` account): supply 10^15 base units (one billion at 6 decimals), 79.31 % of it on the curve, virtual reserves of 30 SOL and 1.073×10^15 tokens, a 1 % trading fee of which 50 % is the holders' share, graduation at 85 SOL of real reserve.
+
+**Curve.** Constant product over virtual reserves, `(virtual_sol + real_sol) · virtual_token = k`, integer arithmetic rounding against the trader; `programs/scash_launch/src/curve.rs` tests that `k` never decreases, that a buy followed by a sell never profits, and that exact-out quotes are tight. The curve account holds its rent plus `real_sol + fees_accrued` lamports at all times (`check_curve_balance` after every state change).
+
+**Private buy.** A buyer unshields SOL with `recipient = PDA("intake", mint)` (a system account owned by nobody; the vault pays it) and `exit_target = scash_launch`, `exit_data = kind(0) || claim_key || min_out || claim_budget || relayer_tip`. The exit handler:
+
+```
+amount_in = lamports at intake − its rent
+reserve   = claim rent + 2 × nullifier rent + claim_budget + claim ATA rent + relayer_tip
+gross     = amount_in − reserve;  fee = gross · fee_bps;  net = gross − fee
+tokens    = curve.buy(net), must be ≥ min_out
+intake → curve         : gross            (real_sol += net, fees_accrued += fee)
+intake → claim_key     : claim rent + 2 × nullifier rent + claim_budget
+intake → relayer       : claim ATA rent (it just paid to create the ATA) + relayer_tip
+curve vault → ATA(claim_key): tokens
+```
+
+`claim_key` is an ed25519 key the buyer derives from their spending seed, `Keypair.fromSeed(SHA-256("scash-claim-v1" || seed || nonce))`, used for exactly one trade. The tokens now sit in that key's ATA and the key holds precisely what its next transaction costs.
+
+**Claim.** The claim key signs an ordinary vault *shield* of the whole ATA balance into the token's pool, closing the ATA in the same transaction. Payer, depositor, relayer and relayer destination are all the claim key; no wallet and no relayer takes part. After it, the buyer holds notes in the token's pool and the claim key is spent and never reused. Because the key is derived, nothing needs backing up: `recover` in the app re-derives keys by nonce and sweeps anything still waiting (a closed tab, a failed claim).
+
+**Private sell.** The mirror image. The seller unshields tokens with `recipient = ATA(intake)` and `exit_data` of kind 1; the handler moves the tokens into the curve vault, prices them, keeps the fee, pays `relayer_tip` to the relayer (the vault's own relayer fee would be denominated in the token being sold, which no relayer prices) and credits the remainder to `claim_key`, which then shields the SOL back into the SOL pool.
+
+**Why a buy does not re-shield in the same transaction.** An unshield plus a shield are two `transact` instructions of ~860 bytes each; a `v0` packet holds one. The funds therefore rest for one transaction at a key that only the buyer can derive, instead of at a user wallet. §14's migrator uses the same two-step shape for the same reason. The trade transaction itself fits with about 100 bytes to spare only because an unshield omits its dummy ciphertext and outgoing record (§7) and because every static account of the token lives in the frozen table the launch created (`Curve.lookup_table`; clients verify its contents against `launchStaticAddresses`, nothing on-chain trusts it).
+
+**Harvest.** Anyone may call `harvest`. The holders' share of `fees_accrued` buys tokens from the curve without fee and `donate`s them to the token's shielded pool, so every private holder's shares appreciate; the protocol share goes to the treasury fixed at initialisation. The curve's own fee therefore flows back to the people holding the token privately, in the same way §13 routes the native token's fees.
+
+**Graduation.** When `real_sol ≥ graduation_lamports` or the curve is sold out, `graduated` is set (by the trade that crossed the line or by a permissionless `graduate`), the exit handler refuses further private trades, and `public_buy` / `public_sell` open the same curve to plain wallets. Until then there is no public route onto the curve at all: the only way to hold the token is through the pool.
+
+**What is public, exactly.** The curve's reserves and every trade's side, size and time (indexed as `curve_buy` / `curve_sell` events and served at `/launches`); the creator's wallet; and one throwaway key per trade, funded by the vault and emptied by its own claim. What does not exist on-chain is which note paid for a buy, who holds the tokens afterwards (notes in the token's pool), or any link between a buy and a later sell of the same tokens. Trade timing and the fixed sizes the app offers are the remaining signals, with the same caveats as any unshield (`SECURITY.md` §15).
+
+**Tests.** `scripts/launch-e2e.mjs` runs in CI against a fresh validator carrying the vault and the launchpad: it launches a token, checks the mint has no freeze or mint authority and that the metadata decodes, verifies a public buy is refused before graduation, performs a relayed private buy and asserts the claim key holds exactly the quoted tokens and exactly the reserved lamports, claims into the token pool with only the claim key signing, harvests (treasury receives half the fee, the pool's share rate rises, a second harvest is refused), sells half privately with a relayer tip, claims the SOL back, confirms a direct top-level call of the exit path is refused, and finally confirms the buyer's wallet key appears in none of the launchpad's transactions.

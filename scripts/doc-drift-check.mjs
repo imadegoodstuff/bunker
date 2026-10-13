@@ -41,7 +41,22 @@ const cuPriceMax = (() => {
   if (!m) throw new Error("CU_PRICE_MAX default not found in relayer/src/index.ts");
   return Number(m[1].replace(/_/g, ""));
 })();
+// launchpad facts: exit data length (processor.rs) and the graduation threshold (SDK defaults)
+const exitDataLen = (() => {
+  const m = read("programs/scash_launch/src/processor.rs").match(/pub const EXIT_DATA_LEN: usize = ([0-9 +]+);/);
+  if (!m) throw new Error("EXIT_DATA_LEN not found");
+  return eval(m[1]);
+})();
+const graduationSol = (() => {
+  const m = read("sdk/src/launch.ts").match(/graduationLamports:\s*([0-9_]+)n/);
+  if (!m) throw new Error("graduationLamports default not found in sdk/src/launch.ts");
+  return Number(m[1].replace(/_/g, "")) / 1e9;
+})();
 const facts = [
+  { doc: "SPEC.md", re: new RegExp(`\\+ ${exitDataLen} of exit data`), what: `exit data is ${exitDataLen} bytes` },
+  { doc: "SPEC.md", re: new RegExp(`graduation at ${graduationSol} SOL`), what: `graduation threshold ${graduationSol} SOL` },
+  { doc: "SPEC.md", re: /empty dummy ciphertext and outgoing record/, what: "unshield omits dummy ciphertext and outgoing record" },
+  { doc: "SECURITY.md", re: /refuses to run at the top level/, what: "launchpad exit refuses top-level calls" },
   { doc: "SECURITY.md", re: new RegExp(`refuses anything under \\*\\*${minBits}\\*\\*`), what: `passphrase floor ${minBits} bits` },
   { doc: "SECURITY.md", re: new RegExp(`\\|\\s*${minBits}\\s*\\|\\s*(${Math.floor(years(minBits))}|${Math.ceil(years(minBits))}) years`), what: `${minBits} bits → ≈${years(minBits).toFixed(1)} years in the table` },
   { doc: "SECURITY.md", re: new RegExp(`\\|\\s*${strongBits}\\s*\\|`), what: `${strongBits}-bit row in the table` },
@@ -74,6 +89,8 @@ const stale = [
   /logs and skips rather than stalls/i, // superseded by defer-and-retry in §10/§11 — allowed only in history
   /Planned for the app/,
   /Automatic RPC failover is not implemented/, // superseded by RPC_URLS in §14
+  /transient program-owned token account/, // SPEC §11 before the launchpad: exits never worked that way
+  /funds the relayer gas pool/, // SPEC §13 before the correction: Distribute splits vault/team only
 ];
 for (const [name, text] of Object.entries(docs)) {
   text.split("\n").forEach((line, i) => {

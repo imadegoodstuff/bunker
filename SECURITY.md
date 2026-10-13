@@ -620,6 +620,78 @@ engineering, not policy, so both are now code.
   source by outside readers and tested against the attack it answers; it has
   not been independently audited, and this file does not claim that it has.
 
+### 15. The launchpad: a new program, a new trust boundary, and what it does and does not hide
+
+`programs/scash_launch` (SPEC §16) is the first exit program behind the vault's
+`exit_target` (SPEC §11). It is new, unaudited code that money flows through,
+so this section states its boundary rather than its marketing.
+
+- **What the vault guarantees regardless of the launchpad.** `recipient`,
+  `exit_target` and `exit_data` are under `ext_data_hash`; a relayer cannot
+  point a buy at a different curve, a different claim key or a different
+  minimum. The vault pays `recipient` *before* invoking the exit program and
+  the exit program only ever sees accounts the client listed; a malicious or
+  buggy exit program can lose the money the user just unshielded, never more,
+  and never anything still inside the pool. The nullifiers are spent only if
+  the whole transaction succeeds.
+- **What the launchpad checks.** `process_exit` refuses to run at the top level
+  (`get_stack_height`) and reads the instructions sysvar to require that the
+  outer instruction belongs to the vault program recorded at initialisation.
+  Without that, anyone could call the handler directly with a funded intake
+  account and have the curve price their lamports as a buy without a proof —
+  harmless to the pool, but a public route onto a curve that is meant to be
+  shielded-only. The intake PDA is system-owned and holds nothing between
+  transactions; the handler sweeps it to exactly its rent every time. Every
+  PDA the handler touches is re-derived from the mint; the curve's lamport
+  balance is checked against `rent + real_sol + fees_accrued` after every
+  state change; every arithmetic step is checked. `scripts/launch-e2e.mjs`
+  asserts the direct call is refused and that books, claim balances and
+  treasury receipts match the SDK's quotes to the lamport.
+- **The claim key.** A trade's proceeds rest for one transaction at an
+  ed25519 key derived from the spending seed and a nonce. Anyone who learns
+  the seed can of course sweep them, but the seed already spends everything,
+  so nothing new is at risk. The key is funded with exactly what its claim
+  costs; the claim is an ordinary shield with the claim key as payer,
+  depositor, relayer and destination, so no wallet and no relayer sees it.
+  Keys are never reused, and the app's `recover` re-derives them, so a closed
+  tab or a failed claim loses nothing. What a watcher sees is: the vault paid
+  a fresh key, the fresh key shielded into a pool. That is the same two-step
+  silhouette as the migrator (SPEC §14) and it is public by construction —
+  there is no way to fit the unshield and the shield into one packet.
+- **The relayer sees more than it does for a plain unshield.** It sees the
+  curve, the size, the claim key and (for a sell) the tip. It still cannot
+  link any of it to a note or a wallet. A relayed sell pays the relayer in SOL
+  out of the proceeds (`relayer_tip` in the exit data, paid by the curve to
+  the exit call's `payer`); the relayer requires that tip to clear the same
+  cost floor as a SOL unshield (`relayer/src/index.ts`). The relayer forwards
+  to exactly one exit target, the launchpad, and refuses every other.
+- **What stays public and will not be hidden.** The curve's reserves, every
+  trade's side, size and time, the creator's wallet, and one throwaway key per
+  trade. Timing correlation between an unshield and a claim, and between a
+  claim and a later sell by the same person, is the same signal every
+  unshield has (§9) and is blunted, not removed, by the relayer's random delay
+  and the fixed trade sizes the app offers. A curve with three trades has an
+  anonymity set of three; the app shows the trade count for that reason.
+- **Token-2022 surface.** The launchpad mints with the metadata pointer and
+  metadata extensions only, revokes the mint authority and sets no freeze
+  authority; the vault's refusal list (transfer fee, permanent delegate,
+  transfer hook, default account state, non-transferable, pausable) is what
+  keeps a pool's accounting honest and the launchpad cannot create a mint the
+  vault would refuse. The metadata TLV is written by Token-2022 itself, not
+  by this program.
+- **Economic edges, stated plainly.** The curve is a public constant-product
+  curve; front-running by timing is possible as on any public curve, but the
+  relayer's random release order and delay make a private trade's landing
+  time unpredictable to its own sender, let alone to others. Private trades
+  carry a minimum-out bound chosen by the client (1 % slippage in the app).
+  Graduation ends private trading on that curve; the token's shielded pool
+  remains and keeps receiving harvested fees, but new entrants after
+  graduation buy publicly and shield afterwards like any other asset.
+- **Not done.** No independent audit of the launchpad. No post-graduation
+  liquidity migration to an external AMM (public trading continues on the
+  same curve). The harvester for the native token (§13 of SPEC) and the
+  launchpad's harvest are separate code paths that do the same thing.
+
 ## Design-level guarantees
 
 - **Immutability**: the vault program is deployed without an upgrade authority
@@ -647,3 +719,6 @@ engineering, not policy, so both are now code.
   verifier (`programs/scash_vault/tests/verify_fixture.rs`)
 - End-to-end on `solana-test-validator`: shield → private send with memo →
   unshield → donate → replay rejected → turnstile reconciled
+- Launchpad end-to-end on a second fresh validator: launch → private buy →
+  claim → harvest → private sell → claim, with the buyer's wallet asserted
+  absent from every launchpad transaction
