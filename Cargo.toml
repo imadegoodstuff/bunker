@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "programs/scash_vault",
     "programs/scash_harvester",
+    "programs/scash_migrator",
     "crates/scash-core",
 ]
 

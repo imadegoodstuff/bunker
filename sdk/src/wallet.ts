@@ -153,6 +153,8 @@ export class ShieldedWallet {
     exitTarget?: PublicKey;
     exitData?: Uint8Array;
     exitAccounts?: import("@solana/web3.js").AccountMeta[];
+    /** Vault program to target (defaults to PROGRAM_ID); used for migrations into a new vault. */
+    programId?: PublicKey;
   }): Promise<BuiltTransact> {
     const { asset, pool, tree, kind } = opts;
     const self = this.address();
@@ -256,7 +258,7 @@ export class ShieldedWallet {
       exitTarget: opts.exitTarget,
       exitAccounts: opts.exitAccounts,
     };
-    const instruction = transactIx(accounts, proof, rootIndex, publicShares, opts.aspRoot ?? 0n, ext);
+    const instruction = transactIx(accounts, proof, rootIndex, publicShares, opts.aspRoot ?? 0n, ext, opts.programId);
 
     for (const n of inputs) this.pending.add(n.commitment.toString(16));
     return { proof, ext, root, rootIndex, publicAmount: publicShares, aspRoot: opts.aspRoot ?? 0n, instruction, outputs, consumed: proof.nullifiers.slice(0, inputs.length) };

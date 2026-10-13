@@ -102,8 +102,10 @@ outline. Treat the anonymity numbers in the app as upper bounds.
   the open-source app recovers the same notes from a public RPC plus the
   indexer, or from the chain alone (slower).
 - **Migration.** The vault is immutable. A new circuit or proof system means a
-  new vault; balances move by unshielding or, when it ships, through a
-  `scash_migrator` exit target in a single transaction. No migrator exists yet.
+  new vault; balances move through `scash_migrator` (stage the new-vault
+  shield, unshield from the old vault to the migrator PDA, anyone executes),
+  which never puts a user-held public key on the path. Exercised in CI by
+  `scripts/migrate-e2e.mjs`; SPEC §14.
 - **Not done:** public ceremony, independent audit, mainnet deployment,
   formal privacy analysis, incident runbook, bug bounty. None of these are
   implied by anything in the README or the app.
@@ -141,9 +143,16 @@ outline. Treat the anonymity numbers in the app as upper bounds.
   ways and asserts each is unsatisfiable; SPEC §6 lists them.
 - **Immutability vs. repair.** With no upgrade authority, a serious bug means a
   new program and a user-driven migration. A migration must not publish a
-  link between old and new notes; the planned `scash_migrator` exit target
-  moves value inside a proof for that reason. Until it exists, the only
-  remedy is to unshield, which is public.
+  link between old and new notes. `scash_migrator` moves value from an old
+  unshield proof into a new shield proof through a PDA whose only reachable
+  destination is the staged shield (the recipient is bound by `ext_data_hash`
+  in the old proof, the target vault and refund key are fixed at staging,
+  Execute is permissionless). What is public is that X left the old pool and
+  X entered the new one, the same as any shield. The two steps are two
+  transactions because two proofs do not fit one packet; between them funds
+  sit in the PDA and cannot be stranded or redirected. The migrator itself is
+  a ~300-line program with its own trust model in `programs/scash_migrator/
+  src/lib.rs`, and like the vault it is deployed without an upgrade authority.
 
 ### 7. Throughput, root window, share accounting, indexer, passphrase default
 

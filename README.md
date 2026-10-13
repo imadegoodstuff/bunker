@@ -35,7 +35,7 @@ Full protocol: [SPEC.md](SPEC.md).
 ```
 circuits/     circom 2 circuits (transact2x2: 33,435 constraints · transact4x2: 64,752), build/setup/ceremony scripts
 crates/       scash-core: shared instruction & state layouts
-programs/     scash_vault (pool, verifier, tree, turnstile, exits) · scash_harvester (SCASH fee router)
+programs/     scash_vault (pool, verifier, tree, turnstile, exits) · scash_harvester (SCASH fee router) · scash_migrator (old vault → new vault without a public hop)
 sdk/          TypeScript: keys, addresses, notes, encryption, Merkle, proving, tx building, wallet
 relayer/      Fee-paying relayer with policy checks, simulation, randomized delay queue
 indexer/      Event scanner → SQLite, HTTP API for commitments / nullifiers / roots / stats
@@ -87,6 +87,7 @@ Services: `fly deploy -c deploy/fly.indexer.toml`, `fly deploy -c deploy/fly.rel
 |---|---|
 | scash_vault | `A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ` |
 | scash_harvester | `9TorUNxbdb4vwNXNB6R487Th94616xGtvsBHpaETcqGi` |
+| scash_migrator | `24LLsX8qtFdSsmNarRgyPdSTvDdgTnCRa77S8rjdW4m3` |
 
 ## License
 

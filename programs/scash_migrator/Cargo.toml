@@ -1,0 +1,18 @@
+[package]
+name = "scash-migrator"
+description = "scash migrator: moves value from one immutable vault into another through a program-controlled PDA bound to pre-committed destination notes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "scash_migrator"
+
+[features]
+no-entrypoint = []
+
+[dependencies]
+solana-program = { workspace = true }
+thiserror = { workspace = true }

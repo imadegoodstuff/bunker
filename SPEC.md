@@ -264,7 +264,21 @@ For every pool, `total_in - total_out >= 0` is a program invariant checked on ev
 
 The vault program is deployed, verified against the public source, and then its upgrade authority is set to `None`. A guardian key can pause shields and lower (never raise) the per-asset TVL cap. Nothing can pause `transact` with `public_amount <= 0`.
 
-A new circuit or proof system means a new vault. A `scash_migrator` exit target moves a balance from the old vault into a note in the new one in one transaction; the old vault's turnstile only lets out what went in.
+A new circuit or proof system means a new vault. `scash_migrator` (`programs/scash_migrator`) moves a balance from the old vault into notes in the new one without a user-held public key on the path:
+
+```
+1. Stage    the user writes the complete NEW-vault `transact` (a shield: proof,
+            output commitments, ciphertexts) into a staging account they own.
+2. Exit     the user unshields from the OLD vault with
+            recipient = PDA("migrate", staging). The recipient is bound inside
+            the old proof by ext_data_hash, so the funds can only land there.
+3. Execute  anyone calls Execute. The PDA signs the staged shield into the new
+            vault (payer, depositor, recipient and relayer destination are
+            all the PDA). Leftover (rate drift, rent) goes to the refund key
+            fixed at staging; the staging account is closed.
+```
+
+Two transactions are needed because an old-vault `transact` plus a new-vault `transact` do not fit one 1,232-byte packet; between them the funds sit in a PDA whose only reachable destination is the staged shield, and Execute is permissionless, so they cannot be stranded or redirected. What the pair reveals is that an unshield of X from the old pool funded a shield of X into the new pool, the same as any public shield; the old notes spent and the new notes' owner stay hidden by the two proofs. `scripts/migrate-e2e.mjs` runs this in CI against the vault binary loaded under a second program id.
 
 ## 15. Compute and size budget
 

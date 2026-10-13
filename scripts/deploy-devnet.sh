@@ -10,4 +10,8 @@ solana program deploy target/deploy/scash_vault.so \
   --program-id keypairs/scash_vault-keypair.json --upgrade-authority keypairs/deployer.json
 solana program deploy target/deploy/scash_harvester.so \
   --program-id keypairs/scash_harvester-keypair.json --upgrade-authority keypairs/deployer.json
+if [ -f keypairs/scash_migrator-keypair.json ]; then
+  solana program deploy target/deploy/scash_migrator.so \
+    --program-id keypairs/scash_migrator-keypair.json --upgrade-authority keypairs/deployer.json
+fi
 node scripts/init.mjs --keypair keypairs/deployer.json --rpc "$RPC"
