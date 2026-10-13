@@ -1,6 +1,7 @@
 // Key derivation per SPEC.md section 2 and diversified addresses per section 3.
 import { blake2b } from "@noble/hashes/blake2.js";
-import { bech32m } from "bech32";
+import bech32pkg from "bech32";
+const { bech32m } = bech32pkg;
 import { BabyJub, poseidon, type Point } from "./crypto.js";
 import { P, mod, bytesToBigIntLE, concatBytes, randomBytes } from "./field.js";
 
