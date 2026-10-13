@@ -8,6 +8,9 @@
   --color-line: rgb(255 255 255 / 0.08);
   --color-line-strong: rgb(255 255 255 / 0.16);
   --color-raise: #111111;
+  --color-raise-2: #161616;
+  --color-accent: #e8a24a;
+  --color-accent-soft: rgb(232 162 74 / 0.14);
   --color-ok: #4ade80;
   --color-warn: #fbbf24;
   --color-bad: #f87171;
@@ -29,6 +32,52 @@ html, body {
 ::selection { background: #fff; color: #000; }
 
 .serif { font-family: var(--font-serif); font-weight: 400; }
+
+.display { letter-spacing: -0.035em; line-height: 0.98; font-weight: 600; }
+
+/* subtle grid texture for feature bands */
+.grid-bg {
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse at center, #000 40%, transparent 80%);
+}
+
+.accent-glow {
+  background: radial-gradient(600px 300px at 50% 0%, rgb(232 162 74 / 0.12), transparent 70%);
+}
+
+.segment {
+  @apply inline-flex rounded-full p-1 text-xs;
+  background: var(--color-raise);
+  border: 1px solid var(--color-line);
+}
+.segment button {
+  @apply rounded-full px-3 py-1.5 transition-colors;
+  color: var(--color-mute);
+}
+.segment button[data-active="true"] { background: var(--color-fg); color: #000; }
+
+.redact {
+  display: inline-block; height: 0.8em; vertical-align: -0.1em; border-radius: 2px;
+  background: repeating-linear-gradient(90deg, #3a3a3a 0 2px, #2a2a2a 2px 4px);
+}
+
+details.faq { border-top: 1px solid var(--color-line); }
+details.faq:last-of-type { border-bottom: 1px solid var(--color-line); }
+details.faq summary { @apply flex cursor-pointer list-none items-center justify-between py-5 text-[17px] font-medium tracking-tight; }
+details.faq summary::-webkit-details-marker { display: none; }
+details.faq summary::after { content: "+"; color: var(--color-dim); font-weight: 300; font-size: 22px; transition: transform .2s; }
+details.faq[open] summary::after { transform: rotate(45deg); }
+details.faq p { @apply pb-6 text-[15px] leading-relaxed; color: var(--color-mute); max-width: 44rem; }
+
+.step-dot {
+  @apply flex h-8 w-8 items-center justify-center rounded-full font-mono text-[11px] transition-colors;
+  border: 1px solid var(--color-line-strong); color: var(--color-mute);
+}
+.step-dot[data-active="true"] { background: var(--color-accent); border-color: var(--color-accent); color: #000; }
+.step-dot[data-done="true"] { border-color: var(--color-accent); color: var(--color-accent); }
 
 /* hairline card: no fill, no blur, no glow */
 .card {
