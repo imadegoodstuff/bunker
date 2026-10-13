@@ -4,15 +4,15 @@
 //! graduates to DAMM v2. Creator trading fees accrue to this program's
 //! authority PDA. Anyone can call:
 //!
-//! 1. `Claim`   - CPI into Meteora to pull accrued creator fees (base + quote)
-//!                into the harvester's token accounts.
-//! 2. `Swap`    - CPI into the graduated DAMM v2 pool to sell the quote-side
-//!                fees for SCASH (all-in, min-out enforced by the caller's
-//!                slippage parameter checked against the pool's spot price
-//!                stored by the last observation; see `swap`).
+//! 1. `Claim` - CPI into Meteora to pull accrued creator fees (base + quote)
+//!    into the harvester's token accounts.
+//! 2. `Swap` - CPI into the graduated DAMM v2 pool to sell the quote-side
+//!    fees for SCASH (all-in, min-out enforced by the caller's slippage
+//!    parameter checked against the pool's spot price stored by the last
+//!    observation; see `swap`).
 //! 3. `Distribute` - split the SCASH held by the harvester: `holder_bps` is
-//!                donated to the scash vault (every private holder's shares
-//!                appreciate), the remainder goes to the team treasury.
+//!    donated to the scash vault (every private holder's shares appreciate),
+//!    the remainder goes to the team treasury.
 //!
 //! The split is fixed at initialization and cannot be changed. The harvester
 //! holds no upgrade authority over anything else.

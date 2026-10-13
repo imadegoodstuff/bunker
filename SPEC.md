@@ -16,12 +16,17 @@ Everything below the "boundary" (shield in, unshield out) is private: sender, re
 
 ## 2. Keys
 
-A wallet owns one spending key and derives everything else from it. Derivation is deterministic so that the same wallet reproduces the same keys on any device without a backup.
+A wallet owns one spending key and derives everything else from it. Derivation is deterministic so that the same wallet reproduces the same keys on any device.
 
 ```
-sk      : 32 bytes. Either BLAKE2b-256 of a wallet signature over the fixed
-          message "scash:v1:spending-key" (domain-separated, never used for
-          anything else), or a BIP-39 seed.
+sk      : 32 bytes.
+          sk = scrypt(password = sig || NFKC(passphrase),
+                      salt     = "scash:v2:wallet-seed",
+                      N = 2^15, r = 8, p = 1, dkLen = 32)
+          where sig is the wallet's signature over SPENDING_KEY_MESSAGE
+          (sdk/src/keys.ts; a multi-line text that states what it derives)
+          and passphrase is an optional user secret (empty string if unset).
+          sk may also be imported directly from a "scashseed1" + hex backup.
 
 ask     = to_scalar(H_blake("scash_ExpandSeed", sk || 0x00))   spend authorizing key
 nsk     = to_scalar(H_blake("scash_ExpandSeed", sk || 0x01))   nullifier deriving key
@@ -44,6 +49,8 @@ Key hierarchy and what each level can do:
 | outgoing viewing key `ovk` | no | no | yes | no |
 
 This is the Sapling hierarchy minus the re-randomized spend-authorization signature: because the relayer is the only on-chain signer, authorization is proven inside the circuit by knowledge of `ask`, bound to `ext_data_hash`.
+
+**Why a passphrase.** Any web page can ask a connected wallet to sign arbitrary text, and most wallets will sign it after showing the text. A signature-only derivation therefore hands the spending key to any page that can phish one signature. The passphrase is a second factor the page never sees; scrypt makes each guess at it cost about 100 ms. Users may leave it empty, in which case the signature alone is the key and the only protection is the warning text inside the message. See SECURITY.md §1.
 
 ## 3. Diversified addresses
 
@@ -97,7 +104,7 @@ Including `pos` makes two notes with identical contents distinct in their nullif
 
 ## 5. Commitment tree and roots
 
-A single append-only Poseidon Merkle tree of depth 26 (67,108,864 leaves) holds the commitments of every note of every asset in the pool. Sharing one tree across assets gives every asset the union anonymity set.
+A single append-only Poseidon Merkle tree of depth 26 (67,108,864 leaves) holds the commitments of every note of every asset in the pool. Sharing one tree is an engineering choice (one account, one root ring); it does **not** give assets a shared anonymity set, because `asset` is public in every transaction. See §8.
 
 - Leaf hash: the commitment itself.
 - Node hash: `Poseidon(left, right)`.
@@ -175,11 +182,13 @@ TransactArgs {
 }
 ```
 
-Memos inside note ciphertexts are padded to a multiple of 64 bytes (max 512), so only a length bucket leaks.
+Memos inside note ciphertexts are padded to a multiple of 64 bytes, so only a length bucket leaks. The maximum is 64 bytes; §15 explains why.
 
 ## 8. Assets
 
 An asset is a Token-2022 or SPL mint, or native SOL (asset id of the system program). `asset = SHA-256("scash_asset" || mint) mod p`. Each asset has a `Pool` account that holds its token account, its turnstile counters and its share rate. All assets share the commitment tree held by the `Tree` account.
+
+**Anonymity is per asset, not per tree.** `asset` is a public input of every `transact`, so each transaction reveals which asset it moves. A spend of asset *A* can only have come from a note of asset *A*; the anonymity set of a withdrawal is therefore the set of unspent notes *of that asset*, not every leaf in the tree. Sharing one tree saves accounts and lets a single root ring serve every pool; it does not merge anonymity sets. Thin pools are thin regardless of how full the tree is, and the app reports the set size per asset for this reason.
 
 ## 9. Shares and donations
 
@@ -215,8 +224,8 @@ plaintext    = d || value (8 LE) || rseed (32) || memo
 ```
 
 The memo is optional. When present it is zero-padded to the next multiple of
-64 bytes (max 512) so that only a length bucket leaks. A ciphertext without a
-memo is `32 + 16 + 11 + 8 + 32 = 99` bytes.
+64 bytes (max 64, see §15) so that only a length bucket leaks. A ciphertext
+without a memo is `32 + 16 + 11 + 8 + 32 = 99` bytes; with a memo, 163.
 
 The receiver trial-decrypts every ciphertext in every `transact` with `ivk`, recomputes `g_d = GroupHash(d)`, `pk_d = [ivk] g_d`, `cm`, and accepts the note only if `cm` matches the on-chain commitment at that leaf.
 
@@ -246,7 +255,16 @@ A new circuit or proof system means a new vault. A `scash_migrator` exit target 
 | SHA-256 of ext_data | under 2,000 CU |
 | Total `transact2x2` | about 200,000 CU |
 | Proof | 256 bytes (uncompressed G1, G2, G1) |
-| Public inputs | 11 x 32 = 352 bytes |
-| Two ciphertexts | 2 x (32 + 16 + 11 + 8 + 64 + 512) = 1,286 bytes |
+| Instruction args besides ext_data | 1 + 4 + 1 + 8 + 1 + 4 + 2x32 + 4 + 2x32 = 152 bytes |
+| ext_data without memo | 32 + 32 + 8 + 32 + 4 + 4 + 2x(4 + 99) + 4 + 80 = 402 bytes |
+| Two ciphertexts | 99 + 99 (no memo) or 163 + 99 (one 64-byte memo) |
 
-A `transact2x2` with memo fits in a v1 transaction (4096 bytes). A relayer can place up to 6 `transact2x2` without memos in one transaction under the 1.4M CU limit.
+Solana transactions are limited to 1,232 bytes and there is no v1 format with a larger budget. Measured on a validator (CI e2e, v0 transaction with the lookup table from §7):
+
+| Transaction | Bytes | CU |
+|---|---|---|
+| shield, no memo | 1,140 | 192k |
+| private send, 64-byte memo, relayer fee | 1,204 | 196k |
+| unshield, no memo | 1,172 | 203k |
+
+The lookup table must hold the program, config, tree, system/compute/token programs, each pool's mint, pool PDA and vault, **and the relayer's fee destinations** (its key and its token account per SPL pool). The program id and the signers cannot be table-loaded. With everything else in the table, one 64-byte memo bucket fits and a second does not; `sdk/src/sdk.test.ts` serialises the real instruction for both the SOL and SPL cases and asserts exactly this, so `MEMO_MAX` cannot drift from the packet limit without a test failing. Longer memos require a second transaction (a memo-only note) or a change to the on-chain format; neither is specified yet.

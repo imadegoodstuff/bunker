@@ -1,5 +1,6 @@
 // Key derivation per SPEC.md section 2 and diversified addresses per section 3.
 import { blake2b } from "@noble/hashes/blake2.js";
+import { scryptAsync } from "@noble/hashes/scrypt.js";
 import bech32pkg from "bech32";
 const { bech32m } = bech32pkg;
 import { BabyJub, poseidon, type Point } from "./crypto.js";
@@ -8,7 +9,27 @@ import { P, mod, bytesToBigIntLE, concatBytes, randomBytes } from "./field.js";
 const PERSON_EXPAND = new TextEncoder().encode("scash_ExpandSeed");
 const PERSON_DIVERSIFY = new TextEncoder().encode("scash_Diversify_");
 
-export const SPENDING_KEY_MESSAGE = "scash:v1:spending-key";
+/**
+ * The message a wallet signs to derive the shielded spending key.
+ *
+ * Threat model: any web page can ask a connected wallet to sign arbitrary
+ * text, and wallets will show this text verbatim. The message therefore
+ * says exactly what it is for, so a phishing site presenting it has to
+ * show the user a warning in the user's own wallet. On its own that is a
+ * speed bump, not a wall — the real mitigation is the optional passphrase
+ * mixed into `seedFromSignature`, which a stolen signature cannot replay.
+ */
+export const SPENDING_KEY_MESSAGE = [
+  "scash shielded wallet",
+  "",
+  "Signing this message derives the key that can SPEND your private balance.",
+  "Only sign it inside the scash app. Never sign it for any other site,",
+  "no matter what it claims.",
+  "",
+  "version: 2",
+].join("\n");
+
+const SEED_SALT = new TextEncoder().encode("scash:v2:wallet-seed");
 
 export interface SpendingKey {
   sk: Uint8Array; // 32 bytes
@@ -42,9 +63,36 @@ export function spendingKeyFromSeed(sk: Uint8Array): SpendingKey {
   return { sk, ask, nsk, ovk };
 }
 
-/** Derive the seed from a wallet signature over SPENDING_KEY_MESSAGE. */
-export function seedFromSignature(signature: Uint8Array): Uint8Array {
-  return blake2b(signature, { dkLen: 32, personalization: new TextEncoder().encode("scash_WalletSeed") });
+/**
+ * Derive the 32-byte seed from a wallet signature over SPENDING_KEY_MESSAGE and
+ * an optional passphrase.
+ *
+ *   seed = scrypt(password = sig || NFKC(passphrase), salt = "scash:v2:wallet-seed", N = 2^15, r = 8, p = 1)
+ *
+ * The signature alone is high-entropy, so scrypt is not there to stretch it;
+ * it is there so that an attacker who phished the signature still has to
+ * grind the passphrase at ~100 ms per guess. An empty passphrase is allowed
+ * (and is what "sign only" means), but the UI recommends setting one.
+ * ~100 ms on a laptop, ~0.5 s on a phone.
+ */
+export async function seedFromSignature(signature: Uint8Array, passphrase = ""): Promise<Uint8Array> {
+  if (signature.length < 32) throw new Error("signature too short");
+  const pw = concatBytes(signature, new TextEncoder().encode(passphrase.normalize("NFKC")));
+  return scryptAsync(pw, SEED_SALT, { N: 2 ** 15, r: 8, p: 1, dkLen: 32 });
+}
+
+/** Hex encoding of a seed for backup. 64 hex chars; anyone holding it can spend. */
+export function seedToBackup(seed: Uint8Array): string {
+  if (seed.length !== 32) throw new Error("seed must be 32 bytes");
+  return "scashseed1" + Array.from(seed, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export function seedFromBackup(s: string): Uint8Array {
+  const t = s.trim().toLowerCase();
+  if (!t.startsWith("scashseed1")) throw new Error("not a scash seed backup");
+  const hex = t.slice("scashseed1".length);
+  if (!/^[0-9a-f]{64}$/.test(hex)) throw new Error("malformed seed backup");
+  return Uint8Array.from(hex.match(/../g)!, (h) => parseInt(h, 16));
 }
 
 export async function fullViewingKey(spend: SpendingKey): Promise<FullViewingKey> {

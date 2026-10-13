@@ -5,7 +5,7 @@ import { create } from "zustand";
 import { Connection, PublicKey, SystemProgram, type VersionedTransaction } from "@solana/web3.js";
 import {
   ShieldedWallet, MerkleTree, assetId, seedFromSignature, encodeAddress, decodeAddress, decodePool, poolPda, treePda, decodeTree,
-  buildV0, fetchLookupTable, type PoolState, type SpendableNote, SPENDING_KEY_MESSAGE,
+  buildV0, fetchLookupTable, type PoolState, type SpendableNote, SPENDING_KEY_MESSAGE, seedToBackup, seedFromBackup,
 } from "@scash/sdk";
 import { indexer, relayer, type RelayerInfo } from "./api";
 import { ARTIFACTS, ASSETS, CLUSTER, PROGRAM_ID, RPC_URL, type AssetMeta } from "./config";
@@ -40,7 +40,10 @@ interface State {
   tx: { stage: TxStage; message?: string; signature?: string };
   connection: Connection;
 
-  unlock: (signMessage: (m: Uint8Array) => Promise<Uint8Array>) => Promise<void>;
+  unlock: (signMessage: (m: Uint8Array) => Promise<Uint8Array>, passphrase?: string) => Promise<void>;
+  unlockFromSeed: (backup: string) => Promise<void>;
+  /** Backup string for the current wallet. Anyone holding it can spend. */
+  exportSeed: () => string | undefined;
   lock: () => void;
   sync: () => Promise<void>;
   refreshPools: () => Promise<void>;
@@ -63,7 +66,19 @@ function b64ToBytes(s: string) {
   return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 }
 
-export const useScash = create<State>((set, get) => ({
+export const useScash = create<State>((set, get) => {
+  async function openWithSeed(seed: Uint8Array) {
+    const wallet = await ShieldedWallet.fromSeed(seed);
+    const tree = new MerkleTree(26);
+    await tree.whenReady();
+    set({ wallet, tree, address: bjjAddress(wallet), phase: "syncing" });
+    relayer.info().then((r) => set({ relayer: r })).catch(() => undefined);
+    await get().refreshPools();
+    await get().sync();
+    set({ phase: "ready" });
+  }
+
+  return {
   phase: "idle",
   pools: {},
   balances: {},
@@ -74,21 +89,28 @@ export const useScash = create<State>((set, get) => ({
   tx: { stage: "idle" },
   connection: new Connection(RPC_URL, "confirmed"),
 
-  async unlock(signMessage) {
+  async unlock(signMessage, passphrase = "") {
     set({ phase: "deriving", error: undefined });
     try {
       const sig = await signMessage(new TextEncoder().encode(SPENDING_KEY_MESSAGE));
-      const wallet = await ShieldedWallet.fromSeed(seedFromSignature(sig));
-      const tree = new MerkleTree(26);
-      await tree.whenReady();
-      set({ wallet, tree, address: bjjAddress(wallet), phase: "syncing" });
-      relayer.info().then((r) => set({ relayer: r })).catch(() => undefined);
-      await get().refreshPools();
-      await get().sync();
-      set({ phase: "ready" });
+      await openWithSeed(await seedFromSignature(sig, passphrase));
     } catch (e) {
       set({ phase: "error", error: (e as Error).message });
     }
+  },
+
+  async unlockFromSeed(backup) {
+    set({ phase: "deriving", error: undefined });
+    try {
+      await openWithSeed(seedFromBackup(backup));
+    } catch (e) {
+      set({ phase: "error", error: (e as Error).message });
+    }
+  },
+
+  exportSeed() {
+    const w = get().wallet;
+    return w ? seedToBackup(w.spend.sk) : undefined;
   },
 
   lock() {
@@ -193,7 +215,8 @@ export const useScash = create<State>((set, get) => ({
   async unshield(asset, amount, recipient) {
     await relayedTransact(get, set, asset, amount, "unshield", { recipient });
   },
-}));
+  };
+});
 
 async function relayedTransact(
   get: () => State,

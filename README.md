@@ -22,7 +22,7 @@ on-chain, relayer-paid transactions, and an immutable vault bounded by a per-ass
 - **Wallet-signature keys**: the spending key is `BLAKE2b(sign("scash:v1:spending-key"))`. No seed phrase, no backup.
 - **Client-side trial decryption**: the indexer serves ciphertexts; only your browser knows which are yours.
 - **Nullifier = Poseidon(nk, ρ, position)**: bound to the leaf, immune to duplicate-commitment attacks.
-- **One tree for all assets**, depth 26, 128-root ring: the anonymity set is the whole protocol, not one pool.
+- **One tree for all assets**, depth 26, 128-root ring. Note that the asset id is a public input, so the anonymity set of a transaction is the unspent notes *of that asset*, not every leaf; the app reports it per asset.
 - **Turnstile**: `total_out ≤ total_in` per asset is enforced on-chain, so even a circuit soundness bug cannot drain other assets.
 - **No upgrade authority.** The guardian can only pause *new* shields and *lower* the TVL cap.
 - **Compliance opt-in**: association-set roots (Privacy Pools style) as a public input, scoped viewing keys, payment receipts.

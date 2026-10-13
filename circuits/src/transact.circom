@@ -172,7 +172,11 @@ template Transact(nIns, nOuts, levels) {
     // 8. balance
     inSum + publicAmount === outSum;
 
-    // 9. bind extDataHash
+    // 9. bind extDataHash. A public input that appears in no constraint has a
+    // zero IC point in the Groth16 verifying key and is therefore NOT checked
+    // by the verifier; this quadratic constraint is what makes the verifier
+    // bind ext_data_hash. circomspect flags the intermediate as used once
+    // (CS0017); it is allow-listed in circuits/circomspect-allow.json.
     signal extDataSquare;
     extDataSquare <== extDataHash * extDataHash;
 }

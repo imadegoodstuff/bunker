@@ -7,18 +7,37 @@ import {
 } from "@solana/web3.js";
 import { PROGRAM_ID, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, configPda, treePda, poolPda, vaultFor } from "./program.js";
 
-/** Accounts worth putting in the table: protocol singletons plus one entry set per pool. */
-export function staticAddresses(mints: { mint: PublicKey; tokenProgram?: PublicKey }[], programId = PROGRAM_ID): PublicKey[] {
+/**
+ * Accounts worth putting in the table: protocol singletons, one entry set per
+ * pool, and — if a relayer is given — its fee destinations (its own key and
+ * its token account per SPL pool). Those are static per deployment and the
+ * SPL-token send with a full memo does not fit in a packet without them;
+ * see the size test in sdk.test.ts.
+ */
+export function staticAddresses(
+  mints: { mint: PublicKey; tokenProgram?: PublicKey }[],
+  programId = PROGRAM_ID,
+  relayer?: PublicKey
+): PublicKey[] {
   const set = new Map<string, PublicKey>();
   const add = (k: PublicKey) => set.set(k.toBase58(), k);
   [programId, configPda(programId), treePda(programId), SystemProgram.programId, ComputeBudgetProgram.programId,
     TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID].forEach(add);
+  if (relayer) add(relayer);
   for (const m of mints) {
+    const native = m.mint.equals(SystemProgram.programId);
+    const tp = native ? SystemProgram.programId : m.tokenProgram ?? TOKEN_PROGRAM_ID;
     add(m.mint);
     add(poolPda(m.mint, programId));
-    add(vaultFor(m.mint, m.mint.equals(SystemProgram.programId) ? SystemProgram.programId : m.tokenProgram ?? TOKEN_PROGRAM_ID, programId));
+    add(vaultFor(m.mint, tp, programId));
+    if (relayer && !native) add(ataFor(relayer, m.mint, tp));
   }
   return [...set.values()];
+}
+
+/** Associated token account address (no on-chain lookup). */
+export function ataFor(owner: PublicKey, mint: PublicKey, tokenProgram = TOKEN_PROGRAM_ID): PublicKey {
+  return PublicKey.findProgramAddressSync([owner.toBuffer(), tokenProgram.toBuffer(), mint.toBuffer()], ASSOCIATED_TOKEN_PROGRAM_ID)[0];
 }
 
 /** Create a lookup table owned by `authority` and fill it. Returns the table address. */

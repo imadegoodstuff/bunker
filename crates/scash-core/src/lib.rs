@@ -49,6 +49,9 @@ pub struct TransactArgs {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+// `Transact` is large by nature (proof + ext data); it is decoded once per
+// instruction and never stored, so boxing it would only add an allocation.
+#[allow(clippy::large_enum_variant)]
 pub enum VaultInstruction {
     /// Create the global config and the shared commitment tree.
     /// Accounts: [payer s, config w, tree w, system]

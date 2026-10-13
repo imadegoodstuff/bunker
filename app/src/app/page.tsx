@@ -21,12 +21,14 @@ const yieldFlow = [
 
 const faq = [
   ["What is scash, in one sentence?", "A shielded pool on Solana built on the Zcash Sapling design: diversified addresses, note commitments in a Merkle tree, position-bound nullifiers and Groth16 proofs verified by an immutable program."],
-  ["Is shielding private?", "The deposit itself is public: an address put X SOL into the pool. Everything after it is not. Use round amounts and wait before withdrawing so your deposit blends in with the others."],
+  ["Is shielding private?", "The deposit itself is public: an address put X SOL into the pool. Everything after it is not. You hide among the other notes of the same asset, not among every note in the tree, so use round amounts and wait before withdrawing."],
   ["Who pays the network fee?", "For sends and withdrawals, a relayer does. Its fee is deducted inside the proof from your notes, so the address that receives funds never has to hold SOL for gas."],
   ["Where does the yield come from?", "Creator fees from SCASH trading are harvested and donated into the pool. Balances are denominated in shares; a donation lifts the share rate for everyone at once."],
   ["Can anyone take or freeze my notes?", "No. The program cannot be upgraded and has no instruction that moves a note without its owner's proof. The guardian can only pause new deposits and lower the TVL cap."],
   ["What if this website disappears?", "Your keys come from your wallet's signature, and every ciphertext is on-chain. Any copy of the open-source app, or your own, recovers the same notes."],
-  ["Is it audited?", "Not yet. This is a pre-release with development proving keys. The verifier, circuits and program are open source and cross-tested in CI against the exact on-chain verifier."],
+  ["Is it audited?", "No. This is a pre-release with development proving keys and no independent audit of the circuits or programs. The code is open source and cross-tested in CI, which is not the same thing. SECURITY.md lists the known limitations in priority order."],
+  ["Can a phishing site steal my keys?", "Keys come from a wallet signature over a fixed message, and any site can request a signature. That is why the app asks for a passphrase: it is mixed into the key and a stolen signature is useless without it. Read the message your wallet shows; if any other site asks you to sign it, refuse."],
+  ["How large can a memo be?", "64 bytes. A private payment already uses most of Solana's 1,232-byte packet, and the SDK test suite asserts that one 64-byte bucket fits and a second does not."],
 ];
 
 export default function Landing() {

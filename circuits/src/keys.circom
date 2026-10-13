@@ -12,9 +12,10 @@ include "circomlib/circuits/babyjub.circom";
 template ViewingKeys() {
     signal input ask;
     signal input nsk;
-    signal output ak;
     signal output nk;
     signal output ivkBits[251];
+    // ak is only needed to derive ivk; Transact never reads it, so it is not an output.
+    signal ak;
 
     component hAk = Poseidon(1);
     hAk.inputs[0] <== ask;

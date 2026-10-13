@@ -1,0 +1,8 @@
+[
+  {
+    "ruleId": "CS0017",
+    "file": "transact.circom",
+    "signal": "extDataSquare",
+    "reason": "Public-input binding idiom: extDataHash must appear in a constraint or its IC point is zero and the verifier does not check it. The intermediate is intentionally used once."
+  }
+]

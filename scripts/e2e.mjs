@@ -67,7 +67,7 @@ log("bob shielded address:", bobAddr);
 // --- protocol init
 if (!(await conn.getAccountInfo(configPda()))) await send([initializeIx(payer.publicKey, payer.publicKey)], [payer], "initialize");
 if (!(await conn.getAccountInfo(poolPda(SOL)))) await send([createPoolIx(payer.publicKey, SOL, 1000n * BigInt(LAMPORTS_PER_SOL))], [payer], "create SOL pool");
-const tableAddr = await createLookupTable(conn, payer, staticAddresses([{ mint: SOL }]));
+const tableAddr = await createLookupTable(conn, payer, staticAddresses([{ mint: SOL }], undefined, relayer.publicKey));
 await new Promise((r) => setTimeout(r, 1500)); // tables become usable one slot after extension
 table = await fetchLookupTable(conn, tableAddr);
 log(`lookup table ${tableAddr.toBase58()} with ${table.state.addresses.length} addresses`);

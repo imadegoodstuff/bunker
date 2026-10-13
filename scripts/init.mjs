@@ -1,5 +1,7 @@
 // One-time protocol initialization: config + tree, then a pool per asset.
-//   node scripts/init.mjs --keypair keypairs/deployer.json [--rpc URL] [--guardian PUBKEY] [--tvl-cap-sol 1000]
+//   node scripts/init.mjs --keypair keypairs/deployer.json --relayer RELAYER_PUBKEY [--rpc URL] [--guardian PUBKEY] [--tvl-cap-sol 1000]
+// The relayer's key (and its token accounts for SPL pools) go into the lookup
+// table; without them an SPL send with a memo does not fit in a packet.
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { Connection, Keypair, PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
@@ -12,9 +14,12 @@ const { values } = parseArgs({
     guardian: { type: "string" },
     "tvl-cap-sol": { type: "string", default: "1000" },
     program: { type: "string" },
+    relayer: { type: "string" },
   },
 });
 const programId = values.program ? new PublicKey(values.program) : PROGRAM_ID;
+const relayerPubkey = values.relayer ? new PublicKey(values.relayer) : undefined;
+if (!relayerPubkey) console.warn("warning: no --relayer given; SPL sends with memos will not fit without the relayer's accounts in the table");
 const payer = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(values.keypair, "utf8"))));
 const guardian = values.guardian ? new PublicKey(values.guardian) : payer.publicKey;
 const conn = new Connection(values.rpc, "confirmed");
@@ -40,6 +45,6 @@ if (!(await conn.getAccountInfo(solPool))) {
   console.log("SOL pool exists", solPool.toBase58());
 }
 
-const table = await createLookupTable(conn, payer, staticAddresses([{ mint: SystemProgram.programId }], programId));
+const table = await createLookupTable(conn, payer, staticAddresses([{ mint: SystemProgram.programId }], programId, relayerPubkey));
 console.log("lookup table", table.toBase58(), "→ set LOOKUP_TABLE on the relayer");
 process.exit(0);

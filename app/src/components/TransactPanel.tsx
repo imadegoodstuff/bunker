@@ -5,7 +5,7 @@ import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { ASSETS, type AssetMeta } from "@/lib/config";
 import { useScash } from "@/lib/store";
 import { fmtAmount, parseAmount } from "@/lib/format";
-import { amountForBurn } from "@scash/sdk";
+import { amountForBurn, MEMO_MAX } from "@scash/sdk";
 
 type Mode = "shield" | "send" | "unshield";
 
@@ -121,7 +121,7 @@ export function TransactPanel() {
         {mode === "send" && (
           <div>
             <span className="label">Memo <span className="text-dim">· encrypted, optional</span></span>
-            <input className="input mt-2" placeholder="" value={memo} onChange={(e) => setMemo(e.target.value)} maxLength={512} />
+            <input className="input mt-2" placeholder="" value={memo} onChange={(e) => setMemo(e.target.value)} maxLength={MEMO_MAX} />
           </div>
         )}
 

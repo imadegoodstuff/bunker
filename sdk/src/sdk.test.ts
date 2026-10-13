@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PublicKey } from "@solana/web3.js";
+import { AddressLookupTableAccount, Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import { BabyJub, poseidon } from "./crypto.js";
-import { spendingKeyFromSeed, fullViewingKey, newAddress, encodeAddress, decodeAddress, groupHash } from "./keys.js";
-import { encryptNote, tryDecryptNote, encryptOutgoing, decryptOutgoing, decryptNoteAsSender, NOTE_CIPHERTEXT_LEN, NOTE_CIPHERTEXT_LEN_NO_MEMO } from "./encryption.js";
+import { spendingKeyFromSeed, fullViewingKey, newAddress, encodeAddress, decodeAddress, groupHash, seedFromSignature, seedToBackup, seedFromBackup, SPENDING_KEY_MESSAGE } from "./keys.js";
+import { encryptNote, tryDecryptNote, encryptOutgoing, decryptOutgoing, decryptNoteAsSender, NOTE_CIPHERTEXT_LEN, NOTE_CIPHERTEXT_LEN_NO_MEMO, MEMO_MAX, MEMO_BUCKET } from "./encryption.js";
+import { transactIx } from "./program.js";
+import { staticAddresses, buildV0, ataFor } from "./lookup.js";
 import { noteCommitment, nullifier, assetId, freshRandomness, noteRandomness } from "./note.js";
 import { MerkleTree, verifyPath } from "./merkle.js";
 import { extDataHash, serializeExtData, deserializeExtData, NO_EXIT } from "./extdata.js";
@@ -51,7 +53,7 @@ test("note encryption: receiver decrypts with ivk, strangers cannot, sender reco
   const memo = new TextEncoder().encode("hello");
   const { ciphertext, esk } = encryptNote(bjj, to, note, memo, true);
   assert.equal(ciphertext.length, NOTE_CIPHERTEXT_LEN_NO_MEMO + 64); // 5-byte memo → one 64-byte bucket
-  assert.equal(NOTE_CIPHERTEXT_LEN, NOTE_CIPHERTEXT_LEN_NO_MEMO + 512);
+  assert.equal(NOTE_CIPHERTEXT_LEN, NOTE_CIPHERTEXT_LEN_NO_MEMO + MEMO_MAX);
 
   const got = tryDecryptNote(bjj, receiver.ivk, ciphertext);
   assert.ok(got);
@@ -119,4 +121,68 @@ test("nullifier depends on position", async () => {
   const a = await nullifier(1n, 2n, 0);
   const b = await nullifier(1n, 2n, 1);
   assert.notEqual(a, b);
+});
+
+test("seed derivation: passphrase changes the seed, backup round-trips", async () => {
+  const sig = new Uint8Array(64).fill(3);
+  const a = await seedFromSignature(sig);
+  const b = await seedFromSignature(sig, "correct horse");
+  const c = await seedFromSignature(sig, "correct horse");
+  assert.equal(a.length, 32);
+  assert.notDeepEqual(a, b);
+  assert.deepEqual(b, c);
+  // NFKC: composed and decomposed forms derive the same key
+  assert.deepEqual(await seedFromSignature(sig, "caf\u00e9"), await seedFromSignature(sig, "cafe\u0301"));
+  assert.deepEqual(seedFromBackup(seedToBackup(b)), b);
+  assert.throws(() => seedFromBackup("scashseed1zz"));
+  assert.ok(SPENDING_KEY_MESSAGE.includes("SPEND"));
+});
+
+test("a relayed 2-in/2-out send with the maximum memo fits in one packet", async () => {
+  // Real serialization of the real instruction, with a lookup table holding
+  // the same static addresses the deployment uses. This is the test that
+  // pins MEMO_MAX; the only approximation is the proof bytes.
+  const payer = Keypair.generate().publicKey; // relayer
+  const mint = SystemProgram.programId;
+  const splMint = Keypair.generate().publicKey;
+  const table = new AddressLookupTableAccount({
+    key: Keypair.generate().publicKey,
+    state: {
+      deactivationSlot: BigInt("18446744073709551615"), lastExtendedSlot: 0, lastExtendedSlotStartIndex: 0, authority: undefined,
+      addresses: staticAddresses([{ mint }, { mint: splMint }], undefined, payer),
+    },
+  });
+  const bjj = await BabyJub.load();
+  const sk = spendingKeyFromSeed(seed);
+  const fvk = await fullViewingKey(sk);
+  const to = newAddress(bjj, fvk.ivk);
+  const gd = groupHash(bjj, to.d)!;
+  const asset = assetId(mint);
+  const note = { asset, value: 1n, gd, pkd: to.pkd, ...freshRandomness() };
+  const memo = new Uint8Array(MEMO_MAX).fill(0x61);
+  const c0 = encryptNote(bjj, to, note, memo, true);
+  const c1 = encryptNote(bjj, to, note, undefined, false);
+  const out = encryptOutgoing(bjj, sk.ovk, 1n, to.pkd, c0.esk);
+  const proof = {
+    circuit: "transact2x2" as const,
+    proof: { piA: [0n, 0n] as [bigint, bigint], piB: [[0n, 0n], [0n, 0n]] as [[bigint, bigint], [bigint, bigint]], piC: [0n, 0n] as [bigint, bigint] },
+    publicSignals: [],
+    proofBytes: new Uint8Array(256).fill(1),
+    nullifiers: [randomField(), randomField()],
+    outCommitments: [randomField(), randomField()],
+  };
+  // In a send, ext.recipient is the relayer's fee destination (see wallet.ts).
+  const sizeFor = (m: PublicKey, feeDest: PublicKey, cts: Uint8Array[]) => {
+    const ext = { recipient: feeDest, relayer: payer, relayerFee: 1_500_000n, exitTarget: NO_EXIT, exitData: new Uint8Array(0), ciphertexts: cts, outCiphertext: out };
+    const ix = transactIx({ payer, mint: m, depositor: payer, depositorSource: payer, recipient: feeDest, relayerDest: feeDest }, proof, 7, -1n, 0n, ext);
+    return buildV0(payer, [ix], "11111111111111111111111111111111", table).serialize().length;
+  };
+  const sol = sizeFor(mint, payer, [c0.ciphertext, c1.ciphertext]);
+  const spl = sizeFor(splMint, ataFor(payer, splMint), [c0.ciphertext, c1.ciphertext]);
+  assert.ok(sol <= 1232, `SOL send with ${MEMO_MAX}-byte memo serializes to ${sol} > 1232`);
+  assert.ok(spl <= 1232, `SPL send with ${MEMO_MAX}-byte memo serializes to ${spl} > 1232`);
+  // and one more bucket would not fit — documents why MEMO_MAX is what it is
+  const bigger = new Uint8Array(c0.ciphertext.length + MEMO_BUCKET);
+  const over = sizeFor(mint, payer, [bigger, c1.ciphertext]);
+  assert.ok(over > 1232, `a ${MEMO_MAX + MEMO_BUCKET}-byte memo would still fit (${over}); MEMO_MAX can be raised`);
 });

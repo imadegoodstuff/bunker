@@ -19,7 +19,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check || true
-      - run: cargo clippy --workspace --all-targets -- -D warnings -A clippy::too_many_arguments || true
+      - name: clippy (warnings are errors; solana's entrypoint cfgs and deprecated re-exports are allowed)
+        run: cargo clippy --workspace --all-targets -- -D warnings -A unexpected_cfgs -A deprecated
       - run: cargo test --workspace --exclude scash-vault
       - name: vault unit tests (fixture tests need circuit artifacts)
         run: cargo test -p scash-vault --lib
@@ -57,6 +58,32 @@ jobs:
       - run: npm run -w sdk test
       - name: compile circuits (constraint counts)
         run: npm run -w circuits build
+
+  audit:
+    name: audit tooling (cargo-audit, circomspect, npm audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+      - name: cargo-audit (known vulnerabilities in Rust deps)
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: circomspect (static analysis; findings must be allow-listed in circuits/circomspect-allow.json)
+        run: |
+          cargo install circomspect --locked
+          npm run -w circuits build
+          node circuits/scripts/lint.mjs
+      - name: npm audit (production deps only)
+        run: npm audit --omit=dev --audit-level=high
 
   e2e:
     name: end-to-end on a local validator

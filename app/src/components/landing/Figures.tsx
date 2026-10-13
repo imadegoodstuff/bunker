@@ -14,17 +14,17 @@ export function Figures() {
       let shields = 0, unshields = 0;
       if (stats) for (const m of Object.values(stats.perMint)) { shields += m.shields; unshields += m.unshields; }
       setFigs([
-        { k: "Privacy set", v: stats ? stats.leaves.toLocaleString() : "—", sub: "notes in the tree, all alike" },
-        { k: "Shields, 30 days", v: stats ? shields.toLocaleString() : "—", sub: "deposits that joined the set" },
-        { k: "Unshields, 30 days", v: stats ? unshields.toLocaleString() : "—", sub: "exits to fresh addresses" },
+        { k: "SOL privacy set", v: stats ? shields.toLocaleString() : "—", sub: "deposits into the SOL pool; sets are per asset" },
+        { k: "SOL withdrawals", v: stats ? unshields.toLocaleString() : "—", sub: "exits to fresh addresses" },
+        { k: "Notes in tree", v: stats ? stats.leaves.toLocaleString() : "—", sub: "all assets, all alike on-chain" },
         { k: "Relayer", v: info ? `${info.delay.minMs / 1000}–${info.delay.maxMs / 1000}s` : "—", sub: info ? `random delay · ${info.queued} queued` : "offline" },
       ]);
     })();
   }, []);
   const items = figs ?? [
-    { k: "Privacy set", v: "—", sub: "notes in the tree, all alike" },
-    { k: "Shields, 30 days", v: "—", sub: "deposits that joined the set" },
-    { k: "Unshields, 30 days", v: "—", sub: "exits to fresh addresses" },
+    { k: "SOL privacy set", v: "—", sub: "deposits into the SOL pool; sets are per asset" },
+    { k: "SOL withdrawals", v: "—", sub: "exits to fresh addresses" },
+    { k: "Notes in tree", v: "—", sub: "all assets, all alike on-chain" },
     { k: "Relayer", v: "—", sub: "random delay" },
   ];
   return (

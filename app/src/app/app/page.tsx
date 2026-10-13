@@ -11,6 +11,7 @@ import { TransactPanel } from "@/components/TransactPanel";
 import { AnonymityPanel } from "@/components/AnonymityPanel";
 import { Activity } from "@/components/Activity";
 import { TxOverlay } from "@/components/TxOverlay";
+import { BackupCard } from "@/components/BackupCard";
 
 export default function AppPage() {
   const { connected } = useWallet();
@@ -39,6 +40,7 @@ export default function AppPage() {
               <aside className="space-y-10 lg:pt-1">
                 <AddressCard />
                 <AnonymityPanel />
+                <BackupCard />
               </aside>
             </motion.div>
           )}

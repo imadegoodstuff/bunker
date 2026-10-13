@@ -11,8 +11,14 @@ const PERSON_ENC = new TextEncoder().encode("scash_NoteEncKey");
 const PERSON_OUT = new TextEncoder().encode("scash_OutKey____");
 const NONCE = new Uint8Array(12);
 
-export const MEMO_MAX = 512;
-/** Memos are padded to the next multiple of this so lengths leak only a bucket. */
+/**
+ * Maximum memo length. Bounded by Solana's 1232-byte packet, not by the
+ * protocol: a 2-in/2-out transact with a lookup table is ~1140 bytes before
+ * the memo, which leaves exactly one 64-byte bucket. `sdk.test.ts` builds
+ * the real v0 transaction and asserts this; raise it only if that test passes.
+ */
+export const MEMO_MAX = 64;
+/** Memos are padded to a multiple of this so lengths leak only a bucket. */
 export const MEMO_BUCKET = 64;
 /** epk(32) + tag(16) + d(11) + value(8) + rseed(32) [+ memo bucket] */
 export const NOTE_CIPHERTEXT_LEN_NO_MEMO = 32 + 16 + 11 + 8 + 32;

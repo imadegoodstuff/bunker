@@ -32,13 +32,13 @@ export function AnonymityPanel() {
         </span>
       </div>
       <dl className="mt-3 space-y-1.5 text-xs">
-        <Row k="Notes in tree" v={s ? s.leaves.toLocaleString() : "—"} />
-        <Row k="Shields, 30d" v={sol ? sol.shields.toLocaleString() : "—"} />
-        <Row k="Unshields, 30d" v={sol ? sol.unshields.toLocaleString() : "—"} />
+        <Row k={`${ASSETS[0].symbol} deposits, all time`} v={sol ? sol.shields.toLocaleString() : "—"} />
+        <Row k={`${ASSETS[0].symbol} withdrawals, all time`} v={sol ? sol.unshields.toLocaleString() : "—"} />
+        <Row k="Notes in tree, all assets" v={s ? s.leaves.toLocaleString() : "—"} />
         {relayer && <Row k="Relayer queue" v={String(relayer.queued)} />}
       </dl>
       <p className="mt-4 text-xs leading-relaxed text-dim">
-        Wait {wait} between shielding and withdrawing. Use round amounts. Withdraw to a fresh wallet.
+        The asset is public in every transaction, so you hide among {ASSETS[0].symbol} notes only, not the whole tree. Wait {wait} between shielding and withdrawing. Use round amounts. Withdraw to a fresh wallet.
       </p>
     </section>
   );

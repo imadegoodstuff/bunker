@@ -7,6 +7,11 @@ const WalletButton = dynamic(() => import("@solana/wallet-adapter-react-ui").the
 
 export function Nav({ app = false }: { app?: boolean }) {
   return (
+    <>
+    <div className="border-b border-line bg-raise px-6 py-2 text-center text-[12px] text-mute">
+      Pre-release on {CLUSTER}. Unaudited circuits and programs, development proving keys.{" "}
+      <a href="https://github.com/imadegoodstuff/scash/blob/main/SECURITY.md" target="_blank" rel="noreferrer" className="link underline underline-offset-4">Known limitations</a>
+    </div>
     <header className="sticky top-0 z-40 border-b border-line bg-bg/80 backdrop-blur-md">
       <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-6">
         <Link href="/" className="flex items-center gap-2.5">
@@ -28,5 +33,6 @@ export function Nav({ app = false }: { app?: boolean }) {
         </nav>
       </div>
     </header>
+    </>
   );
 }
