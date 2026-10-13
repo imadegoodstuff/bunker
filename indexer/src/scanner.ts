@@ -27,12 +27,36 @@ export const DEGRADED_AFTER_MS = 10 * 60 * 1000;
 
 export class Scanner {
   private running = false;
+  /** Primary first, then fallbacks. Every read that can fail over does so in this order. */
+  readonly conns: Connection[];
+  readonly conn: Connection;
+  /** How many deferred or missing transactions each fallback endpoint has supplied (index 0 = primary). */
+  readonly recoveredVia: number[];
   constructor(
-    readonly conn: Connection,
+    conn: Connection | Connection[],
     readonly db: Db,
     readonly programId: PublicKey,
     readonly intervalMs = 4000
-  ) {}
+  ) {
+    this.conns = Array.isArray(conn) ? conn : [conn];
+    if (this.conns.length === 0) throw new Error("scanner needs at least one RPC connection");
+    this.conn = this.conns[0];
+    this.recoveredVia = this.conns.map(() => 0);
+  }
+
+  /** Run `f` against each endpoint in order until one answers; rethrow the last error if none does. */
+  private async withFailover<T>(what: string, f: (c: Connection, i: number) => Promise<T>): Promise<T> {
+    let lastErr: unknown;
+    for (let i = 0; i < this.conns.length; i++) {
+      try {
+        return await f(this.conns[i], i);
+      } catch (e) {
+        lastErr = e;
+        if (i + 1 < this.conns.length) console.warn(`[scanner] ${what} failed on endpoint ${i} (${(e as Error).message}); trying endpoint ${i + 1}`);
+      }
+    }
+    throw lastErr;
+  }
 
   async start() {
     this.running = true;
@@ -55,7 +79,7 @@ export class Scanner {
     const batch: ConfirmedSignatureInfo[] = [];
     let before: string | undefined;
     outer: for (;;) {
-      const page = await this.conn.getSignaturesForAddress(this.programId, { before, limit: 1000 }, "confirmed");
+      const page = await this.withFailover("getSignaturesForAddress", (c) => c.getSignaturesForAddress(this.programId, { before, limit: 1000 }, "confirmed"));
       if (page.length === 0) break;
       for (const s of page) {
         if (s.signature === last) break outer;
@@ -87,8 +111,10 @@ export class Scanner {
    * on every tick until it decodes; nothing is ever dropped automatically,
    * because a deferred transaction can hold leaves and dropping it would leave
    * a permanent hole that `/commitments` would then (correctly) refuse to page
-   * past. `/health` exposes this list and flips `degraded` once any entry is
-   * older than DEGRADED_AFTER_MS so an operator can switch RPC or investigate.
+   * past. Each retry asks every configured endpoint (`RPC_URLS`), so a single
+   * RPC that is behind or down is survived without anyone acting; `/health`
+   * exposes this list and flips `degraded` once any entry is older than
+   * DEGRADED_AFTER_MS, which now means *no* endpoint could return it.
    */
   deferred(): Deferred[] {
     return JSON.parse(this.db.getMeta("deferred_signatures") ?? "[]") as Deferred[];
@@ -120,19 +146,19 @@ export class Scanner {
     if (list.length === 0) return;
     const remaining: Deferred[] = [];
     for (const d of list) {
-      let tx: ParsedTransactionWithMeta | null;
-      try {
-        tx = await this.conn.getParsedTransaction(d.signature, { maxSupportedTransactionVersion: 1, commitment: "confirmed" });
-      } catch (e) {
-        remaining.push({ ...d, attempts: d.attempts + 1, lastReason: (e as Error).message });
+      // Every endpoint is asked, in order; a deferred signature is only kept
+      // when none of them can return the transaction.
+      const r = await this.fetchOne(d.signature);
+      if (r instanceof Error) {
+        remaining.push({ ...d, attempts: d.attempts + 1, lastReason: r.message });
         continue;
       }
-      if (tx === null) {
+      if (r === null) {
         remaining.push({ ...d, attempts: d.attempts + 1, lastReason: "rpc returned null" });
         continue;
       }
-      if (!tx.meta?.err) this.ingest(d.signature, tx);
-      console.log(`[scanner] recovered ${d.signature} after ${d.attempts} attempts`);
+      if (!r.tx.meta?.err) this.ingest(d.signature, r.tx);
+      console.log(`[scanner] recovered ${d.signature} after ${d.attempts} attempts via endpoint ${r.via}`);
     }
     for (const d of remaining) {
       if (Date.now() - d.since > DEGRADED_AFTER_MS) console.error(`[scanner] DEGRADED: ${d.signature} undecodable for ${Math.round((Date.now() - d.since) / 1000)}s (${d.lastReason})`);
@@ -140,33 +166,67 @@ export class Scanner {
     this.saveDeferred(remaining);
   }
 
+  private static readonly FETCH_OPTS = { maxSupportedTransactionVersion: 1, commitment: "confirmed" as const };
+
   /**
    * Anyone can send the program a transaction in any format, so the fetch must
    * accept every version the RPC knows (legacy, v0, v1 — SIMD-0385, live since
    * September 2026) and must never let one undecodable signature stall the
-   * scan: a batch that fails is retried one signature at a time and the
-   * offenders are recorded (`undefined` here → `skipped_signatures`) so the
-   * scan position can move past them while they are retried on every later tick. A
-   * skipped transaction is therefore delayed, never lost. Events are read from
-   * program logs, so the transaction format does not matter to `ingest`.
+   * scan: a batch that fails is retried one signature at a time, each
+   * signature the primary cannot return is asked of every fallback endpoint,
+   * and whatever is still missing is recorded (`undefined`/`null` here →
+   * `deferred_signatures`) so the scan position can move past it while it is
+   * retried on every later tick. A deferred transaction is therefore delayed,
+   * never lost. Events are read from program logs, so the transaction format
+   * does not matter to `ingest`.
    */
   private async fetchParsed(sigs: string[]): Promise<(ParsedTransactionWithMeta | null | undefined)[]> {
-    const opts = { maxSupportedTransactionVersion: 1, commitment: "confirmed" as const };
+    let out: (ParsedTransactionWithMeta | null | undefined)[];
     try {
-      return await this.conn.getParsedTransactions(sigs, opts);
+      out = await this.conn.getParsedTransactions(sigs, Scanner.FETCH_OPTS);
     } catch (e) {
       console.warn(`[scanner] batch fetch failed (${(e as Error).message}); retrying individually`);
+      out = sigs.map(() => undefined);
     }
-    const out: (ParsedTransactionWithMeta | null | undefined)[] = [];
-    for (const sig of sigs) {
-      try {
-        out.push(await this.conn.getParsedTransaction(sig, opts));
-      } catch (e) {
-        console.warn(`[scanner] deferring ${sig}: ${(e as Error).message}`);
-        out.push(undefined);
+    for (let i = 0; i < sigs.length; i++) {
+      if (out[i]) continue;
+      // Batch threw: start at the primary. Batch answered null: the primary has spoken, ask the fallbacks.
+      const r = await this.fetchOne(sigs[i], out[i] === undefined ? 0 : 1);
+      if (r instanceof Error) {
+        console.warn(`[scanner] deferring ${sigs[i]}: ${r.message}`);
+        out[i] = undefined;
+      } else if (r === null) {
+        out[i] = null;
+      } else {
+        out[i] = r.tx;
       }
     }
     return out;
+  }
+
+  /**
+   * One signature against endpoints `start..`. Returns the transaction and the
+   * endpoint that had it; `null` if every endpoint answered null (or there were
+   * none to ask); an `Error` if every endpoint threw.
+   */
+  private async fetchOne(sig: string, start = 0): Promise<{ tx: ParsedTransactionWithMeta; via: number } | null | Error> {
+    let outcome: null | Error = start > 0 ? null : new Error("no endpoint asked");
+    for (let i = start; i < this.conns.length; i++) {
+      try {
+        const tx = await this.conns[i].getParsedTransaction(sig, Scanner.FETCH_OPTS);
+        if (tx) {
+          if (i > 0) {
+            this.recoveredVia[i]++;
+            console.log(`[scanner] ${sig}: endpoint ${i} supplied what ${i === 1 ? "endpoint 0" : `endpoints 0–${i - 1}`} could not`);
+          }
+          return { tx, via: i };
+        }
+        outcome = null; // a definite null beats an earlier error as the recorded reason
+      } catch (e) {
+        if (outcome !== null) outcome = e as Error;
+      }
+    }
+    return outcome;
   }
 
   ingest(signature: string, tx: ParsedTransactionWithMeta) {

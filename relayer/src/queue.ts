@@ -28,7 +28,16 @@ export class SubmitQueue {
   constructor(
     readonly conn: Connection,
     readonly signer: Keypair,
-    readonly opts: { minDelayMs: number; maxDelayMs: number; cuLimit: number; cuPriceMicroLamports: number; maxAttempts: number },
+    readonly opts: {
+      minDelayMs: number;
+      maxDelayMs: number;
+      cuLimit: number;
+      /** static CU price, used when no `cuPrice` oracle is given */
+      cuPriceMicroLamports: number;
+      /** current market CU price (micro-lamports), read at submission time */
+      cuPrice?: () => number;
+      maxAttempts: number;
+    },
     public table?: AddressLookupTableAccount
   ) {}
 
@@ -104,7 +113,7 @@ export class SubmitQueue {
       const { blockhash, lastValidBlockHeight } = await this.conn.getLatestBlockhash("confirmed");
       const tx = buildV0(this.signer.publicKey, [job.ix], blockhash, this.table, {
         cuLimit: this.opts.cuLimit,
-        cuPriceMicroLamports: this.opts.cuPriceMicroLamports,
+        cuPriceMicroLamports: this.opts.cuPrice?.() ?? this.opts.cuPriceMicroLamports,
       });
       tx.sign([this.signer]);
       const sig = await this.conn.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });

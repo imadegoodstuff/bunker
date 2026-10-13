@@ -13,6 +13,10 @@ primary_region = "sin"
   MIN_DELAY_MS = "5000"
   MAX_DELAY_MS = "90000"
   MIN_FEE_LAMPORTS = "1500000"
+  # Priority fee bounds in micro-lamports/CU; the attached price follows recent
+  # fees between them and the SOL fee floor is priced at CU_PRICE_MAX (SECURITY.md §14).
+  CU_PRICE = "0"
+  CU_PRICE_MAX = "20000"
 
 [http_service]
   internal_port = 8787

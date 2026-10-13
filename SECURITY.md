@@ -569,6 +569,57 @@ kind as a stale test.
   states what signature-only means. Random relayer delay weakens timing
   correlation; nothing here removes it, and the FAQ says so.
 
+### 14. Unattended recovery and fee sustainability: the two gaps the tenth review left open
+
+A tenth review confirmed, from source, five earlier fixes — cofactor clearing
+in the note key agreement (§3), one `record_root` per `transact` (§7), the
+cost-based relayer fee floor, the 50/70-bit passphrase thresholds (§1), the
+indexer's deferral queue (§10–§11) — and then drew the limits precisely: the
+indexer "has recovery but not unattended recovery", and "covering cost is not
+the same as sustainable operation". Both are correct and both were
+engineering, not policy, so both are now code.
+
+- **Indexer RPC failover.** `RPC_URLS` takes a comma-separated list of
+  fallback endpoints behind `RPC_URL`. `getSignaturesForAddress` fails over
+  endpoint by endpoint; every signature the primary cannot return — thrown
+  *or* `null` — is asked of each fallback in the same tick before it is
+  deferred, and every retry of the deferred queue asks all of them. The
+  `degraded` flag therefore now means *no configured endpoint* can return a
+  confirmed transaction, which is the condition that genuinely needs a
+  person. `/health` lists the endpoints (credentials redacted) with a count of
+  what each fallback supplied. Three tests in `indexer/src/scanner.test.ts`
+  cover: a null on the primary filled by the fallback without a deferral; a
+  primary that throws on every call (history and the deferred queue both come
+  from the fallback, and the recorded reason is the fallback's `null`, not the
+  primary's error); and every endpoint failing (kept, reason is the last
+  error). What this does not do: the hosted indexer on Fly is configured with
+  one endpoint until a second provider is chosen, so the mechanism is there
+  and the redundancy is an operator decision — and still documented as one in
+  `audit/KNOWN_ISSUES.md`.
+- **Relayer priority fee follows the market, with bounds.** `relayer/src/fees.ts`
+  samples `getRecentPrioritizationFees` every 30 s and attaches the 75th
+  percentile (what the busiest quarter of recent slots paid), clamped to
+  `[CU_PRICE, CU_PRICE_MAX]` (defaults 0 and 20 000 µ-lamports/CU). The fee
+  floor checked at `/relay` prices the priority component at the **cap**, not
+  the current reading: submission happens up to `MAX_DELAY_MS` later and the
+  market may move inside that window, so a fee that clears the cap is
+  sufficient whatever happens. A failed sample keeps the last good price and
+  reports the error on `/info`. `/health` now reports `runwayTransacts` — the
+  balance divided by the worst-case (4-input, cap-priced) cost — and goes
+  unhealthy below ten, which is the "stops serving because the subsidy ran
+  out" condition the reviewer named, made observable before it happens.
+  `relayer/src/fees.test.ts` pins the percentile, the clamp, the lone-spike
+  case, and the keep-last-good-price behaviour.
+- **Not changed, on purpose, and still open.** (1) SPL-denominated fees are
+  priced by the operator in `FEE_POLICY`; the relayer logs the SOL cost at
+  startup for comparison but does not convert at a market rate — it has no
+  oracle it trusts for that. (2) The Merkle tree is one writable account; all
+  assets contend for it (SPEC §8). (3) Origin binding of the signed message
+  (Sign-In-With-Solana) is still declined for the recovery reason given in §1.
+  (4) The cofactor-clearing fix, like everything in §3, has been reviewed from
+  source by outside readers and tested against the attack it answers; it has
+  not been independently audited, and this file does not claim that it has.
+
 ## Design-level guarantees
 
 - **Immutability**: the vault program is deployed without an upgrade authority

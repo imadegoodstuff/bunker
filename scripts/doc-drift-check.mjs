@@ -36,6 +36,11 @@ const minBits = constant("sdk/src/keys.ts", "PASSPHRASE_MIN_BITS");
 const strongBits = constant("sdk/src/keys.ts", "PASSPHRASE_STRONG_BITS");
 const rate = constant("sdk/src/keys.ts", "PASSPHRASE_GUESSES_PER_SECOND");
 const years = (bits) => Math.pow(2, bits - 1) / rate / (365 * 86400);
+const cuPriceMax = (() => {
+  const m = read("relayer/src/index.ts").match(/CU_PRICE_MAX \?\? ([0-9_]+)/);
+  if (!m) throw new Error("CU_PRICE_MAX default not found in relayer/src/index.ts");
+  return Number(m[1].replace(/_/g, ""));
+})();
 const facts = [
   { doc: "SECURITY.md", re: new RegExp(`refuses anything under \\*\\*${minBits}\\*\\*`), what: `passphrase floor ${minBits} bits` },
   { doc: "SECURITY.md", re: new RegExp(`\\|\\s*${minBits}\\s*\\|\\s*(${Math.floor(years(minBits))}|${Math.ceil(years(minBits))}) years`), what: `${minBits} bits → ≈${years(minBits).toFixed(1)} years in the table` },
@@ -47,6 +52,8 @@ const facts = [
   { doc: "SECURITY.md", re: /idempotent on nullifiers/, what: "relayer idempotency" },
   { doc: "SECURITY.md", re: /`null` and thrown errors both defer|`null`.*defer/, what: "indexer defers null" },
   { doc: "audit/KNOWN_ISSUES.md", re: /Devnet deployment/, what: "devnet deployment status" },
+  { doc: "SECURITY.md", re: /`RPC_URLS` takes a comma-separated list/, what: "indexer RPC failover" },
+  { doc: "SECURITY.md", re: new RegExp("\\[CU_PRICE, CU_PRICE_MAX\\]` \\(defaults 0 and " + cuPriceMax.toLocaleString("en-US").replace(/,/g, " ")), what: `relayer priority fee cap ${cuPriceMax}` },
 ];
 // scrypt N is also a code fact
 if (!/N: 2 \*\* 15/.test(read("sdk/src/keys.ts"))) fail("scrypt N changed in keys.ts; update SECURITY.md §1 and this check");
@@ -66,6 +73,7 @@ const stale = [
   /refuses anything under 40/,
   /logs and skips rather than stalls/i, // superseded by defer-and-retry in §10/§11 — allowed only in history
   /Planned for the app/,
+  /Automatic RPC failover is not implemented/, // superseded by RPC_URLS in §14
 ];
 for (const [name, text] of Object.entries(docs)) {
   text.split("\n").forEach((line, i) => {

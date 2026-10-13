@@ -206,6 +206,68 @@ test("a transaction that never becomes readable raises the degraded flag and sta
   assert.equal(db.count(), 2);
 });
 
+test("a fallback endpoint supplies what the primary returns as null, in the same tick, without a deferral", async () => {
+  const db = new Db(":memory:");
+  const history = [
+    { sig: "s3", tx: transactTx(4, 103) },
+    { sig: "s2", tx: transactTx(2, 102) },
+    { sig: "s1", tx: transactTx(0, 101) },
+  ];
+  const primary = fakeConnection(history, new Set(), new Set(["s2"]));
+  const fallback = fakeConnection(history, new Set());
+  const scanner = new Scanner([primary.conn, fallback.conn], db, PROGRAM, 0);
+
+  await scanner.tick();
+  assert.deepEqual(scanner.skipped(), [], "nothing to defer: the fallback had it");
+  assert.equal(db.count(), 6);
+  assert.equal(primary.calls.batch, 1, "the batch still goes to the primary");
+  assert.equal(fallback.calls.batch, 0, "the fallback is only asked per signature");
+  assert.equal(fallback.calls.single, 1, "and only for the signature the primary could not return");
+  assert.deepEqual(scanner.recoveredVia, [0, 1]);
+  assert.deepEqual(contiguousPrefix(db.commitments(0, 100), 0).map((r) => r.idx), [0, 1, 2, 3, 4, 5]);
+});
+
+test("an endpoint that throws on every call is skipped: history comes from the fallback, and the deferred queue drains through it", async () => {
+  const db = new Db(":memory:");
+  const history = [{ sig: "s2", tx: transactTx(2, 102) }, { sig: "s1", tx: transactTx(0, 101) }];
+  const down = {
+    getSignaturesForAddress: async () => { throw new Error("503 Service Unavailable"); },
+    getParsedTransactions: async () => { throw new Error("503 Service Unavailable"); },
+    getParsedTransaction: async () => { throw new Error("503 Service Unavailable"); },
+  } as unknown as Connection;
+  const fallbackMissing = new Set(["s2"]);
+  const fallback = fakeConnection(history, new Set(), fallbackMissing);
+  const scanner = new Scanner([down, fallback.conn], db, PROGRAM, 0);
+
+  await scanner.tick();
+  // The primary never answered; the scan still advanced using the fallback's history.
+  assert.equal(db.getMeta("last_signature"), "s2");
+  assert.equal(db.count(), 2);
+  // s2 is null on the only working endpoint: deferred with the *null* reason, not the primary's error.
+  assert.deepEqual(scanner.skipped(), ["s2"]);
+  assert.equal(scanner.deferred()[0].lastReason, "rpc returned null");
+
+  fallbackMissing.clear();
+  await scanner.tick();
+  assert.deepEqual(scanner.skipped(), []);
+  assert.equal(db.count(), 4);
+  assert.equal(scanner.recoveredVia[1], 2, "both s1 and s2 were supplied by the fallback");
+});
+
+test("with every endpoint failing, a deferred signature is kept and the reason is the last error", async () => {
+  const db = new Db(":memory:");
+  const history = [{ sig: "s1", tx: transactTx(0, 101) }];
+  const a = fakeConnection(history, new Set(["s1"]));
+  const b = fakeConnection(history, new Set(["s1"]));
+  const scanner = new Scanner([a.conn, b.conn], db, PROGRAM, 0);
+  await scanner.tick();
+  assert.deepEqual(scanner.skipped(), ["s1"]);
+  await scanner.tick();
+  assert.deepEqual(scanner.skipped(), ["s1"]);
+  assert.match(scanner.deferred()[0].lastReason, /-32015/);
+  assert.equal(scanner.deferred()[0].attempts, 2);
+});
+
 test("contiguousPrefix stops at the first hole and respects `from`", () => {
   const rows = [{ idx: 5 }, { idx: 6 }, { idx: 8 }, { idx: 9 }];
   assert.deepEqual(contiguousPrefix(rows, 5).map((r) => r.idx), [5, 6]);

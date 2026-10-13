@@ -6,6 +6,7 @@ import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction, 
 import { deserializeExtData, PROGRAM_ID as DEFAULT_PROGRAM, decodePool, poolPda, buildV0, fetchLookupTable, vaultErrorName } from "@scash/sdk";
 import { FeePolicy } from "./policy.js";
 import { SubmitQueue } from "./queue.js";
+import { PriorityFeeOracle } from "./fees.js";
 
 const RPC = process.env.RPC_URL ?? "https://api.devnet.solana.com";
 const PROGRAM = new PublicKey(process.env.PROGRAM_ID ?? DEFAULT_PROGRAM.toBase58());
@@ -13,11 +14,21 @@ const PORT = Number(process.env.PORT ?? 8787);
 const signer = loadKeypair();
 const policy = new FeePolicy(process.env.FEE_POLICY, BigInt(process.env.MIN_FEE_LAMPORTS ?? "1500000"));
 const conn = new Connection(RPC, "confirmed");
+// CU_PRICE is the floor, CU_PRICE_MAX the cap; between them the price follows
+// getRecentPrioritizationFees (p75, refreshed every FEE_REFRESH_MS).
+const priority = new PriorityFeeOracle(conn, {
+  floor: Number(process.env.CU_PRICE ?? 0),
+  cap: Number(process.env.CU_PRICE_MAX ?? 20_000),
+  refreshMs: Number(process.env.FEE_REFRESH_MS ?? 30_000),
+});
+await priority.refresh();
+priority.start();
 const queue = new SubmitQueue(conn, signer, {
   minDelayMs: Number(process.env.MIN_DELAY_MS ?? 5_000),
   maxDelayMs: Number(process.env.MAX_DELAY_MS ?? 90_000),
   cuLimit: Number(process.env.CU_LIMIT ?? 1_400_000),
-  cuPriceMicroLamports: Number(process.env.CU_PRICE ?? 0),
+  cuPriceMicroLamports: priority.opts.floor,
+  cuPrice: () => priority.current(),
   maxAttempts: 4,
 });
 if (process.env.LOOKUP_TABLE) {
@@ -36,18 +47,24 @@ function loadKeypair(): Keypair {
   return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(raw)));
 }
 
-/** What one relayed transact costs the relayer in lamports: nullifier rent + signature + priority fee. */
+/**
+ * What one relayed transact costs the relayer in lamports: nullifier rent +
+ * signature + priority fee. The fee check at /relay prices the priority fee
+ * at the *cap*, not the current reading, because submission happens up to
+ * MAX_DELAY_MS later and the price may have moved: a fee that clears the cap
+ * is sufficient whatever the market does inside the window.
+ */
 const COST_MARGIN_BPS = Number(process.env.COST_MARGIN_BPS ?? 2_000); // 20 % over cost by default
 let rentPerNullifier: bigint | undefined;
-async function relayCostLamports(nNullifiers: number): Promise<bigint> {
+async function relayCostLamports(nNullifiers: number, cuPrice = priority.opts.cap): Promise<bigint> {
   rentPerNullifier ??= BigInt(await conn.getMinimumBalanceForRentExemption(1));
   const signature = 5_000n;
-  const priority = (BigInt(queue.opts.cuPriceMicroLamports) * BigInt(queue.opts.cuLimit)) / 1_000_000n;
-  return rentPerNullifier * BigInt(nNullifiers) + signature + priority;
+  const priorityLamports = (BigInt(cuPrice) * BigInt(queue.opts.cuLimit)) / 1_000_000n;
+  return rentPerNullifier * BigInt(nNullifiers) + signature + priorityLamports;
 }
 {
   const c2 = await relayCostLamports(2), c4 = await relayCostLamports(4);
-  console.log(`[relayer] cost per relayed transact: 2-in ${c2} lamports, 4-in ${c4} lamports; SOL fee floor = cost + ${COST_MARGIN_BPS} bps`);
+  console.log(`[relayer] cost per relayed transact at CU price cap ${priority.opts.cap}: 2-in ${c2} lamports, 4-in ${c4} lamports; SOL fee floor = cost + ${COST_MARGIN_BPS} bps; current CU price ${priority.current()}`);
   for (const f of policy.list()) {
     if (f.mint !== SystemProgram.programId.toBase58()) console.log(`[relayer] ${f.mint}: min ${f.min} base units — make sure this exceeds ~${c4} lamports at market rate`);
   }
@@ -95,13 +112,19 @@ app.get("/info", async () => ({
     return { ...f, min: (floor > BigInt(f.min) ? floor : BigInt(f.min)).toString(), costLamports: cost.toString() };
   })),
   delay: { minMs: queue.opts.minDelayMs, maxMs: queue.opts.maxDelayMs },
+  /** what the relayer will attach at submission; the fee floor above is priced at `cap` */
+  priorityFee: priority.info(),
+  cuLimit: queue.opts.cuLimit,
   lookupTable: process.env.LOOKUP_TABLE ?? null,
   queued: queue.size(),
 }));
 
 app.get("/health", async () => {
   const bal = await conn.getBalance(signer.publicKey).catch(() => -1);
-  return { ok: bal > 0, balanceLamports: bal, queued: queue.size() };
+  // Runway in relayed transactions at the worst-case (4-input, cap-priced) cost; an operator alarm, not a user-facing number.
+  const worst = await relayCostLamports(4).catch(() => 0n);
+  const runway = worst > 0n && bal > 0 ? Number(BigInt(bal) / worst) : 0;
+  return { ok: bal > 0 && runway >= 10, balanceLamports: bal, worstCaseCostLamports: worst.toString(), runwayTransacts: runway, queued: queue.size(), priorityFee: priority.info() };
 });
 
 app.post<{ Body: RelayBody }>("/relay", async (req, reply) => {

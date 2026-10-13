@@ -11,9 +11,16 @@ const PROGRAM = new PublicKey(process.env.PROGRAM_ID ?? "A827Zi2VyPGQrPrQsZMr66h
 const DB_PATH = process.env.DB_PATH ?? "./scash-indexer.sqlite";
 const PORT = Number(process.env.PORT ?? 8788);
 
+// RPC_URLS: comma-separated fallbacks tried in order after RPC_URL whenever the
+// primary throws or returns null for a confirmed signature.
+const RPC_LIST = [RPC, ...(process.env.RPC_URLS ?? "").split(",").map((s) => s.trim()).filter((s) => s && s !== RPC)];
+const redact = (u: string) => u.replace(/\/\/.*@/, "//").replace(/(api[-_]?key|token)=([^&]*)/gi, "$1=…");
+
 const db = new Db(DB_PATH);
-const conn = new Connection(RPC, "confirmed");
-const scanner = new Scanner(conn, db, PROGRAM, Number(process.env.SCAN_INTERVAL_MS ?? 4000));
+const conns = RPC_LIST.map((u) => new Connection(u, "confirmed"));
+const conn = conns[0];
+const scanner = new Scanner(conns, db, PROGRAM, Number(process.env.SCAN_INTERVAL_MS ?? 4000));
+console.log(`[indexer] rpc endpoints: ${RPC_LIST.map(redact).join(", ")}`);
 void scanner.start();
 
 let programInfo: ProgramInfo = await inspectProgram(conn, PROGRAM);
@@ -41,7 +48,9 @@ app.get("/health", async (_req, reply) => {
     onChain: programInfo,
     commitments: db.count(),
     deferred: deferred.map((d) => ({ ...d, ageSeconds: Math.round((Date.now() - d.since) / 1000) })),
-    rpc: RPC.replace(/\/\/.*@/, "//"),
+    rpc: redact(RPC),
+    /** Fallback order and how many transactions each fallback has supplied that the primary could not. */
+    rpcs: RPC_LIST.map((u, i) => ({ url: redact(u), recovered: scanner.recoveredVia[i] })),
   });
 });
 
