@@ -29,7 +29,7 @@ primary_region = "sin"
   timeout = "5s"
   grace_period = "10s"
   method = "GET"
-  path = "/health"
+  path = "/live"
 
 [[vm]]
   size = "shared-cpu-1x"

@@ -33,8 +33,9 @@ function transactTx(first: number, slot: number) {
  * way an RPC capped at v0 answers for a v1 transaction (-32015), until the set
  * is cleared.
  */
-function fakeConnection(history: { sig: string; tx: ReturnType<typeof transactTx> }[], undecodable: Set<string>) {
-  const lookup = (sig: string) => history.find((h) => h.sig === sig)?.tx ?? null;
+function fakeConnection(history: { sig: string; tx: ReturnType<typeof transactTx> }[], undecodable: Set<string>, missing: Set<string> = new Set()) {
+  // `missing`: the RPC answers null for these (it has the signature in history but no transaction data yet).
+  const lookup = (sig: string) => (missing.has(sig) ? null : history.find((h) => h.sig === sig)?.tx ?? null);
   const calls = { batch: 0, single: 0 };
   const conn = {
     async getSignaturesForAddress(_p: PublicKey, o: { before?: string; limit: number }) {
@@ -104,6 +105,64 @@ test("an undecodable transaction defers its leaves instead of stalling the scan,
   assert.equal(calls.batch, before + 1);
   assert.equal(db.count(), 8);
   assert.equal(db.getMeta("last_signature"), "s4");
+});
+
+test("a confirmed signature whose transaction the RPC returns as null is deferred, not dropped, and lands exactly once", async () => {
+  const db = new Db(":memory:");
+  const history = [
+    { sig: "s3", tx: transactTx(4, 103) },
+    { sig: "s2", tx: transactTx(2, 102) },
+    { sig: "s1", tx: transactTx(0, 101) },
+  ];
+  const missing = new Set(["s2"]);
+  const { conn, calls } = fakeConnection(history, new Set(), missing);
+  const scanner = new Scanner(conn, db, PROGRAM, 0);
+
+  // Batch succeeds (no throw) but carries a null in the middle.
+  await scanner.tick();
+  assert.equal(calls.batch, 1);
+  assert.equal(db.getMeta("last_signature"), "s3");
+  assert.equal(db.count(), 4);
+  assert.deepEqual(scanner.skipped(), ["s2"], "null must enter the retry queue");
+  assert.equal(scanner.deferred()[0].lastReason, "rpc returned null");
+  assert.deepEqual(contiguousPrefix(db.commitments(0, 100), 0).map((r) => r.idx), [0, 1]);
+
+  // Still null on retry: stays queued, attempts counted, nothing dropped.
+  await scanner.tick();
+  assert.deepEqual(scanner.skipped(), ["s2"]);
+  assert.equal(scanner.deferred()[0].attempts, 2);
+  assert.equal(scanner.degraded(), false);
+  assert.equal(scanner.degraded(Date.now() + 11 * 60 * 1000), true, "an old deferral flips the health flag");
+
+  // RPC catches up: leaves 2,3 are written once; a further tick does not duplicate anything.
+  missing.clear();
+  await scanner.tick();
+  assert.deepEqual(scanner.skipped(), []);
+  assert.equal(db.count(), 6);
+  assert.deepEqual(contiguousPrefix(db.commitments(0, 100), 0).map((r) => r.idx), [0, 1, 2, 3, 4, 5]);
+  await scanner.tick();
+  assert.equal(db.count(), 6);
+  assert.equal((db.db.prepare("SELECT COUNT(*) AS n FROM roots WHERE signature = 's2'").get() as { n: number }).n, 1);
+});
+
+test("a deferred signature that comes back null on retry is kept, not evicted", async () => {
+  const db = new Db(":memory:");
+  const history = [{ sig: "s2", tx: transactTx(2, 102) }, { sig: "s1", tx: transactTx(0, 101) }];
+  const undecodable = new Set(["s2"]);
+  const missing = new Set<string>();
+  const { conn } = fakeConnection(history, undecodable, missing);
+  const scanner = new Scanner(conn, db, PROGRAM, 0);
+  await scanner.tick(); // s2 deferred because the RPC threw
+  assert.deepEqual(scanner.skipped(), ["s2"]);
+  // Now the RPC stops throwing but answers null instead
+  undecodable.clear();
+  missing.add("s2");
+  await scanner.tick();
+  assert.deepEqual(scanner.skipped(), ["s2"], "null on retry must not evict the signature");
+  missing.clear();
+  await scanner.tick();
+  assert.deepEqual(scanner.skipped(), []);
+  assert.equal(db.count(), 4);
 });
 
 test("contiguousPrefix stops at the first hole and respects `from`", () => {

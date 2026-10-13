@@ -6,6 +6,7 @@ import { Connection, PublicKey, SystemProgram, type VersionedTransaction } from 
 import {
   ShieldedWallet, MerkleTree, assetId, seedFromSignature, encodeAddress, decodeAddress, decodePool, poolPda, treePda, decodeTree,
   buildV0, fetchLookupTable, type PoolState, type SpendableNote, SPENDING_KEY_MESSAGE, seedToBackup, seedFromBackup,
+  isStaleRootRejection, vaultErrorName, STALE_ROOT_ERRORS,
 } from "@scash/sdk";
 import { ApiError, indexer, relayer, type RelayerInfo } from "./api";
 import { ARTIFACTS, ASSETS, CLUSTER, PROGRAM_ID, RPC_URL, type AssetMeta } from "./config";
@@ -237,11 +238,17 @@ export const useScash = create<State>((set, get) => {
   };
 });
 
-/** Relayer 422 whose simulation error is VaultError::UnknownRoot (5) or InvalidProof (7). */
+/**
+ * Relayer 422 whose simulation failed with UnknownRoot or InvalidProof. The
+ * relayer names the error in `vaultError` (SDK `RelayRejection`); if it is an
+ * older relayer without that field, classify its raw `details` with the same
+ * SDK table rather than a regex.
+ */
 export function isStaleRootError(e: unknown): boolean {
   if (!(e instanceof ApiError) || e.status !== 422) return false;
-  const details = JSON.stringify((e.body as { details?: unknown })?.details ?? "");
-  return /"Custom":(5|7)\b/.test(details);
+  if (isStaleRootRejection(e.body)) return true;
+  const name = vaultErrorName((e.body as { details?: unknown } | undefined)?.details);
+  return !!name && STALE_ROOT_ERRORS.includes(name);
 }
 
 async function relayedTransact(

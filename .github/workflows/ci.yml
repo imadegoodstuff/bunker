@@ -40,6 +40,8 @@ jobs:
       - run: cargo build-sbf --manifest-path programs/scash_migrator/Cargo.toml
       - name: program sizes
         run: ls -la target/deploy/*.so
+      - name: program digests (match these against the chain with scripts/verify-program.mjs)
+        run: sha256sum target/deploy/*.so | tee target/deploy/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: programs
@@ -185,6 +187,10 @@ jobs:
         with:
           name: programs
           path: target/deploy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
       - name: install solana
         run: |
           sh -c "$(curl -sSfL https://release.anza.xyz/${SOLANA_VERSION}/install)"
@@ -209,3 +215,11 @@ jobs:
           if [ -n "$MIGRATOR_PROGRAM_KEYPAIR" ]; then
             solana program deploy target/deploy/scash_migrator.so --program-id keypairs/scash_migrator-keypair.json --upgrade-authority keypairs/deployer.json
           fi
+      - name: verify deployed bytecode equals the built artifact
+        env:
+          DEPLOYER_KEYPAIR: ${{ secrets.DEVNET_DEPLOYER_KEYPAIR }}
+        run: |
+          if [ -z "$DEPLOYER_KEYPAIR" ]; then echo "no deployer secret, skipping"; exit 0; fi
+          npm ci
+          node scripts/verify-program.mjs "$(solana-keygen pubkey keypairs/scash_vault-keypair.json)" target/deploy/scash_vault.so --rpc https://api.devnet.solana.com
+          node scripts/verify-program.mjs "$(solana-keygen pubkey keypairs/scash_harvester-keypair.json)" target/deploy/scash_harvester.so --rpc https://api.devnet.solana.com

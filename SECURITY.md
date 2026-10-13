@@ -420,6 +420,64 @@ to be tested rather than described.
   one contribution; mainnet not deployed. These are listed first in
   `audit/KNOWN_ISSUES.md` and need external parties.
 
+### 11. `null` is not "never", structured relayer errors, bytecode evidence — and a finding of our own
+
+A seventh review read the §10 scanner fix line by line and found the gap in
+it.
+
+- **`null` from the RPC was dropped.** `getParsedTransactions` returns
+  `null` for a signature the node has no data for; the §10 code deferred only
+  `undefined` (a thrown error) and let `null` fall through — not indexed, not
+  queued — then advanced `last_signature`. Every signature the scanner holds
+  came from `getSignaturesForAddress` at `confirmed`, so the transaction
+  exists and `null` can only mean "not yet". `retrySkipped` had the same
+  hole and evicted a queued signature on `null`. Both paths now defer; each
+  deferred entry records `since`, `attempts` and the last reason; nothing is
+  ever dropped automatically. `scanner.test.ts` adds the two requested
+  cases: a batch that succeeds with a `null` in the middle (leaves land once
+  when the RPC catches up, nothing duplicated, the page stops at the hole
+  until then) and a queued signature that returns `null` on retry (kept).
+- **Permanent failure is an incident, and it is now visible.** A deferred
+  signature older than ten minutes flips `/health` to `degraded: true` with
+  HTTP 503 and lists every deferred entry with its age and reason; the log
+  prints `DEGRADED` each tick. Fly's liveness check moved to `/live` so a
+  data-integrity alarm does not cause restart loops. Switching RPC is the
+  operator's action; the alarm is what tells them to.
+- **Stale-root detection no longer parses JSON by regex.** The SDK now
+  carries `VAULT_ERRORS`, a mirror of `programs/scash_vault/src/error.rs`
+  that a test reads from the Rust source and compares in declaration order,
+  so the table cannot drift. The relayer classifies simulation failures with
+  it and returns `vaultError: "UnknownRoot" | "InvalidProof" | …` on every
+  422 (`RelayRejection`); the app retries on that field, falling back to the
+  same SDK classifier over `details` only for an older relayer. Tests cover
+  the classifier and the stale-root predicate.
+- **Bytecode evidence.** `scripts/verify-program.mjs <id> <file.so>` reads
+  the ProgramData account, hashes the ELF (padding stripped and checked to
+  be zero) and compares with a local build; the `sbf` CI job now prints
+  `SHA256SUMS` for the artifacts of every commit, and the devnet deploy job
+  runs the verifier after deploying. The indexer inspects the program id at
+  startup and every ten minutes and reports `onChain` (`deployed`, deploy
+  slot, upgrade authority, ELF sha256) in `/health`; the footer prints it
+  next to the three commits with the sentence "same commit is not the same
+  binary" and a pointer to the hashes. Reproducible attestation of the Fly
+  images is still not provided.
+- **What this surfaced: the program id the site talks to is not deployed on
+  devnet.** `getAccountInfo(A827Zi2V…)` on `api.devnet.solana.com` returns
+  no account. The `deploy-devnet` CI job has been skipping with "no deployer
+  secret" on every run: the deployer keypair secret was never set because
+  the project owner chose not to fund devnet SOL, and everything end-to-end
+  — e2e, adversarial suite, bench, migration — runs against
+  `solana-test-validator` in CI instead. The hosted app, relayer and indexer
+  therefore point at an id with nothing behind it on that cluster; the
+  footer now says so in red ("not deployed on this cluster") rather than
+  implying a running program. Nothing in the deployed services pretended
+  otherwise before — a shield from the app would simply fail — but the
+  previous footer line "program A827Zi2V…" read as if it existed. The fix is
+  not code: fund a devnet deployer, set `DEVNET_DEPLOYER_KEYPAIR`, and the
+  existing job deploys and verifies. Until then "devnet pre-release" means
+  "the code that CI runs on a local validator", and this section is where
+  that is stated.
+
 ## Design-level guarantees
 
 - **Immutability**: the vault program is deployed without an upgrade authority

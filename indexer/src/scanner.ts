@@ -14,6 +14,17 @@ function hex(b: Uint8Array): string {
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
+export interface Deferred {
+  signature: string;
+  /** ms epoch of first deferral */
+  since: number;
+  attempts: number;
+  lastReason: string;
+}
+
+/** A confirmed transaction the RPC still cannot return after this long is an incident, not lag. */
+export const DEGRADED_AFTER_MS = 10 * 60 * 1000;
+
 export class Scanner {
   private running = false;
   constructor(
@@ -60,40 +71,73 @@ export class Scanner {
       const chunk = batch.slice(i, i + 50);
       const txs = await this.fetchParsed(chunk.map((s) => s.signature));
       txs.forEach((tx, j) => {
-        if (tx === undefined) this.markSkipped(chunk[j].signature);
-        else if (tx && !tx.meta?.err) this.ingest(chunk[j].signature, tx);
+        // Every signature here came from getSignaturesForAddress at
+        // `confirmed`, so the transaction exists. `null` (RPC has no data for
+        // it yet) and `undefined` (RPC threw) are both "not now", never "never".
+        if (tx === undefined || tx === null) this.defer(chunk[j].signature, tx === null ? "rpc returned null" : "rpc error");
+        else if (!tx.meta?.err) this.ingest(chunk[j].signature, tx);
       });
       this.db.setMeta("last_signature", chunk[chunk.length - 1].signature);
     }
-    console.log(`[scanner] ingested ${batch.length} tx, commitments=${this.db.count()}, skipped=${this.skipped().length}`);
+    console.log(`[scanner] ingested ${batch.length} tx, commitments=${this.db.count()}, deferred=${this.deferred().length}`);
   }
 
-  /** Signatures the RPC could not return yet. Never dropped: retried on every tick until they decode. */
-  skipped(): string[] {
-    return JSON.parse(this.db.getMeta("skipped_signatures") ?? "[]") as string[];
+  /**
+   * Signatures whose transaction the RPC has not returned yet. Each is retried
+   * on every tick until it decodes; nothing is ever dropped automatically,
+   * because a deferred transaction can hold leaves and dropping it would leave
+   * a permanent hole that `/commitments` would then (correctly) refuse to page
+   * past. `/health` exposes this list and flips `degraded` once any entry is
+   * older than DEGRADED_AFTER_MS so an operator can switch RPC or investigate.
+   */
+  deferred(): Deferred[] {
+    return JSON.parse(this.db.getMeta("deferred_signatures") ?? "[]") as Deferred[];
   }
-  private markSkipped(sig: string) {
-    const s = this.skipped();
-    if (!s.includes(sig)) {
-      s.push(sig);
-      this.db.setMeta("skipped_signatures", JSON.stringify(s));
+  /** Backwards-compatible view used by older callers and tests. */
+  skipped(): string[] {
+    return this.deferred().map((d) => d.signature);
+  }
+  degraded(now = Date.now()): boolean {
+    return this.deferred().some((d) => now - d.since > DEGRADED_AFTER_MS);
+  }
+  private saveDeferred(list: Deferred[]) {
+    this.db.setMeta("deferred_signatures", JSON.stringify(list));
+  }
+  private defer(sig: string, reason: string) {
+    const list = this.deferred();
+    const cur = list.find((d) => d.signature === sig);
+    if (cur) {
+      cur.attempts += 1;
+      cur.lastReason = reason;
+    } else {
+      list.push({ signature: sig, since: Date.now(), attempts: 1, lastReason: reason });
     }
+    this.saveDeferred(list);
+    console.warn(`[scanner] deferring ${sig} (${reason})`);
   }
   private async retrySkipped() {
-    const s = this.skipped();
-    if (s.length === 0) return;
-    const remaining: string[] = [];
-    for (const sig of s) {
+    const list = this.deferred();
+    if (list.length === 0) return;
+    const remaining: Deferred[] = [];
+    for (const d of list) {
+      let tx: ParsedTransactionWithMeta | null;
       try {
-        const tx = await this.conn.getParsedTransaction(sig, { maxSupportedTransactionVersion: 1, commitment: "confirmed" });
-        if (tx === null) continue; // dropped / never landed: nothing to index
-        if (!tx.meta?.err) this.ingest(sig, tx);
+        tx = await this.conn.getParsedTransaction(d.signature, { maxSupportedTransactionVersion: 1, commitment: "confirmed" });
       } catch (e) {
-        console.warn(`[scanner] still cannot decode ${sig}: ${(e as Error).message}`);
-        remaining.push(sig);
+        remaining.push({ ...d, attempts: d.attempts + 1, lastReason: (e as Error).message });
+        continue;
       }
+      if (tx === null) {
+        remaining.push({ ...d, attempts: d.attempts + 1, lastReason: "rpc returned null" });
+        continue;
+      }
+      if (!tx.meta?.err) this.ingest(d.signature, tx);
+      console.log(`[scanner] recovered ${d.signature} after ${d.attempts} attempts`);
     }
-    this.db.setMeta("skipped_signatures", JSON.stringify(remaining));
+    for (const d of remaining) {
+      if (Date.now() - d.since > DEGRADED_AFTER_MS) console.error(`[scanner] DEGRADED: ${d.signature} undecodable for ${Math.round((Date.now() - d.since) / 1000)}s (${d.lastReason})`);
+    }
+    this.saveDeferred(remaining);
   }
 
   /**

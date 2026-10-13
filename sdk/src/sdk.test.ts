@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { VAULT_ERRORS, vaultErrorName, isStaleRootRejection } from "./errors.js";
 import { AddressLookupTableAccount, Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import { BabyJub, poseidon } from "./crypto.js";
 import { spendingKeyFromSeed, fullViewingKey, newAddress, encodeAddress, decodeAddress, groupHash, seedFromSignature, seedToBackup, seedFromBackup, SPENDING_KEY_MESSAGE, SCALAR_MASK, passphraseStrength, expectedSecondsToCrack, PASSPHRASE_MIN_BITS } from "./keys.js";
@@ -209,6 +211,27 @@ test("seed derivation: passphrase changes the seed, backup round-trips", async (
   assert.deepEqual(seedFromBackup(seedToBackup(b)), b);
   assert.throws(() => seedFromBackup("scashseed1zz"));
   assert.ok(SPENDING_KEY_MESSAGE.includes("SPEND"));
+});
+
+test("vault error table matches programs/scash_vault/src/error.rs and classifies simulation errors", async () => {
+  const src = await readFile(new URL("../../programs/scash_vault/src/error.rs", import.meta.url), "utf8");
+  const body = src.slice(src.indexOf("pub enum VaultError"), src.indexOf("impl From<VaultError>"));
+  const variants = [...body.matchAll(/^\s{4}([A-Z][A-Za-z0-9]*),\s*$/gm)].map((m) => m[1]);
+  assert.deepEqual([...VAULT_ERRORS], variants, "SDK VAULT_ERRORS must list every VaultError variant in declaration order");
+
+  assert.equal(vaultErrorName({ InstructionError: [0, { Custom: 5 }] }), "UnknownRoot");
+  assert.equal(vaultErrorName({ InstructionError: [2, { Custom: 7 }] }), "InvalidProof");
+  assert.equal(vaultErrorName({ InstructionError: [0, { Custom: 9 }] }), "NullifierSpent");
+  assert.equal(vaultErrorName({ InstructionError: [0, { Custom: 999 }] }), undefined);
+  assert.equal(vaultErrorName({ InstructionError: [0, "InvalidAccountData"] }), undefined);
+  assert.equal(vaultErrorName("InsufficientFundsForFee"), undefined);
+  assert.equal(vaultErrorName(null), undefined);
+
+  assert.equal(isStaleRootRejection({ error: "simulation failed", vaultError: "UnknownRoot" }), true);
+  assert.equal(isStaleRootRejection({ error: "simulation failed", vaultError: "InvalidProof" }), true);
+  assert.equal(isStaleRootRejection({ error: "simulation failed", vaultError: "NullifierSpent" }), false);
+  assert.equal(isStaleRootRejection({ error: "fee too low" }), false);
+  assert.equal(isStaleRootRejection(undefined), false);
 });
 
 test("passphrase strength: the time-to-crack arithmetic is 2^(b-1)/rate", () => {

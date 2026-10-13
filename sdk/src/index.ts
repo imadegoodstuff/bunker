@@ -10,3 +10,4 @@ export * from "./program.js";
 export * from "./wallet.js";
 export * from "./lookup.js";
 export * from "./migrator.js";
+export * from "./errors.js";

@@ -10,6 +10,7 @@ entry says whether it is accepted, planned, or blocked on something external.
 | Phase-2 ceremony | open; coordinator contribution #1 for both circuits; tooling and CI verification in place | contributions from parties unrelated to the coordinator, then the beacon (`ceremony/README.md`) |
 | Independent audit | not started; this package is the input | an external team; report goes to `audit/reports/` |
 | Mainnet deployment | not done | the two items above |
+| **Devnet deployment** | **not done**: the program id the hosted app/relayer/indexer use (`A827Zi2V…`) has no account on devnet; CI `deploy-devnet` skips for lack of `DEVNET_DEPLOYER_KEYPAIR`. All e2e runs are on `solana-test-validator` in CI. The footer reports "not deployed on this cluster". | a funded devnet deployer keypair set as the CI secret; the job then deploys and runs `scripts/verify-program.mjs` |
 
 ## Accepted for the current release
 
@@ -23,7 +24,8 @@ entry says whether it is accepted, planned, or blocked on something external.
 | USDC-style freeze authority on the base mint is not refused | Freezing the vault's token account would block unshields of that asset, but refusing it would exclude USDC. The app reads `freeze_authority` and names it per asset; guardian cannot do anything about it either. |
 | Yield only on the SCASH pool | Creator fees are SCASH; other pools have rate 1. Stated in README, FAQ, SPEC §9 and the app's per-transaction fee summary. |
 | Passphrase entropy is the user's | scrypt N=2¹⁵ caps an attacker near 10⁵ guesses/s; the app refuses passphrases scoring under 50 bits (≈178 years expected if random) and labels the score a heuristic, but cannot stop a targeted dictionary against a memorable phrase. No reset; seed backup is the only recovery. `SECURITY.md` §1, §10. |
-| No reproducible-build attestation for the Fly images | Footer shows app, relayer and indexer commits live; Dockerfiles and `--build-arg GIT_SHA` are the evidence. Signed, reproducible images are not provided. |
+| No reproducible-build attestation for the Fly images | Footer shows app, relayer and indexer commits live plus the on-chain ELF sha256; `sbf` CI prints `SHA256SUMS`; `scripts/verify-program.mjs` compares chain to file. Signed, reproducible service images are not provided. `SECURITY.md` §11. |
+| Permanently unreadable transaction needs an operator | Deferred signatures are retried forever and never dropped; after 10 min `/health` goes 503 `degraded` and names them. Automatic RPC failover is not implemented. `SECURITY.md` §11. |
 | Mobile proving is unmeasured | ~3 s desktop, p50 4.8 s in Node; the app warns on mobile/low-memory devices and reports the measured time after the first proof. `SECURITY.md` §6. |
 | Client builds `v0` transactions (1,232 bytes) although `v1` (4,096) is live | Memo ceiling and 2-input default follow from this. Moving to `v1` inlines ~20 accounts and needs wallet/RPC opt-in; not scheduled. SPEC §15. |
 | Swap exit adapter not deployed | README marks it "in review"; each adapter needs its own review before the vault is ever pointed at it. `SECURITY.md` §6. |
@@ -46,3 +48,5 @@ entry says whether it is accepted, planned, or blocked on something external.
 | Fixed-message signature as sole key material | scrypt seed with optional passphrase, single derivation path, `scashseed1` backup | `SECURITY.md` §1 |
 | Indexer fetched with `maxSupportedTransactionVersion: 0`; one `v1` transaction to the program would stall the scanner forever | request version 1, per-signature fallback, deferred signatures retried every tick, `/commitments` serves only the contiguous prefix; `indexer/src/scanner.test.ts` | `SECURITY.md` §9–10 |
 | SECURITY.md said 40 bits ≈ 10 000 years at 10⁵ guesses/s | 64 days expected; table and pinned test; floor raised to 50 bits; phrases scored as phrases | `SECURITY.md` §10 |
+| Scanner dropped `null` RPC results (not indexed, not queued) and evicted queued signatures on `null` | `null` and thrown errors both defer; attempts/age tracked; tests for both paths | `SECURITY.md` §11 |
+| App detected stale roots by regex over RPC error JSON | SDK `VAULT_ERRORS` mirrored from `error.rs` (test-pinned); relayer returns `vaultError`; app uses the field | `SECURITY.md` §11 |

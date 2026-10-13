@@ -3,7 +3,7 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { readFileSync } from "node:fs";
 import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction, type AccountMeta } from "@solana/web3.js";
-import { deserializeExtData, PROGRAM_ID as DEFAULT_PROGRAM, decodePool, poolPda, buildV0, fetchLookupTable } from "@scash/sdk";
+import { deserializeExtData, PROGRAM_ID as DEFAULT_PROGRAM, decodePool, poolPda, buildV0, fetchLookupTable, vaultErrorName } from "@scash/sdk";
 import { FeePolicy } from "./policy.js";
 import { SubmitQueue } from "./queue.js";
 
@@ -163,7 +163,9 @@ app.post<{ Body: RelayBody }>("/relay", async (req, reply) => {
   if (sim.serialize().length > 1232) return reply.code(400).send({ error: "transaction too large", bytes: sim.serialize().length });
   const res = await conn.simulateTransaction(sim, { sigVerify: false });
   if (res.value.err) {
-    return reply.code(422).send({ error: "simulation failed", details: res.value.err, logs: res.value.logs?.slice(-8) });
+    // `vaultError` is the contract with clients (SDK `RelayRejection`); `details` is raw RPC output for humans.
+    const vaultError = vaultErrorName(res.value.err);
+    return reply.code(422).send({ error: vaultError ? `simulation failed: ${vaultError}` : "simulation failed", vaultError, details: res.value.err, logs: res.value.logs?.slice(-8) });
   }
 
   const job = queue.enqueue(ix);

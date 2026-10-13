@@ -4,6 +4,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { Db } from "./db.js";
 import { Scanner } from "./scanner.js";
 import { contiguousPrefix } from "./paging.js";
+import { inspectProgram, type ProgramInfo } from "./program.js";
 
 const RPC = process.env.RPC_URL ?? "https://api.devnet.solana.com";
 const PROGRAM = new PublicKey(process.env.PROGRAM_ID ?? "A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ");
@@ -15,12 +16,34 @@ const conn = new Connection(RPC, "confirmed");
 const scanner = new Scanner(conn, db, PROGRAM, Number(process.env.SCAN_INTERVAL_MS ?? 4000));
 void scanner.start();
 
+let programInfo: ProgramInfo = await inspectProgram(conn, PROGRAM);
+setInterval(() => void inspectProgram(conn, PROGRAM).then((p) => (programInfo = p)), 10 * 60 * 1000).unref();
+
 const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
 await app.register(cors, { origin: true });
 
 const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64");
 
-app.get("/health", async () => ({ ok: true, commit: process.env.GIT_SHA ?? "unknown", program: PROGRAM.toBase58(), commitments: db.count(), rpc: RPC.replace(/\/\/.*@/, "//") }));
+/** Process liveness only, for the platform's restart check. Data integrity is `/health`. */
+app.get("/live", async () => ({ ok: true }));
+
+app.get("/health", async (_req, reply) => {
+  const deferred = scanner.deferred();
+  const degraded = scanner.degraded();
+  // 503 once a confirmed transaction has been unreadable for >10 min: wallets
+  // behind this indexer may be missing leaves, and the operator must act.
+  return reply.code(degraded ? 503 : 200).send({
+    ok: !degraded,
+    degraded,
+    commit: process.env.GIT_SHA ?? "unknown",
+    program: PROGRAM.toBase58(),
+    /** What is on-chain under that id right now; `deployed: false` means the id is unfunded on this cluster. */
+    onChain: programInfo,
+    commitments: db.count(),
+    deferred: deferred.map((d) => ({ ...d, ageSeconds: Math.round((Date.now() - d.since) / 1000) })),
+    rpc: RPC.replace(/\/\/.*@/, "//"),
+  });
+});
 
 /** Leaves and their note ciphertexts, paginated by leaf index. Wallets trial-decrypt these. */
 app.get<{ Querystring: { from?: string; limit?: string } }>("/commitments", async (req) => {
