@@ -150,6 +150,22 @@ ext_data_hash = SHA-256(borsh(ExtData)) mod p
 
 The program recomputes `ext_data_hash` from the instruction payload before verifying the proof. A relayer therefore cannot alter the recipient, fee, exit, or ciphertexts.
 
+The `transact` instruction payload is kept compact so that a 2-in/2-out transaction fits a 1232-byte packet together with an address lookup table:
+
+```
+TransactArgs {
+  proof          : [u8; 256]        -A || B || C, big-endian
+  root_index     : u8               index into the tree's 128-root ring; the program reads the root
+  public_amount  : i64              signed shares; the program encodes it as the field element above
+  asp_root       : Option<[u8;32]>  None = 0
+  nullifiers     : [[u8;32]; nIns]
+  out_commitments: [[u8;32]; nOuts]
+  ext_data       : ExtData
+}
+```
+
+Memos inside note ciphertexts are padded to a multiple of 64 bytes (max 512), so only a length bucket leaks.
+
 ## 8. Assets
 
 An asset is a Token-2022 or SPL mint, or native SOL (asset id of the system program). `asset = SHA-256("scash_asset" || mint) mod p`. Each asset has a `Pool` account that holds its token account, its turnstile counters and its share rate. All assets share the commitment tree held by the `Tree` account.
