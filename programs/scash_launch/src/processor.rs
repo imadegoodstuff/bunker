@@ -580,9 +580,10 @@ fn process_harvest(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResu
     let protocol = fees - holder;
     let curve_seeds: &[&[u8]] = &[seeds::CURVE, mint.key.as_ref(), &[c.bump]];
 
-    if protocol > 0 {
-        debit(curve, treasury, protocol)?;
-    }
+    // Order matters: the runtime syncs the caller's direct lamport edits into the
+    // CPI only for the accounts the CPI names, and refuses to start a CPI while
+    // those edits do not net to zero. `treasury` is not part of the donate call,
+    // so the protocol share is paid after it.
     let mut donated = 0u64;
     let mut holder_spent = 0u64;
     // Holder share: buy on the curve (fee-free, the fee is being spent) and donate the tokens to the pool.
@@ -613,6 +614,9 @@ fn process_harvest(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResu
             donated = out;
             holder_spent = holder;
         }
+    }
+    if protocol > 0 {
+        debit(curve, treasury, protocol)?;
     }
     c.fees_accrued = fees - protocol - holder_spent;
     graduate_if_due(&mut c);
