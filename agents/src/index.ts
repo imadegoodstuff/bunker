@@ -147,6 +147,17 @@ async function sendVote(a: Agent, mint: PublicKey, d: Decision): Promise<string>
 
 /** The epoch each (agent, mint) last voted in; a vote is attempted at most once per epoch per pair. */
 const votedIn = new Map<string, bigint>();
+/**
+ * Trade count (buys + sells) of each curve when the agents last looked at it.
+ * A token nobody has traded since then costs no model call: the agents are
+ * asked only when there is new volume to judge. A quiet token's last votes
+ * simply age out and its fee stays put, which is what "no activity" should mean.
+ */
+const seenTrades = new Map<string, bigint>();
+/** the first time a token is seen it must already have at least one trade before anyone is asked */
+function hasNewVolume(mint: string, curve: CurveState): boolean {
+  return curve.buys + curve.sells > (seenTrades.get(mint) ?? 0n);
+}
 
 async function tick() {
   const launches = (await getJson<LaunchRow[]>(`${INDEXER}/launches?limit=200`)).filter((l) => l.graduated === 0);
@@ -160,6 +171,8 @@ async function tick() {
     if (!ai) continue;
     const curve = rolled(decodeCurve(new Uint8Array(ai.data)), slot);
     if (curve.graduated) continue;
+    if (!hasNewVolume(launches[i].mint, curve)) continue;
+    seenTrades.set(launches[i].mint, curve.buys + curve.sells);
     let v: TokenView | undefined;
     for (const a of agents) {
       const k = `${a.index}:${launches[i].mint}`;
