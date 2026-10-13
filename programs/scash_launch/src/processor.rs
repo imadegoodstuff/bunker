@@ -23,8 +23,12 @@ use solana_program::{
 
 /// Bytes the vault prepends to `exit_data` when it calls an exit target.
 const EXIT_AMOUNT_PREFIX: usize = 8;
-/// `exit_data` layout: kind u8 || claim_key 32 || claim_budget u64 || min_out u64.
-pub const EXIT_DATA_LEN: usize = 1 + 32 + 8 + 8;
+/// `exit_data` layout: kind u8 || claim_key 32 || claim_budget u64 || min_out u64 || relayer_tip u64.
+/// `relayer_tip` is paid from the SOL leg to the exit call's `payer` (the
+/// relayer), which is how a relayed *sell* pays its relayer: the vault's own
+/// fee would be in the token being sold, which no relayer prices.
+pub const EXIT_DATA_LEN: usize = 1 + 32 + 8 + 8 + 8;
+pub const ADDRESS_LOOKUP_TABLE_PROGRAM_ID: Pubkey = solana_program::pubkey!("AddressLookupTab1e1111111111111111111111111");
 pub const EXIT_BUY: u8 = 0;
 pub const EXIT_SELL: u8 = 1;
 /// Nullifier PDAs the claim key's shield will create (dummy inputs included).
@@ -221,9 +225,13 @@ fn process_launch(program_id: &Pubkey, accounts: &[AccountInfo], a: LaunchArgs) 
     let ata_program = next_account_info(it)?;
     let system = next_account_info(it)?;
     let vault_program = next_account_info(it)?;
+    let lookup_table = next_account_info(it)?;
 
     expect_signer(payer)?;
     expect_signer(mint)?; // a fresh keypair: the mint address is unpredictable and unique
+    if *lookup_table.owner != ADDRESS_LOOKUP_TABLE_PROGRAM_ID {
+        return Err(LaunchError::AccountMismatch.into());
+    }
     if launchpad.owner != program_id {
         return Err(ProgramError::IncorrectProgramId);
     }
@@ -328,6 +336,7 @@ fn process_launch(program_id: &Pubkey, accounts: &[AccountInfo], a: LaunchArgs) 
         buys: 0,
         sells: 0,
         sol_volume: 0,
+        lookup_table: *lookup_table.key,
     };
     c.store(&mut curve.try_borrow_mut_data()?)?;
     sol_log_data(&[
@@ -369,6 +378,7 @@ fn process_exit(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> P
     let claim_key = Pubkey::new_from_array(data[9..41].try_into().unwrap());
     let claim_budget = u64::from_le_bytes(data[41..49].try_into().unwrap());
     let min_out = u64::from_le_bytes(data[49..57].try_into().unwrap());
+    let relayer_tip = u64::from_le_bytes(data[57..65].try_into().unwrap());
 
     let it = &mut accounts.iter();
     let curve = next_account_info(it)?;
@@ -431,6 +441,7 @@ fn process_exit(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> P
                 .checked_add(nf_rent)
                 .and_then(|x| x.checked_add(claim_budget))
                 .and_then(|x| x.checked_add(ata_rent))
+                .and_then(|x| x.checked_add(relayer_tip))
                 .ok_or(LaunchError::Overflow)?;
             let gross = amount_in.checked_sub(reserve).ok_or(LaunchError::AmountTooSmall)?;
             let fee = curve::fee(gross, c.trade_fee_bps)?;
@@ -449,7 +460,9 @@ fn process_exit(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> P
             )?;
             if ata_rent > 0 {
                 token::create_ata_idempotent(ata_program, payer, claim_ata, claim, mint, system, token_program)?;
-                invoke_signed(&system_instruction::transfer(intake.key, payer.key, ata_rent), &[intake.clone(), payer.clone(), system.clone()], &[intake_seeds])?;
+            }
+            if ata_rent + relayer_tip > 0 {
+                invoke_signed(&system_instruction::transfer(intake.key, payer.key, ata_rent + relayer_tip), &[intake.clone(), payer.clone(), system.clone()], &[intake_seeds])?;
             }
             // tokens: curve vault → claim ATA
             let decimals = mint_decimals(mint)?;
@@ -482,7 +495,7 @@ fn process_exit(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> P
             }
             let (gross_out, y2) = curve::sell(&c.reserves(), token_in)?;
             let fee = curve::fee(gross_out, c.trade_fee_bps)?;
-            let out = gross_out - fee;
+            let out = gross_out.checked_sub(fee).and_then(|x| x.checked_sub(relayer_tip)).ok_or(LaunchError::AmountTooSmall)?;
             if out < min_out {
                 return Err(LaunchError::Slippage.into());
             }
@@ -496,6 +509,9 @@ fn process_exit(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> P
             // Sells pass `claim` twice (no token account is involved).
             expect_key(claim_ata, claim.key)?;
             debit(curve, claim, out)?;
+            if relayer_tip > 0 {
+                debit(curve, payer, relayer_tip)?;
+            }
 
             c.real_sol = c.real_sol.checked_sub(gross_out).ok_or(LaunchError::Overflow)?;
             c.fees_accrued = c.fees_accrued.checked_add(fee).ok_or(LaunchError::Overflow)?;
@@ -730,8 +746,8 @@ mod tests {
 
     #[test]
     fn exit_data_layout_is_fixed() {
-        assert_eq!(EXIT_DATA_LEN, 49);
-        assert_eq!(EXIT_AMOUNT_PREFIX + EXIT_DATA_LEN, 57);
+        assert_eq!(EXIT_DATA_LEN, 57);
+        assert_eq!(EXIT_AMOUNT_PREFIX + EXIT_DATA_LEN, 65);
     }
 
     #[test]

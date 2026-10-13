@@ -1,6 +1,6 @@
 // Client for programs/scash_launch: a bonding curve traded from inside the
 // shielded pool. Layouts mirror programs/scash_launch/src/{state,processor}.rs.
-import { Keypair, PublicKey, SystemProgram, SYSVAR_INSTRUCTIONS_PUBKEY, TransactionInstruction, type AccountMeta } from "@solana/web3.js";
+import { AddressLookupTableProgram, Keypair, PublicKey, SystemProgram, SYSVAR_INSTRUCTIONS_PUBKEY, TransactionInstruction, type AccountMeta } from "@solana/web3.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bigIntToBytesLE, concatBytes } from "./field.js";
 import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, PROGRAM_ID as VAULT_PROGRAM_ID, associatedTokenAddress, configPda, poolPda, vaultFor } from "./program.js";
@@ -94,6 +94,8 @@ export interface CurveState {
   buys: bigint;
   sells: bigint;
   solVolume: bigint;
+  /** frozen per-token address lookup table (hint; verify with `lookupTableCovers`) */
+  lookupTable: PublicKey;
 }
 
 function readU64(d: Uint8Array, off: number): bigint {
@@ -105,7 +107,7 @@ function readU16(d: Uint8Array, off: number): number {
   return d[off] | (d[off + 1] << 8);
 }
 
-export const CURVE_LEN = 232;
+export const CURVE_LEN = 264;
 
 export function decodeCurve(d: Uint8Array): CurveState {
   if (d[0] !== 2 || d.length < CURVE_LEN) throw new Error("not a curve account");
@@ -124,7 +126,8 @@ export function decodeCurve(d: Uint8Array): CurveState {
   const protocolTreasury = new PublicKey(d.slice(o, o + 32)); o += 32;
   const vaultProgram = new PublicKey(d.slice(o, o + 32)); o += 32;
   const buys = u64(), sells = u64(), solVolume = u64();
-  return { bump, intakeBump, mint, tokenVault, virtualSol, virtualToken, realSol, realToken, feesAccrued, graduated, createdSlot, totalSupply, curveSupply, tradeFeeBps, holderShareBps, graduationLamports, protocolTreasury, vaultProgram, buys, sells, solVolume };
+  const lookupTable = new PublicKey(d.slice(o, o + 32)); o += 32;
+  return { bump, intakeBump, mint, tokenVault, virtualSol, virtualToken, realSol, realToken, feesAccrued, graduated, createdSlot, totalSupply, curveSupply, tradeFeeBps, holderShareBps, graduationLamports, protocolTreasury, vaultProgram, buys, sells, solVolume, lookupTable };
 }
 
 export interface LaunchpadState extends LaunchpadParams {
@@ -203,9 +206,19 @@ export function spotPrice(r: Reserves, decimals: number): number {
 export const EXIT_BUY = 0;
 export const EXIT_SELL = 1;
 
-/** `claimBudget`: lamports parked at the claim key beyond the rents its shield needs — its transaction fee and any relayer tip. */
-export function exitData(kind: 0 | 1, claimKey: PublicKey, claimBudget: bigint, minOut: bigint): Uint8Array {
-  return concatBytes(new Uint8Array([kind]), claimKey.toBytes(), bigIntToBytesLE(claimBudget, 8), bigIntToBytesLE(minOut, 8));
+/**
+ * `claimBudget`: lamports parked at the claim key beyond the rents its shield needs (its own transaction fee).
+ * `relayerTip`: lamports paid from the SOL leg to the exit call's payer — the relayer. A relayed *sell* has
+ * to pay its relayer this way, since the vault's own fee would be denominated in the token being sold.
+ */
+export const EXIT_DATA_LEN = 1 + 32 + 8 + 8 + 8;
+export function exitData(kind: 0 | 1, claimKey: PublicKey, claimBudget: bigint, minOut: bigint, relayerTip = 0n): Uint8Array {
+  return concatBytes(new Uint8Array([kind]), claimKey.toBytes(), bigIntToBytesLE(claimBudget, 8), bigIntToBytesLE(minOut, 8), bigIntToBytesLE(relayerTip, 8));
+}
+export function decodeExitData(d: Uint8Array): { kind: number; claimKey: PublicKey; claimBudget: bigint; minOut: bigint; relayerTip: bigint } {
+  if (d.length !== EXIT_DATA_LEN) throw new Error("bad exit data length");
+  const le = (o: number) => { let v = 0n; for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(d[o + i]); return v; };
+  return { kind: d[0], claimKey: new PublicKey(d.subarray(1, 33)), claimBudget: le(33), minOut: le(41), relayerTip: le(49) };
 }
 
 /** Accounts the vault forwards to the launch program after the nullifier PDAs. */
@@ -227,12 +240,33 @@ export function exitAccounts(kind: 0 | 1, mint: PublicKey, claimKey: PublicKey, 
   ];
 }
 
-/** Per-launch accounts worth putting in a lookup table (a private buy references ~13 of them). */
+/**
+ * The per-token lookup table's contents: everything a relayed private trade of
+ * this token references besides the vault's own static accounts (which live in
+ * the relayer's table). Created, extended and frozen in the launch transaction;
+ * `Curve.lookupTable` records its address.
+ */
 export function launchStaticAddresses(mint: PublicKey, vaultProgram = VAULT_PROGRAM_ID, programId = LAUNCH_PROGRAM_ID): PublicKey[] {
   return [
     programId, launchpadPda(programId), curvePda(mint, programId), curveTokenVault(mint, programId), intakePda(mint, programId), intakeAta(mint, programId),
     SYSVAR_INSTRUCTIONS_PUBKEY, mint, poolPda(mint, vaultProgram), vaultFor(mint, TOKEN_2022_PROGRAM_ID, vaultProgram),
   ];
+}
+/** Checks a table found via `Curve.lookupTable` really holds `launchStaticAddresses(mint)` (clients never trust the hint blindly). */
+export function lookupTableCovers(addresses: PublicKey[], mint: PublicKey, vaultProgram = VAULT_PROGRAM_ID, programId = LAUNCH_PROGRAM_ID): boolean {
+  const have = new Set(addresses.map((a) => a.toBase58()));
+  return launchStaticAddresses(mint, vaultProgram, programId).every((a) => have.has(a.toBase58()));
+}
+/**
+ * The three address-lookup-table instructions that precede `launchIx` in a
+ * launch transaction: create (authority = payer), extend with the token's
+ * statics, freeze (no authority remains, so nobody can ever close or alter it).
+ */
+export function launchLookupTableIxs(payer: PublicKey, mint: PublicKey, recentSlot: number, vaultProgram = VAULT_PROGRAM_ID, programId = LAUNCH_PROGRAM_ID): { table: PublicKey; ixs: TransactionInstruction[] } {
+  const [createIx, table] = AddressLookupTableProgram.createLookupTable({ authority: payer, payer, recentSlot });
+  const extendIx = AddressLookupTableProgram.extendLookupTable({ payer, authority: payer, lookupTable: table, addresses: launchStaticAddresses(mint, vaultProgram, programId) });
+  const freezeIx = AddressLookupTableProgram.freezeLookupTable({ authority: payer, lookupTable: table });
+  return { table, ixs: [createIx, extendIx, freezeIx] };
 }
 
 /** Rents the exit handler reserves out of a buy for the later claim (must match processor.rs). */
@@ -241,23 +275,24 @@ export async function fetchClaimRents(conn: { getMinimumBalanceForRentExemption(
   const [c, n, t] = await Promise.all([conn.getMinimumBalanceForRentExemption(0), conn.getMinimumBalanceForRentExemption(1), conn.getMinimumBalanceForRentExemption(165)]);
   return { claimRent: BigInt(c), nullifierRent: BigInt(n), tokenAccountRent: BigInt(t) };
 }
-export function buyReserve(rents: ClaimRents, claimBudget: bigint, claimExists = false, claimAtaExists = false): bigint {
-  return (claimExists ? 0n : rents.claimRent) + 2n * rents.nullifierRent + claimBudget + (claimAtaExists ? 0n : rents.tokenAccountRent);
+export function buyReserve(rents: ClaimRents, claimBudget: bigint, relayerTip = 0n, claimExists = false, claimAtaExists = false): bigint {
+  return (claimExists ? 0n : rents.claimRent) + 2n * rents.nullifierRent + claimBudget + (claimAtaExists ? 0n : rents.tokenAccountRent) + relayerTip;
 }
 /** Tokens a private buy of `amountIn` lamports (what the vault delivers after the relayer fee) will park at the claim key. */
-export function quotePrivateBuy(curve: CurveState, amountIn: bigint, rents: ClaimRents, claimBudget: bigint): { out: bigint; net: bigint; fee: bigint; reserve: bigint } {
-  const reserve = buyReserve(rents, claimBudget);
+export function quotePrivateBuy(curve: CurveState, amountIn: bigint, rents: ClaimRents, claimBudget: bigint, relayerTip = 0n): { out: bigint; net: bigint; fee: bigint; reserve: bigint } {
+  const reserve = buyReserve(rents, claimBudget, relayerTip);
   if (amountIn <= reserve) throw new Error("amount too small to cover claim rents and budget");
   const gross = amountIn - reserve;
   const fee = feeOf(gross, curve.tradeFeeBps);
   const net = gross - fee;
   return { out: curveBuy(curve, net).out, net, fee, reserve };
 }
-/** Lamports a private sell of `tokenIn` will park in the claim (before the claim's own rents and bounty). */
-export function quotePrivateSell(curve: CurveState, tokenIn: bigint): { out: bigint; gross: bigint; fee: bigint } {
+/** Lamports a private sell of `tokenIn` parks at the claim key, after the curve fee and the relayer tip. */
+export function quotePrivateSell(curve: CurveState, tokenIn: bigint, relayerTip = 0n): { out: bigint; gross: bigint; fee: bigint } {
   const { out: gross } = curveSell(curve, tokenIn);
   const fee = feeOf(gross, curve.tradeFeeBps);
-  return { out: gross - fee, gross, fee };
+  if (gross - fee <= relayerTip) throw new Error("sale does not cover the relayer tip");
+  return { out: gross - fee - relayerTip, gross, fee };
 }
 
 // ---- instructions
@@ -282,7 +317,7 @@ export function initLaunchpadIx(payer: PublicKey, p: LaunchpadParams, vaultProgr
   });
 }
 
-export function launchIx(payer: PublicKey, mint: PublicKey, meta: { name: string; symbol: string; uri: string }, vaultProgram = VAULT_PROGRAM_ID, programId = LAUNCH_PROGRAM_ID): TransactionInstruction {
+export function launchIx(payer: PublicKey, mint: PublicKey, meta: { name: string; symbol: string; uri: string }, lookupTable: PublicKey, vaultProgram = VAULT_PROGRAM_ID, programId = LAUNCH_PROGRAM_ID): TransactionInstruction {
   const curve = curvePda(mint, programId);
   const intake = intakePda(mint, programId);
   return new TransactionInstruction({
@@ -302,6 +337,7 @@ export function launchIx(payer: PublicKey, mint: PublicKey, meta: { name: string
       { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       { pubkey: vaultProgram, isSigner: false, isWritable: false },
+      { pubkey: lookupTable, isSigner: false, isWritable: false },
     ],
     data: Buffer.from(concatBytes(new Uint8Array([1]), str(meta.name), str(meta.symbol), str(meta.uri))),
   });

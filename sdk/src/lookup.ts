@@ -68,11 +68,12 @@ export function buildV0(
   payer: PublicKey,
   ixs: TransactionInstruction[],
   recentBlockhash: string,
-  table?: AddressLookupTableAccount,
+  table?: AddressLookupTableAccount | AddressLookupTableAccount[],
   opts: { cuLimit?: number; cuPriceMicroLamports?: number } = {}
 ): VersionedTransaction {
   const pre: TransactionInstruction[] = [ComputeBudgetProgram.setComputeUnitLimit({ units: opts.cuLimit ?? 1_400_000 })];
   if (opts.cuPriceMicroLamports) pre.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: opts.cuPriceMicroLamports }));
-  const msg = new TransactionMessage({ payerKey: payer, recentBlockhash, instructions: [...pre, ...ixs] }).compileToV0Message(table ? [table] : []);
+  const tables = table === undefined ? [] : Array.isArray(table) ? table : [table];
+  const msg = new TransactionMessage({ payerKey: payer, recentBlockhash, instructions: [...pre, ...ixs] }).compileToV0Message(tables);
   return new VersionedTransaction(msg);
 }

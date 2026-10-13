@@ -10,7 +10,7 @@ import {
   amountForBurn, amountForMint, sharesForDeposit, sharesForWithdraw, staticAddresses, PROGRAM_ID, createLookupTable, fetchLookupTable, buildV0, TOKEN_2022_PROGRAM_ID,
   LAUNCH_PROGRAM_ID, launchpadPda, curvePda, intakePda, intakeAta, claimAta, claimKeypair, decodeCurve, decodeLaunchpad, decodeTokenMetadata,
   defaultLaunchpadParams, initLaunchpadIx, launchIx, harvestIx, publicBuyIx, exitData, exitAccounts, EXIT_BUY, EXIT_SELL,
-  fetchClaimRents, quotePrivateBuy, quotePrivateSell, buyReserve, claimShieldAccounts, closeTokenAccountIx, launchStaticAddresses, spotPrice,
+  fetchClaimRents, quotePrivateBuy, quotePrivateSell, buyReserve, claimShieldAccounts, closeTokenAccountIx, launchLookupTableIxs, lookupTableCovers, spotPrice,
 } from "../sdk/dist/index.js";
 
 const { values } = parseArgs({ options: { rpc: { type: "string", default: "http://127.0.0.1:8899" }, keypair: { type: "string", default: "keypairs/deployer.json" } } });
@@ -28,10 +28,10 @@ const fmt = (l) => (Number(l) / LAMPORTS_PER_SOL).toFixed(4) + " SOL";
 const fmtT = (t, d = 6) => (Number(t) / 10 ** d).toLocaleString("en-US", { maximumFractionDigits: 2 });
 const assert = (c, m) => { if (!c) throw new Error(`ASSERT: ${m}`); };
 
-let table;
+let tables = [];
 async function send(ixs, signers, label, { cu } = {}) {
   const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
-  const tx = buildV0(signers[0].publicKey, ixs, blockhash, table, { cuLimit: cu ?? 1_400_000 });
+  const tx = buildV0(signers[0].publicKey, ixs, blockhash, tables, { cuLimit: cu ?? 1_400_000 });
   tx.sign(signers);
   const size = tx.serialize().length;
   try {
@@ -73,10 +73,11 @@ const lp = decodeLaunchpad(new Uint8Array((await conn.getAccountInfo(launchpadPd
 assert(lp.tradeFeeBps === 100 && lp.vaultProgram.equals(PROGRAM_ID) && lp.curveSupply === params.curveSupply, "launchpad decoded");
 await expectFail(send([initLaunchpadIx(payer.publicKey, params)], [payer], "launchpad: second initialise"), /0x2\b|AlreadyInitialized/, "launchpad is write-once");
 
-// --- 1. launch: mint + curve + shielded pool in one transaction, paid by a public wallet (the creator)
+// --- 1. launch: mint + curve + shielded pool + frozen lookup table in one transaction, paid by a public wallet (the creator)
 const mint = Keypair.generate();
 const meta = { name: "Shielded Test", symbol: "SHT", uri: "https://scash.example/sht.json" };
-await send([launchIx(payer.publicKey, mint.publicKey, meta)], [payer, mint], `launch ${meta.symbol}`);
+const alt = launchLookupTableIxs(payer.publicKey, mint.publicKey, await conn.getSlot("finalized"));
+await send([...alt.ixs, launchIx(payer.publicKey, mint.publicKey, meta, alt.table)], [payer, mint], `launch ${meta.symbol}`);
 const mintInfo = await conn.getAccountInfo(mint.publicKey);
 assert(mintInfo.owner.equals(TOKEN_2022_PROGRAM_ID), "mint is Token-2022");
 assert(mintInfo.data[46] === 0, "no freeze authority (COption tag at 46)");
@@ -89,14 +90,16 @@ const curve = async () => decodeCurve(new Uint8Array((await conn.getAccountInfo(
 let c = await curve();
 assert(c.realToken === params.curveSupply && c.virtualToken === params.virtualToken && c.realSol === 0n && !c.graduated, "fresh curve state");
 assert((await tokenPool()).totalShares === 0n, "token pool exists and is empty");
+assert(c.lookupTable.equals(alt.table), "curve records its lookup table");
 log(`curve: ${fmtT(c.realToken)} ${meta.symbol} for sale, spot ${(spotPrice(c, 6) / LAMPORTS_PER_SOL).toExponential(3)} SOL/token`);
 
-// --- lookup table with vault + launch statics
-const addrs = [...staticAddresses([{ mint: SOL }, { mint: mint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID }], undefined, relayer.publicKey), ...launchStaticAddresses(mint.publicKey)];
-const seen = new Set();
-table = await fetchLookupTable(conn, await createLookupTable(conn, payer, addrs.filter((a) => (seen.has(a.toBase58()) ? false : seen.add(a.toBase58())))));
+// --- lookup tables: the relayer's (vault statics, SOL pool) and the token's own frozen one, found via the curve
+const relayerTable = await fetchLookupTable(conn, await createLookupTable(conn, payer, staticAddresses([{ mint: SOL }], undefined, relayer.publicKey)));
 await new Promise((r) => setTimeout(r, 1500));
-table = await fetchLookupTable(conn, table.key);
+const tokenTable = await fetchLookupTable(conn, c.lookupTable);
+assert(tokenTable.state.authority === undefined, "token table is frozen (no authority)");
+assert(lookupTableCovers(tokenTable.state.addresses, mint.publicKey), "token table holds the launch statics");
+tables = [await fetchLookupTable(conn, relayerTable.key), tokenTable];
 
 const tree = new MerkleTree(26);
 await tree.whenReady();
@@ -188,20 +191,25 @@ const claim2 = claimKeypair(seed, 1n);
 const sellShares = aliceW.balance(tokenAsset) / 2n;
 const sellAmount = amountForBurn(tp, sellShares);
 const sellDelivered = amountForBurn(tp, sharesForWithdraw(tp, sellAmount));
-const sq = quotePrivateSell(c, sellDelivered);
-log(`sell quote: ${fmtT(sellDelivered)} ${meta.symbol} -> ${fmt(sq.out)} after fee ${fmt(sq.fee)}`);
+// the vault's own fee would be in SHT, which no relayer prices: the relayer is tipped in SOL out of the proceeds instead
+const relayerTip = 2_000_000n;
+const sq = quotePrivateSell(c, sellDelivered, relayerTip);
+log(`sell quote: ${fmtT(sellDelivered)} ${meta.symbol} -> ${fmt(sq.out)} after fee ${fmt(sq.fee)} and tip ${fmt(relayerTip)}`);
 built = await aliceW.buildTransact({
   asset: tokenAsset, mint: mint.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID, pool: tp, tree, chainTree: await chainTree(), artifacts, kind: "unshield", amount: sellAmount,
   recipient: intakeAta(mint.publicKey), relayer: relayer.publicKey, relayerDest: relayer.publicKey, relayerFee: 0n, payer: relayer.publicKey,
-  exitTarget: LAUNCH_PROGRAM_ID, exitData: exitData(EXIT_SELL, claim2.publicKey, claimBudget, sq.out),
+  exitTarget: LAUNCH_PROGRAM_ID, exitData: exitData(EXIT_SELL, claim2.publicKey, claimBudget, sq.out, relayerTip),
   exitAccounts: exitAccounts(EXIT_SELL, mint.publicKey, claim2.publicKey, relayer.publicKey),
 });
+const relayerBeforeSell = BigInt(await conn.getBalance(relayer.publicKey));
 await send([built.instruction], [relayer], "alice: private sell (relayed; vault → curve → claim key)");
 await apply(built, tokenAsset);
 c = await curve();
 const claim2Lamports = BigInt(await conn.getBalance(claim2.publicKey));
 assert(claim2Lamports === sq.out, `SOL at claim key ${claim2Lamports} == quote ${sq.out}`);
 assert(c.sells === 1n, "sell counted");
+const relayerSellDelta = BigInt(await conn.getBalance(relayer.publicKey)) - relayerBeforeSell;
+assert(relayerSellDelta > relayerTip - 2n * rents.nullifierRent - 20_000n && relayerSellDelta < relayerTip, `relayer received the tip net of rents/fee (${relayerSellDelta})`);
 log(`claim key 2 holds ${fmt(claim2Lamports)}; curve real_sol=${fmt(c.realSol)}`);
 
 // --- 8. claim the SOL back into the shielded SOL pool

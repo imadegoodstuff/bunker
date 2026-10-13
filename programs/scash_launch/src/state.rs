@@ -84,9 +84,13 @@ pub struct Curve {
     pub buys: u64,
     pub sells: u64,
     pub sol_volume: u64,
+    /// Frozen address lookup table holding this token's static accounts, created
+    /// in the launch transaction so a relayed private trade fits in one packet.
+    /// A hint for clients, which verify its contents; nothing on-chain trusts it.
+    pub lookup_table: Pubkey,
 }
 impl Curve {
-    pub const LEN: usize = 1 + 1 + 1 + 32 + 32 + 8 * 5 + 1 + 8 * 3 + 2 + 2 + 8 + 32 + 32 + 8 * 3;
+    pub const LEN: usize = 1 + 1 + 1 + 32 + 32 + 8 * 5 + 1 + 8 * 3 + 2 + 2 + 8 + 32 + 32 + 8 * 3 + 32;
 
     pub fn load(d: &[u8]) -> Result<Self, ProgramError> {
         let s = Self::try_from_slice(d).map_err(|_| LaunchError::BadAccount)?;
@@ -121,7 +125,7 @@ mod tests {
         let c = Curve {
             disc: DISC_CURVE, bump: 0, intake_bump: 0, mint: Pubkey::new_unique(), token_vault: Pubkey::new_unique(), virtual_sol: 0, virtual_token: 0, real_sol: 0, real_token: 0,
             fees_accrued: 0, graduated: 0, created_slot: 0, total_supply: 0, curve_supply: 0, trade_fee_bps: 0, holder_share_bps: 0, graduation_lamports: 0,
-            protocol_treasury: Pubkey::new_unique(), vault_program: Pubkey::new_unique(), buys: 0, sells: 0, sol_volume: 0,
+            protocol_treasury: Pubkey::new_unique(), vault_program: Pubkey::new_unique(), buys: 0, sells: 0, sol_volume: 0, lookup_table: Pubkey::new_unique(),
         };
         let mut buf = vec![0u8; Curve::LEN];
         c.store(&mut buf).unwrap();
