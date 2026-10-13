@@ -2,7 +2,7 @@
 // the circom compiler (no native toolchain needed). Emits r1cs, wasm witness
 // generator and symbol file, then prints the constraint count.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, existsSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, existsSync, readdirSync, rmSync, cpSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -22,6 +22,10 @@ const mains = (process.argv.slice(2).length
 
 mkdirSync(build, { recursive: true });
 
+// The wasm compiler's filesystem view is limited to the working directory on
+// some platforms, so mirror circomlib's circuits under src/ (gitignored).
+cpSync(join(circomlibDir, "circomlib", "circuits"), join(src, "circomlib", "circuits"), { recursive: true });
+
 for (const name of mains) {
   const out = join(build, name);
   mkdirSync(out, { recursive: true });
@@ -37,7 +41,7 @@ for (const name of mains) {
   const rel = (p) => (process.platform === "win32" ? relative(src, p).split("\\").join("/") : p);
   execFileSync(
     process.execPath,
-    [circomBin, `${name}.circom`, "--r1cs", "--wasm", "--sym", "--O2", "-o", rel(out), "-l", rel(circomlibDir), "-l", "."],
+    [circomBin, `${name}.circom`, "--r1cs", "--wasm", "--sym", "--O2", "-o", rel(out), "-l", "."],
     { stdio: "inherit", cwd: src }
   );
 }

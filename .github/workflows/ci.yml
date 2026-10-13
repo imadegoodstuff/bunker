@@ -7,7 +7,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  SOLANA_VERSION: v2.3.6
+  # Agave stable ships platform-tools with a rustc new enough for edition-2024 deps
+  SOLANA_VERSION: stable
 
 jobs:
   rust:
