@@ -177,7 +177,7 @@ ExtData {
 }
 ```
 
-The program requires exactly `nOuts` ciphertexts but does not fix their lengths. An unshield's two outputs are the sender's own change and a zero-value dummy, so the client sends the dummy's ciphertext and `out_ciphertext` empty (`sdk/src/wallet.ts`); the 179 bytes saved are what lets an unshield that carries an exit target (§11, §16) fit one `v0` packet. Shields and private sends carry both ciphertexts and the outgoing record.
+The program requires exactly `nOuts` ciphertexts but does not fix their lengths. The second output of a shield or an unshield is a zero-value dummy to the sender, and an unshield's first output is the sender's own change, so the client sends the dummy's ciphertext empty for shields and unshields and `out_ciphertext` empty for unshields (`sdk/src/wallet.ts`); the 99 and 179 bytes saved are what let a shield signed by a launchpad claim key and an unshield that carries an exit target (§11, §16) fit one `v0` packet. A private send carries both ciphertexts (its second output is real change) and the outgoing record.
 
 ```
 ext_data_hash = SHA-256(borsh(ExtData)) mod p
@@ -302,6 +302,7 @@ Two transactions are needed because an old-vault `transact` plus a new-vault `tr
 | Proof | 256 bytes (uncompressed G1, G2, G1) |
 | Instruction args besides ext_data | 1 + 4 + 1 + 8 + 1 + 4 + 2x32 + 4 + 2x32 = 152 bytes |
 | ext_data without memo | 32 + 32 + 8 + 32 + 4 + 4 + 2x(4 + 99) + 4 + 80 = 402 bytes |
+| ext_data of a shield (empty dummy ciphertext, §7) | 402 − 99 = 303 bytes |
 | ext_data of an unshield (empty dummy ciphertext and outgoing record, §7) | 402 − 179 = 223 bytes, + 49 of exit data for a launchpad trade |
 | Two ciphertexts | 99 + 99 (no memo) or 163 + 99 (one 64-byte memo) |
 

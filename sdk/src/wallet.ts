@@ -214,20 +214,23 @@ export class ShieldedWallet {
 
     const relayerFee = kind === "shield" ? 0n : opts.relayerFee;
     const recipient = kind === "unshield" ? opts.recipient! : opts.relayerDest;
-    // An unshield's outputs are the sender's change and a zero-value dummy,
-    // both to the sender. The dummy's ciphertext and the outgoing record carry
-    // nothing anyone will ever decrypt, so they are sent empty: the program
-    // only requires two ciphertexts, not their lengths, and the 179 bytes are
-    // what lets an unshield with an exit target fit one v0 packet (SPEC §7).
-    const compact = kind === "unshield";
+    // The second output of a shield or an unshield is a zero-value dummy to
+    // the sender; an unshield's first output is the sender's own change. Their
+    // ciphertexts and (for an unshield) the outgoing record carry nothing
+    // anyone will ever decrypt, so they are sent empty: the program requires
+    // two ciphertexts, not their lengths. The bytes saved are what let a
+    // relayed launchpad trade and its claim fit one v0 packet (SPEC §7). A
+    // private send keeps both ciphertexts: its second output is real change.
+    const dummyEmpty = kind !== "send";
+    const outEmpty = kind === "unshield";
     const ext: ExtData = {
       recipient,
       relayer: opts.relayer,
       relayerFee,
       exitTarget: opts.exitTarget ?? NO_EXIT,
       exitData: opts.exitData ?? new Uint8Array(0),
-      ciphertexts: [c0.ciphertext, compact ? new Uint8Array(0) : c1.ciphertext],
-      outCiphertext: compact ? new Uint8Array(0) : outCipher,
+      ciphertexts: [c0.ciphertext, dummyEmpty ? new Uint8Array(0) : c1.ciphertext],
+      outCiphertext: outEmpty ? new Uint8Array(0) : outCipher,
     };
     const extHash = extDataHash(ext);
 

@@ -253,6 +253,7 @@ export function launchStaticAddresses(mint: PublicKey, vaultProgram = VAULT_PROG
   return [
     programId, launchpadPda(programId), curvePda(mint, programId), curveTokenVault(mint, programId), intakePda(mint, programId), intakeAta(mint, programId),
     SYSVAR_INSTRUCTIONS_PUBKEY, mint, poolPda(mint, vaultProgram), vaultFor(mint, TOKEN_2022_PROGRAM_ID, vaultProgram),
+    TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID,
   ];
 }
 /** Checks a table found via `Curve.lookupTable` really holds `launchStaticAddresses(mint)` (clients never trust the hint blindly). */
