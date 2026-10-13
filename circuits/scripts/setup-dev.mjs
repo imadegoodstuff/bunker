@@ -18,25 +18,41 @@ mkdirSync(ptauDir, { recursive: true });
 
 const circuits = process.argv.slice(2).length ? process.argv.slice(2) : ["transact2x2", "transact4x2"];
 
+// A single, pinned Powers of Tau file. The dev VK compiled into the program is
+// derived from (r1cs, ptau, fixed entropy); if any of the three changes the
+// on-chain verifier rejects every proof, so the ptau is pinned by SHA-256
+// rather than "whatever mirror answered first".
+const PTAU = {
+  16: {
+    url: "https://pse-trusted-setup-ppot.s3.eu-central-1.amazonaws.com/pot28_0080/ppot_0080_16.ptau",
+    sha256: "ed3622a7c79b0b49aadd134ebbc5b77df8c8c59bccebdfd0d9bf2c1a51561cf9",
+  },
+};
+
+async function sha256File(file) {
+  const { createHash } = await import("node:crypto");
+  const { createReadStream } = await import("node:fs");
+  const h = createHash("sha256");
+  await pipeline(createReadStream(file), h);
+  return h.digest("hex");
+}
+
 async function ptauFor(power) {
-  const file = join(ptauDir, `powersOfTau28_hez_final_${power}.ptau`);
-  if (existsSync(file) && statSync(file).size > 1_000_000) return file;
-  const urls = [
-    `https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_${power}.ptau`,
-    `https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_${power}.ptau`,
-    `https://pse-trusted-setup-ppot.s3.eu-central-1.amazonaws.com/pot28_0080/ppot_0080_${power}.ptau`,
-  ];
-  for (const url of urls) {
-    console.log(`[setup] downloading ${url}`);
-    const res = await fetch(url);
-    if (!res.ok || !res.body) {
-      console.log(`[setup] ${res.status}, trying next mirror`);
-      continue;
-    }
+  const pin = PTAU[power];
+  if (!pin) throw new Error(`no pinned ptau for 2^${power}; add it to setup-dev.mjs`);
+  const file = join(ptauDir, `ppot_0080_${power}.ptau`);
+  if (!(existsSync(file) && statSync(file).size > 1_000_000)) {
+    console.log(`[setup] downloading ${pin.url}`);
+    const res = await fetch(pin.url);
+    if (!res.ok || !res.body) throw new Error(`ptau download failed: ${res.status}`);
     await pipeline(Readable.fromWeb(res.body), createWriteStream(file));
-    return file;
   }
-  throw new Error("ptau download failed from all mirrors");
+  const digest = await sha256File(file);
+  if (digest !== pin.sha256) {
+    throw new Error(`ptau checksum mismatch for ${file}: ${digest} != ${pin.sha256}`);
+  }
+  console.log(`[setup] ptau 2^${power} sha256=${digest}`);
+  return file;
 }
 
 function powerFor(nConstraints) {

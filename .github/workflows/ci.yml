@@ -83,7 +83,10 @@ jobs:
           npm run -w circuits build
           node circuits/scripts/setup-dev.mjs
           node circuits/scripts/export-vk.mjs
-          git diff --exit-code --stat programs/scash_vault/src/vk || echo "::warning::VK differs from committed (dev setup is randomized; expected)"
+          # The dev setup is deterministic (pinned ptau + fixed entropy). If the
+          # regenerated VK differs from the committed one, the program built in
+          # the sbf job would reject every proof — fail loudly instead.
+          git diff --exit-code --stat programs/scash_vault/src/vk || { echo "::error::VK drift: run setup-dev + export-vk and commit programs/scash_vault/src/vk"; exit 1; }
       - name: start validator with the freshly built programs
         run: |
           mkdir -p keypairs

@@ -8,8 +8,9 @@ toxic waste, the resulting keys are sound.
 ## Phase 1
 
 We use the Perpetual Powers of Tau (BN254) at `2^16`, specifically the
-Hermez / PSE final file `powersOfTau28_hez_final_16.ptau`. Its hash is pinned in
-`circuits/scripts/setup-dev.mjs` and checked at download time.
+PSE contribution `pot28_0080/ppot_0080_16.ptau`
+(SHA-256 `ed3622a7c79b0b49aadd134ebbc5b77df8c8c59bccebdfd0d9bf2c1a51561cf9`). The
+hash is pinned in `circuits/scripts/setup-dev.mjs` and checked at download time.
 
 ## Phase 2 (how to contribute)
 

@@ -11,7 +11,7 @@ import * as snarkjs from "snarkjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
-const PTAU = join(root, "ptau", "powersOfTau28_hez_final_16.ptau");
+const PTAU = join(root, "ptau", "ppot_0080_16.ptau");
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
