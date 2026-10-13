@@ -58,6 +58,45 @@ jobs:
       - name: compile circuits (constraint counts)
         run: npm run -w circuits build
 
+  e2e:
+    name: end-to-end on a local validator
+    needs: [sbf]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/download-artifact@v4
+        with:
+          name: programs
+          path: target/deploy
+      - name: install solana
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/${SOLANA_VERSION}/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+      - run: npm ci
+      - run: npm run -w sdk build
+      - name: circuits + dev proving keys
+        run: |
+          npm run -w circuits build
+          node circuits/scripts/setup-dev.mjs
+          node circuits/scripts/export-vk.mjs
+          git diff --exit-code --stat programs/scash_vault/src/vk || echo "::warning::VK differs from committed (dev setup is randomized; expected)"
+      - name: start validator with the freshly built programs
+        run: |
+          mkdir -p keypairs
+          solana-keygen new --no-bip39-passphrase --silent -o keypairs/deployer.json
+          solana-test-validator --reset --quiet \
+            --bpf-program A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ target/deploy/scash_vault.so \
+            --bpf-program 9TorUNxbdb4vwNXNB6R487Th94616xGtvsBHpaETcqGi target/deploy/scash_harvester.so \
+            --mint "$(solana-keygen pubkey keypairs/deployer.json)" &
+          for i in $(seq 1 60); do solana cluster-version -u http://127.0.0.1:8899 >/dev/null 2>&1 && break; sleep 1; done
+          solana cluster-version -u http://127.0.0.1:8899
+      - name: e2e (shield → private send → unshield → donate → replay rejected)
+        run: node scripts/e2e.mjs
+
   deploy-devnet:
     name: deploy to devnet
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'

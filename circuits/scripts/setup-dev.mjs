@@ -56,7 +56,11 @@ for (const name of circuits) {
   const zkey = join(dir, `${name}_dev.zkey`);
   console.log(`[setup] ${name}: ${info.nConstraints} constraints -> ptau 2^${power}`);
   await snarkjs.zKey.newZKey(r1cs, ptau, zkey0);
-  await snarkjs.zKey.contribute(zkey0, zkey, "scash dev contribution", String(Date.now()));
+  // Fixed entropy on purpose: DEV keys must be reproducible so that the VK
+  // compiled into the program matches a zkey rebuilt anywhere (CI, laptops).
+  // Anyone can derive the toxic waste, which is exactly why these keys are
+  // never used on mainnet (see ceremony/README.md).
+  await snarkjs.zKey.contribute(zkey0, zkey, "scash dev contribution", process.env.SCASH_DEV_ENTROPY ?? "scash-dev-entropy-not-for-production");
   const vk = await snarkjs.zKey.exportVerificationKey(zkey);
   const { writeFileSync, rmSync } = await import("node:fs");
   writeFileSync(join(dir, `${name}_vk.json`), JSON.stringify(vk, null, 2));
