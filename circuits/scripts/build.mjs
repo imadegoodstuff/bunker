@@ -33,7 +33,8 @@ for (const name of mains) {
   // The wasm compiler resolves paths relative to cwd and needs the output dir to exist.
   // The wasm compiler derives output names from the input path verbatim, so run
   // it from src/ with a bare file name and forward-slash relative paths.
-  const rel = (p) => relative(src, p).split("\\").join("/");
+  // (Windows only; on POSIX the compiler handles absolute paths fine.)
+  const rel = (p) => (process.platform === "win32" ? relative(src, p).split("\\").join("/") : p);
   execFileSync(
     process.execPath,
     [circomBin, `${name}.circom`, "--r1cs", "--wasm", "--sym", "--O2", "-o", rel(out), "-l", rel(circomlibDir), "-l", "."],
