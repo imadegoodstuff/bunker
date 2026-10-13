@@ -133,7 +133,9 @@ pub fn transfer_checked<'a>(
             AccountMeta::new(*source.key, false),
             AccountMeta::new_readonly(*mint.key, false),
             AccountMeta::new(*destination.key, false),
-            AccountMeta::new_readonly(*authority.key, signer_seeds.is_empty()),
+            // The authority signs either way: a user by its transaction
+            // signature, a PDA through `invoke_signed`.
+            AccountMeta::new_readonly(*authority.key, true),
         ],
         data,
     };
