@@ -50,7 +50,8 @@ test("note encryption: receiver decrypts with ivk, strangers cannot, sender reco
   const note = { asset, value: 1234n, gd, pkd: to.pkd, rho: randomField(), rcm: randomField() };
   const memo = new TextEncoder().encode("hello");
   const { ciphertext, esk } = encryptNote(bjj, to, note, memo, true);
-  assert.equal(ciphertext.length, NOTE_CIPHERTEXT_LEN);
+  assert.equal(ciphertext.length, NOTE_CIPHERTEXT_LEN_NO_MEMO + 64); // 5-byte memo → one 64-byte bucket
+  assert.equal(NOTE_CIPHERTEXT_LEN, NOTE_CIPHERTEXT_LEN_NO_MEMO + 512);
 
   const got = tryDecryptNote(bjj, receiver.ivk, ciphertext);
   assert.ok(got);
