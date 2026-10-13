@@ -17,6 +17,8 @@ export interface Job {
   attempts: number;
   /** hex nullifiers this job spends; the idempotency key for /relay */
   nullifiers: string[];
+  /** extra lookup tables this job needs besides the relayer's (a launched token's frozen table) */
+  tables?: AddressLookupTableAccount[];
 }
 
 export class SubmitQueue {
@@ -56,7 +58,7 @@ export class SubmitQueue {
     return undefined;
   }
 
-  enqueue(ix: TransactionInstruction, nullifiers: string[] = []): Job {
+  enqueue(ix: TransactionInstruction, nullifiers: string[] = [], tables?: AddressLookupTableAccount[]): Job {
     const now = Date.now();
     const job: Job = {
       id: randomUUID(),
@@ -66,6 +68,7 @@ export class SubmitQueue {
       status: "queued",
       attempts: 0,
       nullifiers,
+      tables,
     };
     this.jobs.set(job.id, job);
     for (const nf of nullifiers) this.byNullifier.set(nf, job.id);
@@ -74,6 +77,11 @@ export class SubmitQueue {
 
   get(id: string) {
     return this.jobs.get(id);
+  }
+
+  /** the relayer's own table plus whatever the job brought */
+  tablesFor(job: Pick<Job, "tables">): AddressLookupTableAccount[] {
+    return [...(this.table ? [this.table] : []), ...(job.tables ?? [])];
   }
 
   size() {
@@ -111,7 +119,7 @@ export class SubmitQueue {
     job.attempts++;
     try {
       const { blockhash, lastValidBlockHeight } = await this.conn.getLatestBlockhash("confirmed");
-      const tx = buildV0(this.signer.publicKey, [job.ix], blockhash, this.table, {
+      const tx = buildV0(this.signer.publicKey, [job.ix], blockhash, this.tablesFor(job), {
         cuLimit: this.opts.cuLimit,
         cuPriceMicroLamports: this.opts.cuPrice?.() ?? this.opts.cuPriceMicroLamports,
       });

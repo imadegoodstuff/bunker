@@ -3,13 +3,18 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { readFileSync } from "node:fs";
 import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction, type AccountMeta } from "@solana/web3.js";
-import { deserializeExtData, PROGRAM_ID as DEFAULT_PROGRAM, decodePool, poolPda, buildV0, fetchLookupTable, vaultErrorName } from "@scash/sdk";
+import {
+  deserializeExtData, PROGRAM_ID as DEFAULT_PROGRAM, decodePool, poolPda, buildV0, fetchLookupTable, vaultErrorName,
+  LAUNCH_PROGRAM_ID as DEFAULT_LAUNCH, decodeCurve, decodeExitData, lookupTableCovers, EXIT_BUY, EXIT_SELL, curvePda,
+} from "@scash/sdk";
 import { FeePolicy } from "./policy.js";
 import { SubmitQueue } from "./queue.js";
 import { PriorityFeeOracle } from "./fees.js";
 
 const RPC = process.env.RPC_URL ?? "https://api.devnet.solana.com";
 const PROGRAM = new PublicKey(process.env.PROGRAM_ID ?? DEFAULT_PROGRAM.toBase58());
+// The one exit target the relayer will forward to: the launchpad. Set to "" to refuse all exits.
+const LAUNCH = process.env.LAUNCH_PROGRAM_ID === "" ? undefined : new PublicKey(process.env.LAUNCH_PROGRAM_ID ?? DEFAULT_LAUNCH.toBase58());
 const PORT = Number(process.env.PORT ?? 8787);
 const signer = loadKeypair();
 const policy = new FeePolicy(process.env.FEE_POLICY, BigInt(process.env.MIN_FEE_LAMPORTS ?? "1500000"));
@@ -116,6 +121,8 @@ app.get("/info", async () => ({
   priorityFee: priority.info(),
   cuLimit: queue.opts.cuLimit,
   lookupTable: process.env.LOOKUP_TABLE ?? null,
+  /** exit target accepted for relayed private buys/sells; sells pay the SOL floor as an exit-data tip */
+  launchProgram: LAUNCH?.toBase58() ?? null,
   queued: queue.size(),
 }));
 
@@ -143,15 +150,49 @@ app.post<{ Body: RelayBody }>("/relay", async (req, reply) => {
   }
   if (keys.length < 14) return reply.code(400).send({ error: "too few accounts" });
   if (!keys[0].pubkey.equals(signer.publicKey)) return reply.code(400).send({ error: "payer must be the relayer", relayer: signer.publicKey.toBase58() });
-  // nobody but the relayer may be required to sign
-  for (let i = 1; i < keys.length; i++) if (keys[i].isSigner) return reply.code(400).send({ error: "extra signer not allowed (shields are self-paid)" });
   if (parsed.signedShares > 0n) return reply.code(400).send({ error: "shields are not relayed" });
   if (!parsed.ext.relayer.equals(signer.publicKey)) return reply.code(400).send({ error: "ext.relayer must be the relayer" });
   const mint = keys[5].pubkey;
-  if (!policy.supports(mint.toBase58())) return reply.code(400).send({ error: "unsupported asset" });
+
+  // --- exit target: none, or the launchpad (a private buy or sell on a curve)
+  // Exit accounts follow the nullifier PDAs; the launch program's `payer` slot
+  // (index 7) is the relayer, which is why it may appear as a signer there.
+  const exitStart = 14 + parsed.nNf;
+  let launch: { kind: number; tip: bigint; tables: Awaited<ReturnType<typeof fetchLookupTable>>[] } | undefined;
+  if (!parsed.ext.exitTarget.equals(SystemProgram.programId)) {
+    if (!LAUNCH || !parsed.ext.exitTarget.equals(LAUNCH)) return reply.code(400).send({ error: "unsupported exit target" });
+    if (keys.length !== exitStart + 13) return reply.code(400).send({ error: "launch exit needs exactly 13 trailing accounts" });
+    let ed;
+    try { ed = decodeExitData(parsed.ext.exitData); } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }
+    if (ed.kind !== EXIT_BUY && ed.kind !== EXIT_SELL) return reply.code(400).send({ error: "unknown exit kind" });
+    if (!keys[exitStart + 7].pubkey.equals(signer.publicKey)) return reply.code(400).send({ error: "exit payer must be the relayer" });
+    if (!keys[exitStart + 12].pubkey.equals(LAUNCH)) return reply.code(400).send({ error: "exit accounts must end with the launch program" });
+    if (ed.kind === EXIT_SELL && mint.equals(SystemProgram.programId)) return reply.code(400).send({ error: "a sell spends the token, not SOL" });
+    if (ed.kind === EXIT_BUY && !mint.equals(SystemProgram.programId)) return reply.code(400).send({ error: "a buy spends SOL" });
+    // the token's frozen lookup table, recorded on its curve (verified, not trusted)
+    const curveKey = keys[exitStart].pubkey;
+    const tokenMint = ed.kind === EXIT_BUY ? keys[exitStart + 1].pubkey : mint;
+    if (!curveKey.equals(curvePda(tokenMint, LAUNCH))) return reply.code(400).send({ error: "curve/mint mismatch" });
+    const curveInfo = await conn.getAccountInfo(curveKey);
+    if (!curveInfo) return reply.code(400).send({ error: "curve not found" });
+    const curve = decodeCurve(new Uint8Array(curveInfo.data));
+    const tables = [];
+    try {
+      const t = await fetchLookupTable(conn, curve.lookupTable);
+      if (lookupTableCovers(t.state.addresses, tokenMint, PROGRAM, LAUNCH)) tables.push(t);
+    } catch { /* fall back to the relayer's table alone; the size check below decides */ }
+    launch = { kind: ed.kind, tip: ed.relayerTip, tables };
+  }
+  // nobody but the relayer may be required to sign
+  for (let i = 1; i < keys.length; i++) {
+    if (keys[i].isSigner && !(launch && i === exitStart + 7)) return reply.code(400).send({ error: "extra signer not allowed (shields are self-paid)" });
+  }
+
+  const sell = launch?.kind === EXIT_SELL;
+  if (!sell && !policy.supports(mint.toBase58())) return reply.code(400).send({ error: "unsupported asset" });
   const relayerDest = keys[11].pubkey;
   const expectedDest = policy.get(mint.toBase58())?.dest;
-  if (mint.equals(SystemProgram.programId) ? !relayerDest.equals(signer.publicKey) : expectedDest && !relayerDest.equals(new PublicKey(expectedDest))) {
+  if (!sell && (mint.equals(SystemProgram.programId) ? !relayerDest.equals(signer.publicKey) : expectedDest && !relayerDest.equals(new PublicKey(expectedDest)))) {
     return reply.code(400).send({ error: "relayer destination mismatch" });
   }
 
@@ -172,13 +213,22 @@ app.post<{ Body: RelayBody }>("/relay", async (req, reply) => {
   // For SPL assets the fee is in tokens, so the operator must price FEE_POLICY
   // above the SOL cost themselves (we log the cost at startup).
   const costLamports = await relayCostLamports(parsed.nNf);
-  let required = policy.required(mint.toBase58(), amount);
-  if (mint.equals(SystemProgram.programId)) {
-    const floor = costLamports + (costLamports * BigInt(COST_MARGIN_BPS)) / 10_000n;
-    if (floor > required) required = floor;
-  }
-  if (parsed.ext.relayerFee < required) {
-    return reply.code(402).send({ error: "fee too low", required: required.toString(), relayerCostLamports: costLamports.toString() });
+  const solFloor = costLamports + (costLamports * BigInt(COST_MARGIN_BPS)) / 10_000n;
+  if (sell) {
+    // A private sell's vault fee would be in the token being sold, which this
+    // relayer does not price; the launch program pays the relayer a SOL tip
+    // out of the proceeds instead (exit data), and that tip must clear the floor.
+    const solMin = policy.required(SystemProgram.programId.toBase58(), 0n);
+    const required = solMin > solFloor ? solMin : solFloor;
+    if (launch!.tip < required) {
+      return reply.code(402).send({ error: "relayer tip too low", required: required.toString(), relayerCostLamports: costLamports.toString() });
+    }
+  } else {
+    let required = policy.required(mint.toBase58(), amount);
+    if (mint.equals(SystemProgram.programId) && solFloor > required) required = solFloor;
+    if (parsed.ext.relayerFee < required) {
+      return reply.code(402).send({ error: "fee too low", required: required.toString(), relayerCostLamports: costLamports.toString() });
+    }
   }
 
   // --- idempotency: same nullifier ⇒ same payment ⇒ same job
@@ -189,7 +239,7 @@ app.post<{ Body: RelayBody }>("/relay", async (req, reply) => {
 
   // --- simulate before accepting (catches bad proofs / stale roots / spent notes)
   const ix = new TransactionInstruction({ programId: PROGRAM, keys, data: Buffer.from(data) });
-  const sim = buildV0(signer.publicKey, [ix], (await conn.getLatestBlockhash()).blockhash, queue.table, { cuLimit: queue.opts.cuLimit });
+  const sim = buildV0(signer.publicKey, [ix], (await conn.getLatestBlockhash()).blockhash, queue.tablesFor({ tables: launch?.tables }), { cuLimit: queue.opts.cuLimit });
   sim.sign([signer]);
   if (sim.serialize().length > 1232) return reply.code(400).send({ error: "transaction too large", bytes: sim.serialize().length });
   const res = await conn.simulateTransaction(sim, { sigVerify: false });
@@ -199,7 +249,7 @@ app.post<{ Body: RelayBody }>("/relay", async (req, reply) => {
     return reply.code(422).send({ error: vaultError ? `simulation failed: ${vaultError}` : "simulation failed", vaultError, details: res.value.err, logs: res.value.logs?.slice(-8) });
   }
 
-  const job = queue.enqueue(ix, parsed.nullifiers);
+  const job = queue.enqueue(ix, parsed.nullifiers, launch?.tables);
   return { id: job.id, releaseAt: job.releaseAt, cu: res.value.unitsConsumed };
 });
 

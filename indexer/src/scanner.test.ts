@@ -274,3 +274,43 @@ test("contiguousPrefix stops at the first hole and respects `from`", () => {
   assert.deepEqual(contiguousPrefix(rows, 4), []);
   assert.deepEqual(contiguousPrefix([], 0), []);
 });
+
+test("launchpad events: a launch row is created and every trade/harvest/graduate updates it; replays are idempotent", () => {
+  const db = new Db(":memory:");
+  const scanner = new Scanner([fakeConnection([], new Set()).conn], db, PROGRAM, 0);
+  const u64 = (n: bigint) => { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, n, true); return b; };
+  const te = new TextEncoder();
+  const mint = bytes32(7);
+  const mintB58 = new PublicKey(mint).toBase58();
+  const line = (parts: Uint8Array[]) => `Program data: ${parts.map(b64).join(" ")}`;
+  const tx = (slot: number, logs: string[]) => ({ slot, blockTime: 1_700_000_000 + slot, meta: { err: null, logMessages: logs }, transaction: { message: { instructions: [] } } });
+  const launch = line([te.encode("launch"), mint, te.encode("Shielded Test"), te.encode("SHT"), te.encode("https://x/y.json"), u64(30n * 10n ** 9n), u64(1_073_000_000_000_000n), u64(793_100_000_000_000n), u64(10n ** 15n), u64(85n * 10n ** 9n), new Uint8Array([6])]);
+  const buy = line([te.encode("curve_buy"), mint, u64(1_980_000_000n), u64(20_000_000n), u64(60_000_000_000_000n), u64(1_980_000_000n), u64(733_100_000_000_000n), u64(1_013_000_000_000_000n), new Uint8Array([1])]);
+  const harvest = line([te.encode("harvest"), mint, u64(10_000_000n), u64(10_000_000n), u64(300_000_000_000n)]);
+  const sell = line([te.encode("curve_sell"), mint, u64(900_000_000n), u64(9_000_000n), u64(30_000_000_000_000n), u64(1_080_000_000n), u64(763_100_000_000_000n), u64(1_043_000_000_000_000n), new Uint8Array([1])]);
+  const grad = line([te.encode("graduate"), mint, u64(85_000_000_000n), u64(0n)]);
+
+  scanner.ingest("L", tx(10, [launch]) as never);
+  scanner.ingest("B", tx(11, [buy]) as never);
+  scanner.ingest("H", tx(12, [harvest]) as never);
+  scanner.ingest("S", tx(13, [sell]) as never);
+  scanner.ingest("B", tx(11, [buy]) as never); // replay: no double counting
+  let l = db.launch(mintB58)!;
+  assert.equal(l.symbol, "SHT");
+  assert.equal(l.decimals, 6);
+  assert.equal(l.buys, 1);
+  assert.equal(l.sells, 1);
+  assert.equal(l.sol_volume, String(1_980_000_000n + 900_000_000n));
+  assert.equal(l.real_sol, "1080000000", "state follows the newest trade");
+  assert.equal(l.fees_to_treasury, "10000000");
+  assert.equal(l.tokens_donated, "300000000000");
+  assert.equal(l.graduated, 0);
+  scanner.ingest("G", tx(14, [grad]) as never);
+  l = db.launch(mintB58)!;
+  assert.equal(l.graduated, 1);
+  assert.equal(l.real_token, "0");
+  const trades = db.trades(mintB58, 10);
+  assert.deepEqual(trades.map((t) => t.side), ["sell", "buy"]);
+  assert.equal(trades[0].private, 1);
+  assert.equal(db.launches(10, 0).length, 1);
+});

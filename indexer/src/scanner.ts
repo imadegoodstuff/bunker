@@ -10,6 +10,7 @@ function u64le(b: Uint8Array): bigint {
   for (let i = 7; i >= 0; i--) x = (x << 8n) | BigInt(b[i]);
   return x;
 }
+const pk = (b: Uint8Array) => new PublicKey(b).toBase58();
 function hex(b: Uint8Array): string {
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 }
@@ -262,6 +263,35 @@ export class Scanner {
         case "unshield":
         case "donate":
           this.db.insertFlow(signature, tag, mint, u64le(parts[1]).toString(), slot, bt);
+          break;
+        // --- launchpad events (the launch program is reached by CPI from the vault, or CPIs into it, so its
+        // transactions are already in this program's signature history)
+        case "launch": {
+          const [, m, name, symbol, uri, vSol, vTok, curveSupply, totalSupply, grad, dec] = parts;
+          if (parts.length < 11) break;
+          this.db.insertLaunch({
+            mint: pk(m), name: td.decode(name), symbol: td.decode(symbol), uri: td.decode(uri), decimals: dec[0],
+            virtualSol: u64le(vSol).toString(), virtualToken: u64le(vTok).toString(), curveSupply: u64le(curveSupply).toString(),
+            totalSupply: u64le(totalSupply).toString(), graduationLamports: u64le(grad).toString(), signature, slot, blockTime: bt,
+          });
+          break;
+        }
+        case "curve_buy":
+        case "curve_sell": {
+          const [, m, sol, fee, tokens, realSol, realToken, virtualToken, priv] = parts;
+          if (parts.length < 9) break;
+          this.db.insertTrade({
+            signature, mint: pk(m), side: tag === "curve_buy" ? "buy" : "sell", sol: u64le(sol).toString(), fee: u64le(fee).toString(),
+            tokens: u64le(tokens).toString(), isPrivate: priv[0] === 1, realSol: u64le(realSol).toString(), realToken: u64le(realToken).toString(),
+            virtualToken: u64le(virtualToken).toString(), slot, blockTime: bt,
+          });
+          break;
+        }
+        case "harvest":
+          if (parts.length >= 5) this.db.insertHarvest(signature, pk(parts[1]), u64le(parts[2]).toString(), u64le(parts[4]).toString());
+          break;
+        case "graduate":
+          if (parts.length >= 4) this.db.markGraduated(pk(parts[1]), u64le(parts[2]).toString(), u64le(parts[3]).toString());
           break;
       }
     }

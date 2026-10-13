@@ -43,6 +43,45 @@ export class Db {
         PRIMARY KEY (signature, kind)
       );
       CREATE INDEX IF NOT EXISTS flows_mint_slot ON flows(mint, slot);
+      -- launchpad: one row per launched token, updated by every curve event
+      CREATE TABLE IF NOT EXISTS launches (
+        mint TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        uri TEXT NOT NULL,
+        decimals INTEGER NOT NULL,
+        virtual_sol TEXT NOT NULL,
+        virtual_token0 TEXT NOT NULL,
+        curve_supply TEXT NOT NULL,
+        total_supply TEXT NOT NULL,
+        graduation_lamports TEXT NOT NULL,
+        real_sol TEXT NOT NULL DEFAULT '0',
+        real_token TEXT NOT NULL,
+        virtual_token TEXT NOT NULL,
+        graduated INTEGER NOT NULL DEFAULT 0,
+        buys INTEGER NOT NULL DEFAULT 0,
+        sells INTEGER NOT NULL DEFAULT 0,
+        sol_volume TEXT NOT NULL DEFAULT '0',
+        fees_to_treasury TEXT NOT NULL DEFAULT '0',
+        tokens_donated TEXT NOT NULL DEFAULT '0',
+        signature TEXT NOT NULL,
+        slot INTEGER NOT NULL,
+        block_time INTEGER,
+        last_slot INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS trades (
+        signature TEXT NOT NULL,
+        mint TEXT NOT NULL,
+        side TEXT NOT NULL,
+        sol TEXT NOT NULL,
+        fee TEXT NOT NULL,
+        tokens TEXT NOT NULL,
+        private INTEGER NOT NULL,
+        slot INTEGER NOT NULL,
+        block_time INTEGER,
+        PRIMARY KEY (signature, mint, side)
+      );
+      CREATE INDEX IF NOT EXISTS trades_mint_slot ON trades(mint, slot);
     `);
   }
 
@@ -105,6 +144,60 @@ export class Db {
       .all(sinceSlot) as { mint: string; kind: string; n: number; total: number }[];
     return rows;
   }
+  // ---- launchpad
+
+  insertLaunch(l: {
+    mint: string; name: string; symbol: string; uri: string; decimals: number; virtualSol: string; virtualToken: string; curveSupply: string;
+    totalSupply: string; graduationLamports: string; signature: string; slot: number; blockTime: number | null;
+  }) {
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO launches(mint, name, symbol, uri, decimals, virtual_sol, virtual_token0, curve_supply, total_supply, graduation_lamports,
+           real_token, virtual_token, signature, slot, block_time, last_slot) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      )
+      .run(l.mint, l.name, l.symbol, l.uri, l.decimals, l.virtualSol, l.virtualToken, l.curveSupply, l.totalSupply, l.graduationLamports, l.curveSupply, l.virtualToken, l.signature, l.slot, l.blockTime, l.slot);
+  }
+  /** A buy or sell: records the trade and, if it is newer than what we have, the curve state it left behind. */
+  insertTrade(t: { signature: string; mint: string; side: "buy" | "sell"; sol: string; fee: string; tokens: string; isPrivate: boolean; realSol: string; realToken: string; virtualToken: string; slot: number; blockTime: number | null }) {
+    const r = this.db
+      .prepare("INSERT OR IGNORE INTO trades(signature, mint, side, sol, fee, tokens, private, slot, block_time) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run(t.signature, t.mint, t.side, t.sol, t.fee, t.tokens, t.isPrivate ? 1 : 0, t.slot, t.blockTime);
+    if (r.changes === 0) return;
+    this.db
+      .prepare(
+        `UPDATE launches SET buys = buys + ?, sells = sells + ?, sol_volume = CAST(CAST(sol_volume AS INTEGER) + CAST(? AS INTEGER) AS TEXT),
+           real_sol = CASE WHEN ? >= last_slot THEN ? ELSE real_sol END,
+           real_token = CASE WHEN ? >= last_slot THEN ? ELSE real_token END,
+           virtual_token = CASE WHEN ? >= last_slot THEN ? ELSE virtual_token END,
+           last_slot = MAX(last_slot, ?) WHERE mint = ?`
+      )
+      .run(t.side === "buy" ? 1 : 0, t.side === "sell" ? 1 : 0, t.sol, t.slot, t.realSol, t.slot, t.realToken, t.slot, t.virtualToken, t.slot, t.mint);
+  }
+  insertHarvest(signature: string, mint: string, protocol: string, donated: string) {
+    const r = this.db.prepare("INSERT OR IGNORE INTO flows(signature, kind, mint, amount, slot, block_time) VALUES(?,?,?,?,0,NULL)").run(signature, "harvest", mint, protocol);
+    if (r.changes === 0) return;
+    this.db
+      .prepare(
+        `UPDATE launches SET fees_to_treasury = CAST(CAST(fees_to_treasury AS INTEGER) + CAST(? AS INTEGER) AS TEXT),
+           tokens_donated = CAST(CAST(tokens_donated AS INTEGER) + CAST(? AS INTEGER) AS TEXT) WHERE mint = ?`
+      )
+      .run(protocol, donated, mint);
+  }
+  markGraduated(mint: string, realSol: string, realToken: string) {
+    this.db.prepare("UPDATE launches SET graduated = 1, real_sol = ?, real_token = ? WHERE mint = ?").run(realSol, realToken, mint);
+  }
+  launches(limit: number, offset: number) {
+    return this.db.prepare("SELECT * FROM launches ORDER BY slot DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[];
+  }
+  launch(mint: string) {
+    return this.db.prepare("SELECT * FROM launches WHERE mint = ?").get(mint) as Record<string, unknown> | undefined;
+  }
+  trades(mint: string, limit: number, beforeSlot?: number) {
+    return this.db
+      .prepare("SELECT signature, side, sol, fee, tokens, private, slot, block_time FROM trades WHERE mint = ? AND slot < ? ORDER BY slot DESC LIMIT ?")
+      .all(mint, beforeSlot ?? Number.MAX_SAFE_INTEGER, limit) as { signature: string; side: string; sol: string; fee: string; tokens: string; private: number; slot: number; block_time: number | null }[];
+  }
+
   dailyActivity(days: number) {
     return this.db
       .prepare(

@@ -97,4 +97,19 @@ app.get<{ Querystring: { sinceSlot?: string; days?: string } }>("/stats", async 
   return { leaves: db.count(), perMint, daily: db.dailyActivity(Number(req.query.days ?? 30)) };
 });
 
+/**
+ * Launchpad: tokens launched through the shielded curve. Everything here is
+ * public on-chain already (curve reserves, trade sizes, fee flows); what is
+ * absent is who traded — a private trade's only wallet is a throwaway claim key.
+ */
+app.get<{ Querystring: { limit?: string; offset?: string } }>("/launches", async (req) =>
+  db.launches(Math.min(Number(req.query.limit ?? 50), 200), Number(req.query.offset ?? 0))
+);
+app.get<{ Params: { mint: string }; Querystring: { limit?: string; beforeSlot?: string } }>("/launches/:mint", async (req, reply) => {
+  const l = db.launch(req.params.mint);
+  if (!l) return reply.code(404).send({ error: "unknown launch" });
+  const trades = db.trades(req.params.mint, Math.min(Number(req.query.limit ?? 50), 500), req.query.beforeSlot ? Number(req.query.beforeSlot) : undefined);
+  return { ...l, trades };
+});
+
 await app.listen({ port: PORT, host: "0.0.0.0" });
