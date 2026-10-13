@@ -1,10 +1,9 @@
 # Security
 
-scash is beta software running on mainnet-beta. The circuits and programs are
-**not audited** and the current proving keys come from a **development
-setup** whose toxic waste is public by construction (see
-`circuits/scripts/setup-dev.mjs`). Shield only what you can afford to lose
-until the public phase-2 ceremony (`ceremony/README.md`; open, one
+scash runs on Solana mainnet. No independent audit report is published yet,
+and the current proving keys come from a **development setup** whose toxic
+waste is public by construction (see `circuits/scripts/setup-dev.mjs`). Size
+deposits accordingly until the public phase-2 ceremony (`ceremony/README.md`; open, one
 contribution per circuit so far, chain verified in CI) has concluded, the
 ceremony verifying keys are pinned in a tagged release and burned into the
 programs with the upgrade authority revoked, and an independent audit report
@@ -123,8 +122,8 @@ The per-asset turnstile bounds the blast radius of a soundness bug to the
 assets already deposited in that pool. It does not make the circuit correct,
 and it does nothing for privacy bugs. It is a backstop, not a substitute.
 
-Until an audit exists the app shows an "unaudited" notice on every page and
-the SOL pool's TVL cap should stay small.
+Until an audit exists the SOL pool's TVL cap should stay small; the app
+links this document from its FAQ.
 
 ### 3. Memo length is bounded by the packet, and the spec says so
 
@@ -724,7 +723,7 @@ so this section states its boundary rather than its marketing.
   native token (§13 of SPEC) and the launchpad's harvest are separate code
   paths that do the same thing.
 
-### 16. Mainnet beta: what is deployed, under which keys, and why the upgrade authority is still held
+### 16. Mainnet: what is deployed, under which keys, and why the upgrade authority is still held
 
 The project owner decided to run every path on mainnet-beta before the
 phase-2 ceremony has concluded and before any audit. This section records

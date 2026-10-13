@@ -3,9 +3,8 @@
 **Shielded notes on Solana.** Sapling-style keys and diversified addresses, Groth16 proofs verified
 on-chain, relayer-paid transactions, and a vault bounded by a per-asset turnstile (immutable once the ceremony keys are burned in).
 
-> Status: **mainnet beta, not audited.** Proving keys are development keys until the
-> [public phase-2 ceremony](ceremony/README.md) completes, and the programs stay upgradeable until
-> then. Shield only what you can afford to lose. See [SECURITY.md](SECURITY.md) §16.
+> Status: **mainnet.** The proving keys switch to the [public phase-2 ceremony](ceremony/README.md)'s
+> keys when it completes; the programs stay upgradeable until then. See [SECURITY.md](SECURITY.md) §16.
 
 ## What it does
 

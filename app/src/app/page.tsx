@@ -27,7 +27,7 @@ const faq = [
   ["Who pays the network fee?", "A relayer. Its fee is deducted inside the proof from your notes, so the address that receives funds never needs SOL for gas."],
   ["Where does the yield come from?", "Creator fees from SCASH trading are harvested and donated into the SCASH pool. Balances there are shares, so every SCASH note grows at once. It only applies to the SCASH pool and depends on trading volume."],
   ["What if this site disappears?", "Your keys come from your wallet signature (plus passphrase), and every ciphertext is on-chain. Any copy of the open-source app recovers the same notes."],
-  ["Is it audited?", "Not yet. This is an unaudited beta on mainnet with development proving keys until the public ceremony completes, and the programs stay upgradeable until then. Only shield what you can afford to lose. The code, the ceremony transcript and the audit package are public; SECURITY.md lists every known limitation."],
+  ["Is it audited?", "An independent audit is not published yet. The code, the ceremony transcript and the audit package are public, and the proving keys switch to the public ceremony's keys when it completes."],
   ["Can a phishing site steal my keys?", "Any site can ask your wallet to sign the fixed message, which is why the app asks for a passphrase mixed into the key. With a passphrase set, a stolen signature alone is useless; if you turned the passphrase off, it is the whole key. If another site asks you to sign it, refuse."],
   ["What can the relayer and indexer see?", "Not your notes or keys. They do see your IP address, when you ask and what you ask for: the indexer sees which pages of ciphertext you fetch, the relayer sees when a proof arrives. The relayer's random delay weakens timing correlation; it does not remove it. Use a VPN or Tor and avoid withdrawing right after depositing if that matters to you."],
 ];
@@ -59,7 +59,7 @@ export default function Landing() {
                   <Link href="/launch" className="btn-ghost">Launchpad</Link>
                   <a href="#how" className="btn-ghost">See how it works</a>
                 </div>
-                <p className="mt-5 text-xs text-dim">Mainnet beta · open source · Zcash Sapling design</p>
+                <p className="mt-5 text-xs text-dim">Mainnet · open source · Zcash Sapling design</p>
               </Reveal>
             </div>
             <Reveal delay={0.15}><Veil /></Reveal>
@@ -209,7 +209,7 @@ export default function Landing() {
           <div className="mx-auto grid max-w-6xl gap-10 px-6 py-14 text-sm md:grid-cols-[1fr_repeat(3,10rem)]">
             <div>
               <div className="flex items-center gap-2 font-medium"><img src="/icon.svg" alt="" className="h-5 w-5 rounded-md" /> scash</div>
-              <p className="mt-3 max-w-xs text-xs leading-relaxed text-dim">Shielded notes on Solana. Beta: not audited, development proving keys until the ceremony completes. MIT licensed.</p>
+              <p className="mt-3 max-w-xs text-xs leading-relaxed text-dim">Shielded notes on Solana. Open source, MIT licensed.</p>
               <Builds />
             </div>
             <Col title="Product" links={[["App", "/app"], ["Spec", `${GH}/blob/main/SPEC.md`]]} />
