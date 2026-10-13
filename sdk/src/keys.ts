@@ -95,11 +95,20 @@ export function seedFromBackup(s: string): Uint8Array {
   return Uint8Array.from(hex.match(/../g)!, (h) => parseInt(h, 16));
 }
 
+/**
+ * Scalars fed to Baby Jubjub point multiplication are truncated to 250 bits.
+ * Because l ≈ 2^250.6, every 250-bit value is below l; a 251-bit mask (what
+ * Sapling uses on Jubjub, whose l ≈ 2^251.8) would not guarantee that here.
+ * The circuit uses the same width (circuits/src/keys.circom).
+ */
+export const SCALAR_BITS = 250n;
+export const SCALAR_MASK = (1n << SCALAR_BITS) - 1n;
+
 export async function fullViewingKey(spend: SpendingKey): Promise<FullViewingKey> {
   const ak = await poseidon([spend.ask]);
   const nk = await poseidon([spend.nsk]);
   const ivkFull = await poseidon([ak, nk]);
-  const ivk = ivkFull & ((1n << 251n) - 1n);
+  const ivk = ivkFull & SCALAR_MASK;
   return { ak, nk, ovk: spend.ovk, ivk };
 }
 

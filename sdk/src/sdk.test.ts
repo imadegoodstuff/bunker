@@ -2,25 +2,33 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { AddressLookupTableAccount, Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import { BabyJub, poseidon } from "./crypto.js";
-import { spendingKeyFromSeed, fullViewingKey, newAddress, encodeAddress, decodeAddress, groupHash, seedFromSignature, seedToBackup, seedFromBackup, SPENDING_KEY_MESSAGE } from "./keys.js";
+import { spendingKeyFromSeed, fullViewingKey, newAddress, encodeAddress, decodeAddress, groupHash, seedFromSignature, seedToBackup, seedFromBackup, SPENDING_KEY_MESSAGE, SCALAR_MASK } from "./keys.js";
 import { encryptNote, tryDecryptNote, encryptOutgoing, decryptOutgoing, decryptNoteAsSender, NOTE_CIPHERTEXT_LEN, NOTE_CIPHERTEXT_LEN_NO_MEMO, MEMO_MAX, MEMO_BUCKET } from "./encryption.js";
 import { transactIx } from "./program.js";
 import { staticAddresses, buildV0, ataFor } from "./lookup.js";
 import { noteCommitment, nullifier, assetId, freshRandomness, noteRandomness } from "./note.js";
 import { MerkleTree, verifyPath } from "./merkle.js";
 import { extDataHash, serializeExtData, deserializeExtData, NO_EXIT } from "./extdata.js";
-import { encodePublicAmount, decodePublicAmount, P, randomField } from "./field.js";
+import { encodePublicAmount, decodePublicAmount, P, randomField, BJJ_SUBGROUP_ORDER } from "./field.js";
 
 const seed = new Uint8Array(32).fill(7);
 
-test("key derivation is deterministic and ivk fits 251 bits", async () => {
+test("key derivation is deterministic and ivk is a valid Baby Jubjub scalar", async () => {
   const a = spendingKeyFromSeed(seed);
   const b = spendingKeyFromSeed(seed);
   assert.equal(a.ask, b.ask);
   assert.equal(a.nsk, b.nsk);
   const fvk = await fullViewingKey(a);
-  assert.ok(fvk.ivk < 1n << 251n);
   assert.equal(fvk.ak, await poseidon([a.ask]));
+  // 2^250 < l < 2^251: a 251-bit mask would not guarantee ivk < l, so the
+  // mask is 250 bits and every derived ivk must be below the subgroup order.
+  assert.ok(1n << 250n < BJJ_SUBGROUP_ORDER && BJJ_SUBGROUP_ORDER < 1n << 251n);
+  assert.equal(SCALAR_MASK, (1n << 250n) - 1n);
+  for (let i = 0; i < 64; i++) {
+    const s = new Uint8Array(32).fill(i);
+    const { ivk } = await fullViewingKey(spendingKeyFromSeed(s));
+    assert.ok(ivk < BJJ_SUBGROUP_ORDER, `ivk for seed ${i} exceeds l`);
+  }
 });
 
 test("diversified addresses round-trip through bech32m and are unlinkable", async () => {

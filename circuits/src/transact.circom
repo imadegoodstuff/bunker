@@ -67,7 +67,7 @@ template Transact(nIns, nOuts, levels) {
 
     for (var i = 0; i < nIns; i++) {
         inOwner[i] = DiversifiedKeyCheck();
-        for (var b = 0; b < 251; b++) {
+        for (var b = 0; b < 250; b++) {
             inOwner[i].ivkBits[b] <== keys.ivkBits[b];
         }
         inOwner[i].gd[0] <== inGd[i][0];

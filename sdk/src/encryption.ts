@@ -4,7 +4,7 @@ import { blake2b } from "@noble/hashes/blake2.js";
 import { chacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { BabyJub, type Point } from "./crypto.js";
 import { BJJ_SUBGROUP_ORDER, bigIntToBytesBE, bigIntToBytesLE, bytesToBigIntBE, bytesToBigIntLE, concatBytes, randomBytes } from "./field.js";
-import type { Address } from "./keys.js";
+import { SCALAR_MASK, type Address } from "./keys.js";
 import { noteRandomness, type Note } from "./note.js";
 
 const PERSON_ENC = new TextEncoder().encode("scash_NoteEncKey");
@@ -42,7 +42,7 @@ export interface NotePlaintext {
 
 function randomScalar(): bigint {
   while (true) {
-    const s = bytesToBigIntLE(randomBytes(32)) & ((1n << 251n) - 1n);
+    const s = bytesToBigIntLE(randomBytes(32)) & SCALAR_MASK;
     if (s > 0n && s < BJJ_SUBGROUP_ORDER) return s;
   }
 }

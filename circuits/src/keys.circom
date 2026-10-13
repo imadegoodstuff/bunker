@@ -8,12 +8,17 @@ include "circomlib/circuits/babyjub.circom";
 // Derives (ak, nk, ivk bits) from the spending secrets.
 //   ak  = Poseidon(ask)
 //   nk  = Poseidon(nsk)
-//   ivk = Poseidon(ak, nk) truncated to 251 bits
+//   ivk = Poseidon(ak, nk) truncated to 250 bits
+// 250, not 251: the Baby Jubjub subgroup order l is about 2^250.6, so a
+// 251-bit value could exceed l. 250 bits guarantees ivk < l. (Sapling uses
+// 251 because Jubjub's l is about 2^251.8; the number is curve-specific.)
+// The SDK (sdk/src/keys.ts) applies the same mask; a mismatch would make
+// every proof fail at the pk_d check in DiversifiedKeyCheck.
 template ViewingKeys() {
     signal input ask;
     signal input nsk;
     signal output nk;
-    signal output ivkBits[251];
+    signal output ivkBits[250];
     // ak is only needed to derive ivk; Transact never reads it, so it is not an output.
     signal ak;
 
@@ -31,14 +36,14 @@ template ViewingKeys() {
 
     component bits = Num2Bits_strict();
     bits.in <== hIvk.out;
-    for (var i = 0; i < 251; i++) {
+    for (var i = 0; i < 250; i++) {
         ivkBits[i] <== bits.out[i];
     }
 }
 
 // Proves that pk_d = [ivk] g_d on Baby Jubjub and that g_d is on the curve.
 template DiversifiedKeyCheck() {
-    signal input ivkBits[251];
+    signal input ivkBits[250];
     signal input gd[2];
     signal input pkd[2];
 
@@ -46,8 +51,8 @@ template DiversifiedKeyCheck() {
     onCurve.x <== gd[0];
     onCurve.y <== gd[1];
 
-    component mul = EscalarMulAny(251);
-    for (var i = 0; i < 251; i++) {
+    component mul = EscalarMulAny(250);
+    for (var i = 0; i < 250; i++) {
         mul.e[i] <== ivkBits[i];
     }
     mul.p[0] <== gd[0];

@@ -34,10 +34,10 @@ ovk     = H_blake("scash_ExpandSeed", sk || 0x02)[0..32]        outgoing viewing
 
 ak      = Poseidon(ask)                                           spend validating key
 nk      = Poseidon(nsk)                                           nullifier key
-ivk     = Poseidon(ak, nk) mod 2^251                              incoming viewing key
+ivk     = Poseidon(ak, nk) mod 2^250                              incoming viewing key
 ```
 
-`to_scalar` reduces the 64-byte hash modulo `p`. `ivk` is truncated to 251 bits so it is a valid Baby Jubjub scalar below `l`.
+`to_scalar` reduces the 64-byte hash modulo `p`. `ivk` is truncated to **250** bits. The Baby Jubjub prime-subgroup order is `l = 2736030358979909402780800718157159386076813972158567259200215660948447373041 ≈ 2^250.6`, so `2^250 < l < 2^251`: a 250-bit value is always a valid scalar below `l`, a 251-bit one is not. (Sapling truncates to 251 because Jubjub's `l ≈ 2^251.8`; the width is curve-specific and an earlier draft of this spec copied Sapling's number, which was wrong.) Ephemeral scalars `esk` (§12) use the same 250-bit mask plus rejection of 0. The SDK (`SCALAR_MASK` in `sdk/src/keys.ts`) and the circuit (`ViewingKeys`/`DiversifiedKeyCheck` in `circuits/src/keys.circom`) both use 250 bits; `sdk.test.ts` asserts `ivk < l` over many seeds, and because the circuit re-derives `ivk` from `(ask, nsk)` and checks `pk_d = [ivk]·g_d` against the note, any width mismatch between SDK and circuit makes every proof fail. The Rust fixture test verifies a real SDK proof with the exact on-chain verifier, so the three implementations are cross-checked on every CI run.
 
 Key hierarchy and what each level can do:
 
@@ -148,7 +148,7 @@ per output j:
 
 Constraints:
 
-1. `ak = Poseidon(ask)`, `nk = Poseidon(nsk)`, `ivk = Poseidon(ak, nk)` truncated to 251 bits.
+1. `ak = Poseidon(ask)`, `nk = Poseidon(nsk)`, `ivk = Poseidon(ak, nk)` truncated to 250 bits.
 2. For every spend: `pk_d_i == [ivk] g_d_i` (Baby Jubjub scalar multiplication; `g_d_i` must be on the curve and in the subgroup, which is enforced by multiplying `g_d_i` by `l` and checking identity, or more cheaply by requiring the point to be on the curve and relying on the fact that pk_d = [ivk]g_d for a small-order component would be rejected by the owner at receive time; the circuit uses the on-curve check and the client performs the subgroup check).
 3. For every spend: `cm_i = Poseidon(asset, value_i, g_d_i, pk_d_i, rho_i, rcm_i)` and, if `value_i != 0`, `MerkleRoot(cm_i, path_i) == root`. Zero-value spends are dummies and skip the membership check.
 4. For every spend: `nullifiers[i] == Poseidon(nk, rho_i, pos_i)` where `pos_i` is the integer formed by `path_index_i`.
