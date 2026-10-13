@@ -90,7 +90,7 @@ const apply = async (tree, built, wallets) => {
     const idx = await tree.insert(built.proof.outCommitments[i]);
     for (const w of wallets) await w.scan({ index: idx, commitment: built.proof.outCommitments[i], ciphertext: built.ext.ciphertexts[i] }, asset);
   }
-  for (const w of wallets) w.markSpent(built.consumed);
+  for (const w of wallets) w.markSpent(built.consumedNullifiers);
 };
 
 // --- 1. alice shields 1 SOL into the OLD vault

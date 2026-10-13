@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json && node dist/index.js",
+    "test": "tsc -p tsconfig.json && node --test dist/queue.test.js",
     "start": "node dist/index.js"
   },
   "dependencies": {

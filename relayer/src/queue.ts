@@ -15,10 +15,14 @@ export interface Job {
   signature?: string;
   error?: string;
   attempts: number;
+  /** hex nullifiers this job spends; the idempotency key for /relay */
+  nullifiers: string[];
 }
 
 export class SubmitQueue {
   private jobs = new Map<string, Job>();
+  /** nullifier hex → job id, for every job that is not failed */
+  private byNullifier = new Map<string, string>();
   private timer?: NodeJS.Timeout;
 
   constructor(
@@ -28,7 +32,22 @@ export class SubmitQueue {
     public table?: AddressLookupTableAccount
   ) {}
 
-  enqueue(ix: TransactionInstruction): Job {
+  /**
+   * A nullifier can be spent once, so a second request carrying a nullifier of
+   * a live job is the same payment again (the client lost our first response,
+   * or re-proved after a timeout). Return the live job instead of queueing a
+   * duplicate that would burn the relayer's rent and fail on-chain.
+   */
+  findByNullifiers(nullifiers: string[]): Job | undefined {
+    for (const nf of nullifiers) {
+      const id = this.byNullifier.get(nf);
+      const job = id ? this.jobs.get(id) : undefined;
+      if (job && job.status !== "failed") return job;
+    }
+    return undefined;
+  }
+
+  enqueue(ix: TransactionInstruction, nullifiers: string[] = []): Job {
     const now = Date.now();
     const job: Job = {
       id: randomUUID(),
@@ -37,8 +56,10 @@ export class SubmitQueue {
       releaseAt: now + randomInt(this.opts.minDelayMs, this.opts.maxDelayMs + 1),
       status: "queued",
       attempts: 0,
+      nullifiers,
     };
     this.jobs.set(job.id, job);
+    for (const nf of nullifiers) this.byNullifier.set(nf, job.id);
     return job;
   }
 
@@ -57,7 +78,12 @@ export class SubmitQueue {
 
   private gc() {
     const cutoff = Date.now() - 6 * 3600_000;
-    for (const [id, j] of this.jobs) if (j.createdAt < cutoff) this.jobs.delete(id);
+    for (const [id, j] of this.jobs) {
+      if (j.createdAt < cutoff) {
+        this.jobs.delete(id);
+        for (const nf of j.nullifiers) if (this.byNullifier.get(nf) === id) this.byNullifier.delete(nf);
+      }
+    }
   }
 
   private async tick() {

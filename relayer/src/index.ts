@@ -69,10 +69,12 @@ function parseTransact(data: Uint8Array) {
   o += 1; // root index
   const signedShares = dv().getBigInt64(o, true); o += 8;
   const hasAsp = data[o]; o += 1 + (hasAsp ? 32 : 0);
-  const nNf = dv().getUint32(o, true); o += 4 + 32 * nNf;
+  const nNf = dv().getUint32(o, true); o += 4;
+  const nullifiers: string[] = [];
+  for (let i = 0; i < nNf; i++, o += 32) nullifiers.push(Buffer.from(data.subarray(o, o + 32)).toString("hex"));
   const nCm = dv().getUint32(o, true); o += 4 + 32 * nCm;
   const ext = deserializeExtData(data.slice(o));
-  return { signedShares, ext, nNf };
+  return { signedShares, ext, nNf, nullifiers };
 }
 
 const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
@@ -156,6 +158,12 @@ app.post<{ Body: RelayBody }>("/relay", async (req, reply) => {
     return reply.code(402).send({ error: "fee too low", required: required.toString(), relayerCostLamports: costLamports.toString() });
   }
 
+  // --- idempotency: same nullifier ⇒ same payment ⇒ same job
+  const live = queue.findByNullifiers(parsed.nullifiers);
+  if (live) {
+    return reply.code(200).send({ id: live.id, releaseAt: live.releaseAt, duplicate: true, status: live.status, signature: live.signature });
+  }
+
   // --- simulate before accepting (catches bad proofs / stale roots / spent notes)
   const ix = new TransactionInstruction({ programId: PROGRAM, keys, data: Buffer.from(data) });
   const sim = buildV0(signer.publicKey, [ix], (await conn.getLatestBlockhash()).blockhash, queue.table, { cuLimit: queue.opts.cuLimit });
@@ -168,7 +176,7 @@ app.post<{ Body: RelayBody }>("/relay", async (req, reply) => {
     return reply.code(422).send({ error: vaultError ? `simulation failed: ${vaultError}` : "simulation failed", vaultError, details: res.value.err, logs: res.value.logs?.slice(-8) });
   }
 
-  const job = queue.enqueue(ix);
+  const job = queue.enqueue(ix, parsed.nullifiers);
   return { id: job.id, releaseAt: job.releaseAt, cu: res.value.unitsConsumed };
 });
 

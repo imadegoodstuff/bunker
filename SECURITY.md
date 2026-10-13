@@ -478,6 +478,49 @@ it.
   "the code that CI runs on a local validator", and this section is where
   that is stated.
 
+### 12. Retry safety: what happens when the first submission may have succeeded
+
+An eighth review asked whether the §10 re-prove path could double-submit if
+the first attempt landed but the client saw a timeout, and asked for four
+indexer tests. Looking at the question exposed a bug older than the retry.
+
+- **`release` never released anything.** `buildTransact` returned
+  `consumed` as *nullifiers* while `release` deleted pending marks keyed by
+  *commitment*. Every failure path in the app therefore left the input notes
+  reserved until a reload or until the chain spent them; no funds were at
+  risk, but "retry" after an error silently had nothing to spend. `consumed`
+  is now the input commitments (`consumedNullifiers` carries the nullifiers
+  for the e2e scripts), `reserve/release/isPending/isSpent` are explicit, and
+  a test reserves, releases, spends and checks the balance at every step.
+- **Reserved notes stay reserved once the relayer holds the proof.** Before
+  acceptance a failure releases the notes (the stale-root re-prove does this
+  deliberately: nothing was submitted). After acceptance the app no longer
+  treats an error as a failed payment: polling survives transient errors for
+  ~2 minutes, and on any terminal error it first re-syncs the nullifier set
+  from the chain and releases only notes that are still unspent. A payment
+  that landed while the client was offline is therefore recognised as spent,
+  not re-proved.
+- **The relayer is idempotent on nullifiers.** A `/relay` carrying any
+  nullifier of a job that is queued, submitting or confirmed returns that job
+  (`duplicate: true`) instead of simulating and queueing a second
+  transaction that would fail on-chain with `NullifierSpent` after costing
+  the relayer its rent. Failed jobs free their nullifiers so an honest
+  re-prove is accepted. `relayer/src/queue.test.ts` covers all three states
+  and the partial-overlap case (a 4-input spend sharing one note with a
+  queued 2-input one). The chain's nullifier PDA remains the only real
+  double-spend guard; this layer only stops wasted work.
+- **Indexer tests requested, all four present** (`indexer/src/scanner.test.ts`,
+  in CI): `null` then full transaction → leaves written once; a new
+  `Scanner` on the same database resumes the deferred queue after a restart;
+  the same transaction returned again does not duplicate leaves, roots or
+  out-ciphertexts (`INSERT OR IGNORE` on the leaf index, asserted); a
+  transaction that never becomes readable accumulates `attempts`, stays
+  listed, and flips `degraded` past ten minutes — which `/health` turns into
+  HTTP 503 — rather than being forgotten.
+- **Still only a claim:** the commit strings the services return are
+  self-reported; §11 lists what evidence exists (ELF hash on-chain vs. CI
+  `SHA256SUMS`) and what does not (reproducible, attested service images).
+
 ## Design-level guarantees
 
 - **Immutability**: the vault program is deployed without an upgrade authority

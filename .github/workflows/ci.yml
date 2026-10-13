@@ -61,6 +61,8 @@ jobs:
       - run: npm run -w sdk test
       - name: indexer scanner (deferred v1 transactions, contiguous paging)
         run: npm run -w indexer test
+      - name: relayer queue (nullifier idempotency)
+        run: npm run -w relayer test
       - name: compile circuits (constraint counts)
         run: npm run -w circuits build
 

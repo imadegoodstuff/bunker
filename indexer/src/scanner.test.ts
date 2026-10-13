@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { Db } from "./db.js";
-import { Scanner } from "./scanner.js";
+import { Scanner, DEGRADED_AFTER_MS } from "./scanner.js";
 import { contiguousPrefix } from "./paging.js";
 
 const PROGRAM = new PublicKey("A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ");
@@ -163,6 +163,47 @@ test("a deferred signature that comes back null on retry is kept, not evicted", 
   await scanner.tick();
   assert.deepEqual(scanner.skipped(), []);
   assert.equal(db.count(), 4);
+});
+
+test("deferred signatures survive a restart: a new Scanner on the same database resumes the retries", async () => {
+  const db = new Db(":memory:");
+  const history = [{ sig: "s2", tx: transactTx(2, 102) }, { sig: "s1", tx: transactTx(0, 101) }];
+  const missing = new Set(["s2"]);
+  const { conn } = fakeConnection(history, new Set(), missing);
+  const first = new Scanner(conn, db, PROGRAM, 0);
+  await first.tick();
+  assert.deepEqual(first.skipped(), ["s2"]);
+  first.stop();
+
+  // "Restart": fresh Scanner instance, same SQLite file (meta table persisted the queue).
+  const second = new Scanner(conn, db, PROGRAM, 0);
+  assert.deepEqual(second.skipped(), ["s2"], "queue is read back from the database, not from memory");
+  assert.equal(second.db.getMeta("last_signature"), "s2");
+  missing.clear();
+  await second.tick();
+  assert.deepEqual(second.skipped(), []);
+  assert.equal(db.count(), 4);
+});
+
+test("a transaction that never becomes readable raises the degraded flag and stays listed, instead of being forgotten", async () => {
+  const db = new Db(":memory:");
+  const history = [{ sig: "s1", tx: transactTx(0, 101) }];
+  const missing = new Set(["s1"]);
+  const { conn } = fakeConnection(history, new Set(), missing);
+  const scanner = new Scanner(conn, db, PROGRAM, 0);
+  for (let i = 0; i < 5; i++) await scanner.tick();
+  const [d] = scanner.deferred();
+  assert.equal(d.signature, "s1");
+  assert.ok(d.attempts >= 5, `attempts counted (${d.attempts})`);
+  assert.equal(d.lastReason, "rpc returned null");
+  // Not degraded yet (fresh), degraded once older than the threshold — this is what /health turns into a 503.
+  assert.equal(scanner.degraded(d.since + 60_000), false);
+  assert.equal(scanner.degraded(d.since + DEGRADED_AFTER_MS + 1), true);
+  // Still queued: the operator can fix the RPC and the leaves will land.
+  missing.clear();
+  await scanner.tick();
+  assert.deepEqual(scanner.skipped(), []);
+  assert.equal(db.count(), 2);
 });
 
 test("contiguousPrefix stops at the first hole and respects `from`", () => {

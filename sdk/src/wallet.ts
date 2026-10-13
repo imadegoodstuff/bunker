@@ -31,8 +31,10 @@ export interface BuiltTransact {
   aspRoot: bigint;
   instruction: TransactionInstruction;
   outputs: Note[];
-  /** Nullifiers of the notes consumed, to mark them pending locally. */
+  /** Commitments of the input notes, now marked pending; hand back to `release` if the transaction is never submitted. */
   consumed: bigint[];
+  /** Nullifiers of the same input notes (what the chain will record); feed to `markSpent` once confirmed. */
+  consumedNullifiers: bigint[];
 }
 
 export class ShieldedWallet {
@@ -260,13 +262,28 @@ export class ShieldedWallet {
     };
     const instruction = transactIx(accounts, proof, rootIndex, publicShares, opts.aspRoot ?? 0n, ext, opts.programId);
 
-    for (const n of inputs) this.pending.add(n.commitment.toString(16));
-    return { proof, ext, root, rootIndex, publicAmount: publicShares, aspRoot: opts.aspRoot ?? 0n, instruction, outputs, consumed: proof.nullifiers.slice(0, inputs.length) };
+    const consumed = inputs.map((n) => n.commitment);
+    this.reserve(consumed);
+    return { proof, ext, root, rootIndex, publicAmount: publicShares, aspRoot: opts.aspRoot ?? 0n, instruction, outputs, consumed, consumedNullifiers: proof.nullifiers.slice(0, inputs.length) };
   }
 
-  /** Undo a pending mark if a built transaction was never submitted. */
-  release(consumedCommitments: bigint[]) {
-    for (const c of consumedCommitments) this.pending.delete(c.toString(16));
+  /** Mark notes (by commitment) as pending so a second build cannot pick them. */
+  reserve(commitments: bigint[]) {
+    for (const c of commitments) this.pending.add(c.toString(16));
+  }
+
+  /** Undo a pending mark if a built transaction was never submitted. Takes the `consumed` list from `buildTransact`. */
+  release(commitments: bigint[]) {
+    for (const c of commitments) this.pending.delete(c.toString(16));
+  }
+
+  isPending(commitment: bigint): boolean {
+    return this.pending.has(commitment.toString(16));
+  }
+
+  /** True once `markSpent` has seen this note's nullifier on-chain (the note is gone from the wallet). */
+  isSpent(commitment: bigint): boolean {
+    return !this.notes.has(commitment.toString(16));
   }
 }
 

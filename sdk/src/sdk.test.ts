@@ -213,6 +213,45 @@ test("seed derivation: passphrase changes the seed, backup round-trips", async (
   assert.ok(SPENDING_KEY_MESSAGE.includes("SPEND"));
 });
 
+test("note reservation: reserve hides a note, release restores it, markSpent removes it; release after spend is a no-op", async () => {
+  const bjj = await BabyJub.load();
+  const w = await ShieldedWallet.fromSeed(new Uint8Array(32).fill(21));
+  const to = w.address();
+  const asset = assetId(SystemProgram.programId);
+  const notes = [];
+  for (let i = 0; i < 3; i++) {
+    const n = { asset, value: 100n * BigInt(i + 1), gd: groupHash(bjj, to.d)!, pkd: to.pkd, ...freshRandomness() };
+    const ct = encryptNote(bjj, to, n, undefined, false).ciphertext;
+    const sn = await w.scan({ index: i, commitment: await noteCommitment(n), ciphertext: ct }, asset);
+    assert.ok(sn);
+    notes.push(sn);
+  }
+  assert.equal(w.balance(asset), 600n);
+  assert.equal(w.spendable(asset).length, 3);
+
+  // What buildTransact does on success: reserve the inputs by commitment.
+  const consumed = [notes[0].commitment, notes[1].commitment];
+  w.reserve(consumed);
+  assert.equal(w.balance(asset), 300n, "reserved notes are not spendable");
+  assert.equal(w.spendable(asset).length, 1);
+  assert.ok(w.isPending(notes[0].commitment) && !w.isPending(notes[2].commitment));
+
+  // Failure before the relayer accepted: release by the same commitments (the old code released by nullifier and silently did nothing).
+  w.release(consumed);
+  assert.equal(w.balance(asset), 600n, "release must actually restore the notes");
+  assert.equal(w.spendable(asset).length, 3);
+
+  // Reserve again, then the chain confirms: nullifiers arrive, notes are gone, release of the gone ones changes nothing.
+  w.reserve(consumed);
+  const nfs = [await nullifier(w.fvk.nk, notes[0].rho, 0), await nullifier(w.fvk.nk, notes[1].rho, 1)];
+  w.markSpent(nfs);
+  assert.ok(w.isSpent(notes[0].commitment) && w.isSpent(notes[1].commitment) && !w.isSpent(notes[2].commitment));
+  assert.equal(w.balance(asset), 300n);
+  w.release(consumed.filter((c) => !w.isSpent(c)));
+  assert.equal(w.balance(asset), 300n, "a spent note cannot come back through release");
+  assert.equal(w.spendable(asset).length, 1);
+});
+
 test("vault error table matches programs/scash_vault/src/error.rs and classifies simulation errors", async () => {
   const src = await readFile(new URL("../../programs/scash_vault/src/error.rs", import.meta.url), "utf8");
   const body = src.slice(src.indexOf("pub enum VaultError"), src.indexOf("impl From<VaultError>"));

@@ -84,7 +84,7 @@ const applyOutputs = async (built) => {
     const idx = await tree.insert(cm);
     for (const w of [aliceW, bobW]) await w.scan({ index: idx, commitment: cm, ciphertext: built.ext.ciphertexts[i] }, asset);
   }
-  for (const w of [aliceW, bobW]) w.markSpent(built.consumed);
+  for (const w of [aliceW, bobW]) w.markSpent(built.consumedNullifiers);
   const ct = await chainTree();
   if (ct.currentRoot !== (await tree.root())) throw new Error("local root != chain root");
   log(`tree ok: ${tree.size} leaves, root matches chain`);

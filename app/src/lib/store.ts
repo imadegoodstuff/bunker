@@ -273,6 +273,7 @@ async function relayedTransact(
   const act: ActivityItem = { id, kind, asset: asset.symbol, amount, at: Date.now(), status: "pending" };
   set((s) => ({ activity: [act, ...s.activity], tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } }));
   let consumed: bigint[] = [];
+  let accepted = false;
   try {
     const build = async () => {
       const t0 = performance.now();
@@ -308,11 +309,28 @@ async function relayedTransact(
       await get().sync();
       job = await build();
     }
+    // From here on the relayer holds our proof. The notes it spends stay
+    // reserved until the chain says otherwise: a network error while polling
+    // is not a failed payment, and releasing the notes here would let the
+    // user build a second proof for the same nullifiers (the relayer would
+    // answer with the same job — see /relay idempotency — but we should never
+    // get there).
+    accepted = true;
     const wait = Math.max(0, job.releaseAt - Date.now());
     set({ tx: { stage: "confirming", message: `Queued. Relayer releases in ~${Math.ceil(wait / 1000)}s for timing privacy` } });
+    let pollErrors = 0;
     for (;;) {
       await new Promise((r) => setTimeout(r, 2500));
-      const st = await relayer.job(job.id);
+      let st: Awaited<ReturnType<typeof relayer.job>>;
+      try {
+        st = await relayer.job(job.id);
+        pollErrors = 0;
+      } catch (e) {
+        // Keep polling through transient failures; after ~2 minutes of
+        // silence fall back to the chain itself.
+        if (++pollErrors < 48) continue;
+        throw new Error(`lost contact with the relayer: ${(e as Error).message}`);
+      }
       if (st.status === "confirmed") {
         set((s) => ({ tx: { stage: "done", signature: st.signature }, activity: s.activity.map((a) => (a.id === id ? { ...a, status: "confirmed", signature: st.signature } : a)) }));
         break;
@@ -322,7 +340,15 @@ async function relayedTransact(
     await get().refreshPools();
     await get().sync();
   } catch (e) {
-    wallet.release(consumed);
+    if (accepted) {
+      // The relayer may have landed it anyway. Ask the chain: `sync` pulls the
+      // nullifier set and marks spent notes; whatever is still unspent after
+      // that is genuinely ours again.
+      await get().sync().catch(() => undefined);
+      wallet.release(consumed.filter((nf) => !wallet.isSpent(nf)));
+    } else {
+      wallet.release(consumed);
+    }
     const msg = (e as Error).message;
     set((s) => ({ tx: { stage: "failed", message: msg }, activity: s.activity.map((a) => (a.id === id ? { ...a, status: "failed", error: msg } : a)) }));
     throw e;

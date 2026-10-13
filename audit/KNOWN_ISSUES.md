@@ -50,3 +50,5 @@ entry says whether it is accepted, planned, or blocked on something external.
 | SECURITY.md said 40 bits ≈ 10 000 years at 10⁵ guesses/s | 64 days expected; table and pinned test; floor raised to 50 bits; phrases scored as phrases | `SECURITY.md` §10 |
 | Scanner dropped `null` RPC results (not indexed, not queued) and evicted queued signatures on `null` | `null` and thrown errors both defer; attempts/age tracked; tests for both paths | `SECURITY.md` §11 |
 | App detected stale roots by regex over RPC error JSON | SDK `VAULT_ERRORS` mirrored from `error.rs` (test-pinned); relayer returns `vaultError`; app uses the field | `SECURITY.md` §11 |
+| `ShieldedWallet.release` keyed by nullifier while `consumed` held commitments: notes stayed reserved after any failure | `consumed` = commitments, `consumedNullifiers` added, `reserve/release/isPending/isSpent` tested | `SECURITY.md` §12 |
+| Client could re-prove the same notes after a lost relayer response | notes stay reserved after acceptance, chain re-sync before release; relayer idempotent on nullifiers (`queue.test.ts`) | `SECURITY.md` §12 |
