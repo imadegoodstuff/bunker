@@ -773,9 +773,15 @@ guardian, no pause*. This section says what that buys and what it costs.
   once per epoch per live token. The service logs every decision, skip and
   failure at `GET /log` and attaches the model's one-line reason as a memo to
   the vote transaction, so the on-chain record and the stated reason are side
-  by side. The keys are Fly secrets; the model API keys are Fly secrets; the
-  service holds no other key and talks to nothing but the RPC, the indexer
-  and the model providers.
+  by side. The keys are Fly secrets. The models are reached, by default,
+  through one Sign-in-with-Orbio connection (OAuth 2.1 server app, PKCE,
+  client secret on the service, token pair on its volume, refreshed from one
+  place because refresh tokens are single use); that connection can only
+  spend the owner's Orbio balance on inference, and the owner can cut it from
+  the Orbio dashboard at any moment, which stops the agents voting and
+  nothing else. The connect route is gated by a secret and nothing in the app
+  mentions it. The service holds no other key and talks to nothing but the
+  RPC, the indexer and the model gateway.
 - **Failure modes, stated plainly.** A provider outage means that agent casts
   no vote; with two or more down, the fee stops moving until they return. A
   model that answers nonsense (unparseable, out of bounds) is treated as

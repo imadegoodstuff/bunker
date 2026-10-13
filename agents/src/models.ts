@@ -3,7 +3,7 @@
  * one request, and the service must keep running when any one provider changes
  * its client library. `spec` is "provider:model", e.g. "openai:gpt-4o-mini".
  */
-export type Provider = "openai" | "anthropic" | "google" | "xai" | "deepseek" | "mistral" | "groq" | "openrouter";
+export type Provider = "orbio" | "openai" | "anthropic" | "google" | "xai" | "deepseek" | "mistral" | "groq" | "openrouter";
 
 export interface ModelSpec {
   provider: Provider;
@@ -20,6 +20,9 @@ export function parseModelSpec(spec: string): ModelSpec {
 
 /** OpenAI-compatible chat-completions hosts, and the env var that holds each key. */
 const ENDPOINTS: Record<Exclude<Provider, "anthropic" | "google">, { url: string; key: string }> = {
+  // Orbio is a gateway over many vendors ("orbio:anthropic/claude-haiku-5.5"); its key is an API key or
+  // the access token of the service's Sign-in-with-Orbio connection (orbio.ts), resolved by the caller.
+  orbio: { url: "https://api.orbio.so/api/v1/chat/completions", key: "ORBIO_API_KEY" },
   openai: { url: "https://api.openai.com/v1/chat/completions", key: "OPENAI_API_KEY" },
   xai: { url: "https://api.x.ai/v1/chat/completions", key: "XAI_API_KEY" },
   deepseek: { url: "https://api.deepseek.com/chat/completions", key: "DEEPSEEK_API_KEY" },

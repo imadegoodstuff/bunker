@@ -16,6 +16,8 @@ import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction, se
 import { LAUNCH_PROGRAM_ID, curvePda, decodeCurve, epochOf, policy, rolled, voteIx, type CurveState } from "@scash/sdk";
 import { parseDecision, prompt, shouldSend, type Decision, type TokenView } from "./decide.js";
 import { complete, keyEnvFor, parseModelSpec, type ModelSpec } from "./models.js";
+import { Orbio } from "./orbio.js";
+import { existsSync } from "node:fs";
 
 const RPC = process.env.RPC_URL ?? "https://api.mainnet-beta.solana.com";
 const INDEXER = (process.env.INDEXER_URL ?? "http://localhost:8788").replace(/\/$/, "");
@@ -31,23 +33,48 @@ const PERSONAS = [
   "You lean toward reacting quickly to the most recent trades over long averages.",
 ];
 
+/** Four vendors through the one Orbio connection, used when AGENT_i_MODEL is not set. */
+const DEFAULT_MODELS = ["orbio:openai/gpt-6-luna", "orbio:anthropic/claude-haiku-5.5", "orbio:google/gemini-3.8-flash", "orbio:x-ai/grok-4.7"];
+
+// Sign in with Orbio (server app). The owner connects once at /auth/orbio/start; tokens live on the volume.
+const PUBLIC_URL = (process.env.PUBLIC_URL ?? `http://localhost:${PORT}`).replace(/\/$/, "");
+const orbio = process.env.ORBIO_CLIENT_ID && process.env.ORBIO_CLIENT_SECRET
+  ? new Orbio({
+      clientId: process.env.ORBIO_CLIENT_ID,
+      clientSecret: process.env.ORBIO_CLIENT_SECRET,
+      redirectUri: process.env.ORBIO_REDIRECT_URI ?? `${PUBLIC_URL}/auth/orbio/callback`,
+      tokenPath: process.env.ORBIO_TOKEN_PATH ?? (existsSync("/data") ? "/data/orbio.json" : "./orbio.json"),
+    })
+  : null;
+/** gates /auth/orbio/start so only the owner can (re)connect; the callback itself is protected by `state` */
+const CONNECT_SECRET = process.env.ORBIO_CONNECT_SECRET;
+
 interface Agent {
   index: number;
   key: Keypair;
   model: ModelSpec;
-  apiKey: string;
+  /** a static provider key, or undefined for Orbio through the OAuth connection */
+  apiKey?: string;
 }
 
-/** AGENT_{i}_KEYPAIR: JSON byte array of the secret key. AGENT_{i}_MODEL: provider:model. The provider's key comes from its own env var. */
+async function keyFor(a: Agent): Promise<string> {
+  if (a.apiKey) return a.apiKey;
+  if (!orbio) throw new Error("no key for this model");
+  return orbio.token();
+}
+
+/** AGENT_{i}_KEYPAIR: JSON byte array of the secret key. AGENT_{i}_MODEL: provider:model (default: four vendors via Orbio). */
 function loadAgents(): Agent[] {
   const agents: Agent[] = [];
   for (let i = 0; i < policy.AGENTS; i++) {
     const kp = process.env[`AGENT_${i}_KEYPAIR`];
-    const spec = process.env[`AGENT_${i}_MODEL`];
-    if (!kp || !spec) throw new Error(`AGENT_${i}_KEYPAIR and AGENT_${i}_MODEL are required (four agents, no fewer)`);
+    if (!kp) throw new Error(`AGENT_${i}_KEYPAIR is required (four agents, no fewer)`);
+    const spec = process.env[`AGENT_${i}_MODEL`] ?? DEFAULT_MODELS[i];
     const model = parseModelSpec(spec);
     const apiKey = process.env[keyEnvFor(model.provider)];
-    if (!apiKey) throw new Error(`${keyEnvFor(model.provider)} is required for agent ${i} (${spec})`);
+    if (!apiKey && !(model.provider === "orbio" && orbio)) {
+      throw new Error(`${keyEnvFor(model.provider)}${model.provider === "orbio" ? " or ORBIO_CLIENT_ID + ORBIO_CLIENT_SECRET" : ""} is required for agent ${i} (${spec})`);
+    }
     agents.push({ index: i, key: Keypair.fromSecretKey(Uint8Array.from(JSON.parse(kp) as number[])), model, apiKey });
   }
   const distinct = new Set(agents.map((a) => a.key.publicKey.toBase58()));
@@ -141,7 +168,7 @@ async function tick() {
       const base: LogEntry = { at: Date.now(), slot: slot.toString(), epoch: epoch.toString(), agent: a.index, agentKey: a.key.publicKey.toBase58(), model: `${a.model.provider}:${a.model.model}`, mint: launches[i].mint, symbol: launches[i].symbol };
       try {
         v ??= await view(launches[i], curve, slot);
-        const text = await complete(a.model, prompt(v, PERSONAS[a.index]), a.apiKey);
+        const text = await complete(a.model, prompt(v, PERSONAS[a.index]), await keyFor(a));
         const d = parseDecision(text);
         if (!d) {
           record({ ...base, error: `model returned no usable vote: ${text.slice(0, 120)}` });
@@ -178,9 +205,24 @@ void loop();
 const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
 await app.register(cors, { origin: true });
 app.get("/live", async () => ({ ok: true }));
+
+// Sign in with Orbio: owner-only start, state-checked callback. No UI anywhere else mentions it.
+app.get<{ Querystring: { key?: string } }>("/auth/orbio/start", async (req, reply) => {
+  if (!orbio) return reply.code(404).send("Orbio is not configured");
+  if (!CONNECT_SECRET || req.query.key !== CONNECT_SECRET) return reply.code(403).send("forbidden");
+  return reply.redirect(orbio.startUrl());
+});
+app.get<{ Querystring: Record<string, string | undefined> }>("/auth/orbio/callback", async (req, reply) => {
+  if (!orbio) return reply.code(404).send("Orbio is not configured");
+  const r = await orbio.handleCallback(req.query);
+  console.log(`[agents] orbio: ${r.message}`);
+  return reply.code(r.ok ? 200 : 400).type("text/plain").send(r.message);
+});
+
 app.get("/health", async () => ({
   ok: !lastTick.error,
   lastTick,
+  orbio: orbio ? (orbio.connected ? "connected" : orbio.disconnectedReason ? "disconnected" : "not connected") : "unused",
   program: PROGRAM.toBase58(),
   agents: agents.map((a) => ({ index: a.index, key: a.key.publicKey.toBase58(), model: `${a.model.provider}:${a.model.model}` })),
   policy: Object.fromEntries(Object.entries(policy).map(([k, v]) => [k, typeof v === "bigint" ? v.toString() : v])),

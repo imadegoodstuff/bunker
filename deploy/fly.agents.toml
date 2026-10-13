@@ -8,16 +8,28 @@ primary_region = "sin"
 
 # Secrets (set with `flyctl secrets set`, never in this file):
 #   AGENT_0_KEYPAIR … AGENT_3_KEYPAIR   JSON byte arrays of the four agent keys (must match the launchpad's `agents`)
-#   AGENT_0_MODEL   … AGENT_3_MODEL     provider:model, one different provider per agent, e.g.
-#                                       openai:gpt-4o-mini, anthropic:claude-3-5-haiku-latest, google:gemini-2.0-flash, xai:grok-3-mini
-#   OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY / XAI_API_KEY / …   the providers' keys
-#   RPC_URL                             keyed endpoint (overrides the public fallback below)
+#   ORBIO_CLIENT_ID, ORBIO_CLIENT_SECRET  the "Sign in with Orbio" server app; redirect URI
+#                                         https://scash-agents.fly.dev/auth/orbio/callback must be registered there
+#   ORBIO_CONNECT_SECRET                  random string; the owner connects once at
+#                                         https://scash-agents.fly.dev/auth/orbio/start?key=<it>
+#   AGENT_0_MODEL … AGENT_3_MODEL         optional; default is four vendors through Orbio
+#                                         (orbio:openai/gpt-6-luna, orbio:anthropic/claude-haiku-5.5,
+#                                          orbio:google/gemini-3.8-flash, orbio:x-ai/grok-4.7).
+#                                         Direct providers (openai:…, anthropic:…) need their own *_API_KEY.
+#   RPC_URL                               keyed endpoint (overrides the public fallback below)
 [env]
   PORT = "8789"
+  PUBLIC_URL = "https://scash-agents.fly.dev"
   RPC_URL = "https://api.mainnet-beta.solana.com"
   INDEXER_URL = "https://scash-indexer.fly.dev"
   LAUNCH_PROGRAM_ID = "861VJkPL2yUYL1DTCToeziREP4XyraihkqbTM1irFZ3k"
   TICK_MS = "60000"
+  ORBIO_TOKEN_PATH = "/data/orbio.json"
+
+# The Orbio token pair (refresh tokens are single use) must survive restarts.
+[mounts]
+  source = "scash_agents_data"
+  destination = "/data"
 
 [http_service]
   internal_port = 8789
