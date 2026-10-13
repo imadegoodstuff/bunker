@@ -56,6 +56,7 @@ export default function Landing() {
                 </p>
                 <div className="mt-9 flex flex-wrap items-center gap-3">
                   <Link href="/app" className="btn-primary px-6">Open app</Link>
+                  <Link href="/launch" className="btn-ghost">Launchpad</Link>
                   <a href="#how" className="btn-ghost">See how it works</a>
                 </div>
                 <p className="mt-5 text-xs text-dim">Mainnet beta · open source · Zcash Sapling design</p>

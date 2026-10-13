@@ -24,7 +24,7 @@ export function Nav({ app = false }: { app?: boolean }) {
               <Link href="/#faq" className="link hidden md:inline">FAQ</Link>
             </>
           )}
-          {app && <Link href="/launch" className="link hidden sm:inline">Launchpad</Link>}
+          <Link href="/launch" className="link hidden sm:inline">Launchpad</Link>
           <a href="https://github.com/imadegoodstuff/scash" target="_blank" rel="noreferrer" className="link hidden sm:inline">GitHub</a>
           {app ? <WalletButton /> : <Link href="/app" className="btn-primary !h-10">Open app</Link>}
         </nav>

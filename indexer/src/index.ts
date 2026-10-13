@@ -16,7 +16,15 @@ const PORT = Number(process.env.PORT ?? 8788);
 // RPC_URLS: comma-separated fallbacks tried in order after RPC_URL whenever the
 // primary throws or returns null for a confirmed signature.
 const RPC_LIST = [RPC, ...(process.env.RPC_URLS ?? "").split(",").map((s) => s.trim()).filter((s) => s && s !== RPC)];
-const redact = (u: string) => u.replace(/\/\/.*@/, "//").replace(/(api[-_]?key|token)=([^&]*)/gi, "$1=…");
+/** Keyed endpoints carry the key in the path (Alchemy, Helius, QuickNode…) or the query; /health shows the host only. */
+const redact = (u: string) => {
+  try {
+    const x = new URL(u);
+    return `${x.protocol}//${x.host}${x.pathname === "/" ? "" : "/…"}`;
+  } catch {
+    return "…";
+  }
+};
 
 const db = new Db(DB_PATH);
 const conns = RPC_LIST.map((u) => new Connection(u, "confirmed"));
