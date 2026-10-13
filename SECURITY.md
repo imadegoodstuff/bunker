@@ -118,7 +118,11 @@ outline. Treat the anonymity numbers in the app as upper bounds.
 - `cargo clippy --workspace --all-targets -D warnings`
 - `cargo audit` (RustSec advisory database)
 - `circomspect` on `transact2x2` and `transact4x2`
-- `npm audit --omit=dev --audit-level=high`
+- `npm audit` on production dependencies via `scripts/audit.mjs`: fixable
+  advisories are pinned with `overrides` in `package.json`; the few that
+  upstream has not fixed are listed in `npm-audit-allow.json`, each with a
+  written reason why the vulnerable path is not reachable from scash. Anything
+  new fails the build.
 - SDK unit tests including the packet-size test
 - Rust tests including verification of real SDK proofs by the exact on-chain
   verifier (`programs/scash_vault/tests/verify_fixture.rs`)

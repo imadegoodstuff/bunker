@@ -82,8 +82,8 @@ jobs:
           cargo install circomspect --locked
           npm run -w circuits build
           node circuits/scripts/lint.mjs
-      - name: npm audit (production deps only)
-        run: npm audit --omit=dev --audit-level=high
+      - name: npm audit (production deps; findings must be pinned via overrides or allow-listed in npm-audit-allow.json)
+        run: node scripts/audit.mjs
 
   e2e:
     name: end-to-end on a local validator
