@@ -72,11 +72,14 @@ for (const name of circuits) {
   const zkey = join(dir, `${name}_dev.zkey`);
   console.log(`[setup] ${name}: ${info.nConstraints} constraints -> ptau 2^${power}`);
   await snarkjs.zKey.newZKey(r1cs, ptau, zkey0);
-  // Fixed entropy on purpose: DEV keys must be reproducible so that the VK
+  // Deterministic on purpose: DEV keys must be reproducible so that the VK
   // compiled into the program matches a zkey rebuilt anywhere (CI, laptops).
-  // Anyone can derive the toxic waste, which is exactly why these keys are
-  // never used on mainnet (see ceremony/README.md).
-  await snarkjs.zKey.contribute(zkey0, zkey, "scash dev contribution", process.env.SCASH_DEV_ENTROPY ?? "scash-dev-entropy-not-for-production");
+  // `zKey.contribute` always mixes in OS randomness, so we use a *beacon*
+  // step with a fixed, public hash instead. Anyone can derive the toxic
+  // waste, which is exactly why these keys are never used on mainnet
+  // (see ceremony/README.md).
+  const beacon = process.env.SCASH_DEV_BEACON ?? "73636173682d6465762d626561636f6e2d6e6f742d666f722d70726f64756374"; // "scash-dev-beacon-not-for-product" as hex
+  await snarkjs.zKey.beacon(zkey0, zkey, "scash dev beacon", beacon, 10);
   const vk = await snarkjs.zKey.exportVerificationKey(zkey);
   const { writeFileSync, rmSync } = await import("node:fs");
   writeFileSync(join(dir, `${name}_vk.json`), JSON.stringify(vk, null, 2));
