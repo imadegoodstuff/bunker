@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900">
+  <defs>
+    <radialGradient id="v" cx="0.25" cy="0.35" r="1">
+      <stop offset="0" stop-color="#141416"/>
+      <stop offset="1" stop-color="#09090a"/>
+    </radialGradient>
+    <linearGradient id="arc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e8a75c"/>
+      <stop offset="1" stop-color="#e8a75c" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="900" fill="url(#v)"/>
+  <g fill="none" stroke="#242428" stroke-width="1.2">
+    <circle cx="1330" cy="430" r="150"/>
+    <circle cx="1330" cy="430" r="230"/>
+    <circle cx="1330" cy="430" r="310"/>
+    <circle cx="1330" cy="430" r="390"/>
+  </g>
+  <path d="M1330 40 A390 390 0 0 0 940 430" fill="none" stroke="url(#arc)" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M1330 200 A230 230 0 0 1 1560 430" fill="none" stroke="#e8a75c" stroke-opacity="0.5" stroke-width="2" stroke-linecap="round"/>
+  <g fill="#e8a75c"><circle cx="1330" cy="40" r="4"/><circle cx="1560" cy="430" r="3.5"/></g>
+  <g fill="#3a3a40"><circle cx="1180" cy="430" r="3"/><circle cx="1493" cy="267" r="3"/><circle cx="1330" cy="740" r="3"/><circle cx="1020" cy="430" r="2.5"/></g>
+  <g transform="translate(96 88) scale(1.25)">
+    <rect width="64" height="64" rx="14" fill="#0a0a0a" stroke="#242428" stroke-width="0.75"/>
+    <path d="M42 22c-2-4-6-6-10-6-6 0-11 3.5-11 9 0 5 4 7 10 8.5 5 1.2 7 2.2 7 4.5 0 2.6-2.8 4-6 4-4 0-7-2-9-5" fill="none" stroke="#ededed" stroke-width="4.5" stroke-linecap="round"/>
+  </g>
+  <text x="196" y="146" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="500" letter-spacing="-1" fill="#ededed">scash</text>
+  <rect x="318" y="116" width="98" height="30" rx="15" fill="none" stroke="#2a2a2e"/>
+  <text x="367" y="137" text-anchor="middle" font-family="'JetBrains Mono', Consolas, monospace" font-size="14" letter-spacing="2" fill="#8a8a90">MAINNET</text>
+  <text font-family="Inter, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="88" font-weight="500" letter-spacing="-3.5" fill="#ededed">
+    <tspan x="96" y="330">Solana's first</tspan>
+    <tspan x="96" y="430">shielded pool.</tspan>
+    <tspan x="96" y="530" fill="#8a8a90">Private launches, too.</tspan>
+  </text>
+  <g font-family="Inter, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="26" fill="#bdbdc4">
+    <g transform="translate(96 630)">
+      <circle cx="8" cy="-9" r="4" fill="#e8a75c"/><text x="28" y="0">No admin key, no pause, no multisig</text>
+    </g>
+    <g transform="translate(96 682)">
+      <circle cx="8" cy="-9" r="4" fill="#e8a75c"/><text x="28" y="0">Zero protocol fee. Total out can never exceed total in, enforced on-chain</text>
+    </g>
+    <g transform="translate(96 734)">
+      <circle cx="8" cy="-9" r="4" fill="#e8a75c"/><text x="28" y="0">4 AI agents set the curve tax. Every lamport buys back $SCASH</text>
+    </g>
+  </g>
+  <text x="96" y="830" font-family="'JetBrains Mono', Consolas, monospace" font-size="24" letter-spacing="1" fill="#ededed">scash.site</text>
+  <text x="1504" y="830" text-anchor="end" font-family="'JetBrains Mono', Consolas, monospace" font-size="18" letter-spacing="2" fill="#6b6b72">OPEN SOURCE / BYTECODE VERIFIED</text>
+</svg>

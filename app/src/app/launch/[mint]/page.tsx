@@ -10,7 +10,8 @@ import { useLaunchpad, priceLamportsPerToken, CLAIM_BUDGET, SLIPPAGE_BPS, SOL, t
 import { useScash } from "@/lib/store";
 import { indexer, type LaunchRow, type TradeRow, type FeeEventRow } from "@/lib/api";
 import { fmtAmount, fmtPrice, parseAmount, short, timeAgo } from "@/lib/format";
-import { explorerTx, explorerAddr } from "@/lib/config";
+import { explorerTx, explorerAddr, ASSETS } from "@/lib/config";
+import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 
 const BUY_SIZES = [0.1, 0.25, 0.5, 1, 2];
 const SELL_PARTS: [string, bigint][] = [["25%", 25n], ["50%", 50n], ["100%", 100n]];
@@ -165,8 +166,19 @@ function UnlockToTrade({ symbol }: { symbol: string }) {
 
 function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string; curve: CurveState; worstFee: number; symbol: string; decimals: number }) {
   const { buy, sell, busy, rents, tokenPools } = useLaunchpad();
-  const { balances, pools, tokenBalances, relayer } = useScash();
+  const { balances, pools, tokenBalances, relayer, walletBalances, scanWallet, shield } = useScash();
+  const { publicKey, sendTransaction } = useWallet();
+  const { connection } = useConnection();
   const [side, setSide] = useState<"buy" | "sell">("buy");
+  const [shielding, setShielding] = useState(false);
+  // know how much public SOL the connected wallet holds, so a buy can top up the shielded balance from it
+  const owner = publicKey?.toBase58();
+  useEffect(() => {
+    if (!publicKey) return;
+    void scanWallet(publicKey).catch(() => undefined);
+    const t = setInterval(() => void scanWallet(publicKey).catch(() => undefined), 60_000);
+    return () => clearInterval(t);
+  }, [owner]); // publicKey is keyed by `owner`
   const [buySize, setBuySize] = useState(0.5);
   const [sellPart, setSellPart] = useState(50n);
   // "custom" lets the trader type any amount; the chips stay the recommended path
@@ -213,12 +225,29 @@ function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string;
     }
   }, [side, buySize, sellPart, custom, customBuy, customSell, decimals, symbol, solPool, tokenPool, tokAvail, curve, worstFee, rents, feePolicy]);
 
+  // A buy spends shielded SOL. When there is not enough, the missing part can be
+  // shielded from the connected wallet first (one wallet approval), then the
+  // buy proceeds as usual. The shield is public like any shield; the buy is not.
+  const walletSol = walletBalances.SOL;
+  const shortfall = side === "buy" && quote && !("error" in quote) && quote.amount > solAvail ? quote.amount - solAvail : 0n;
+  const SHIELD_BUFFER = 20_000n; // rounding of shares→amount plus a hair of slack, lamports
+  const topUp = shortfall > 0n ? shortfall + SHIELD_BUFFER : 0n;
+  const walletCanCover = topUp > 0n && !!publicKey && walletSol !== undefined && walletSol >= topUp + 5_000_000n; // keep ~0.005 SOL for fees
+
   const submit = async () => {
     setErr(null); setDone(null);
     if (!quote || "error" in quote) return;
     try {
       if (side === "buy") {
-        if (quote.amount > solAvail) throw new Error("More than your shielded SOL");
+        if (quote.amount > solAvail) {
+          if (!walletCanCover || !publicKey) throw new Error(walletSol === undefined ? "Connect a wallet or shield SOL first" : `Not enough SOL: you need ${fmtAmount(topUp, 9, 4)} more, the wallet holds ${fmtAmount(walletSol, 9, 4)}`);
+          setShielding(true);
+          try {
+            await shield(ASSETS[0], topUp, publicKey, (tx) => sendTransaction(tx, connection));
+          } finally {
+            setShielding(false);
+          }
+        }
         await buy(mint, quote.amount);
         setDone(`Bought and claimed ${fmtAmount(quote.out, decimals, 0)} ${symbol} into your shielded notes.`);
       } else {
@@ -230,7 +259,7 @@ function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string;
     }
   };
 
-  const disabled = !!busy || curve.graduated || !relayer?.launchProgram || !quote || "error" in quote || (side === "sell" && tokAvail === 0n);
+  const disabled = !!busy || shielding || curve.graduated || !relayer?.launchProgram || !quote || "error" in quote || (side === "sell" && tokAvail === 0n) || (side === "buy" && shortfall > 0n && !walletCanCover);
 
   return (
     <section className="glass px-7 py-6">
@@ -248,7 +277,9 @@ function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string;
           : SELL_PARTS.map(([label, p]) => <button key={label} className="chip" data-active={!custom && sellPart === p} aria-pressed={!custom && sellPart === p} onClick={() => { setCustom(false); setSellPart(p); }}>{label}</button>)}
         <button className="chip" data-active={custom} aria-pressed={custom} onClick={() => setCustom(true)}>custom</button>
         <span className="ml-auto self-center text-[11px] text-dim">
-          {side === "buy" ? `shielded SOL: ${fmtAmount(solAvail, 9, 3)}` : `shielded ${symbol}: ${fmtAmount(tokAvail, decimals, 0)}`}
+          {side === "buy"
+            ? <>shielded SOL: {fmtAmount(solAvail, 9, 3)}{walletSol !== undefined && <> · wallet: {fmtAmount(walletSol, 9, 3)}</>}</>
+            : `shielded ${symbol}: ${fmtAmount(tokAvail, decimals, 0)}`}
         </span>
       </div>
       {custom && (
@@ -281,6 +312,9 @@ function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string;
             <Row k="You receive" v={side === "buy" ? `≈ ${fmtAmount(quote.out, decimals, 0)} ${symbol}` : `≈ ${fmtAmount(quote.out, 9, 4)} SOL`} strong />
             <Row k={worstFee > curve.tradeFeeBps ? `Minimum (if the fee steps to ${(worstFee / 100).toFixed(1)}%)` : "Minimum"} v={side === "buy" ? `${fmtAmount(quote.minOut, decimals, 0)} ${symbol}` : `${fmtAmount(quote.minOut, 9, 4)} SOL`} />
             {quote.refund > 0n && <Row k="Graduation" v={`this buy takes the last tokens; ${fmtAmount(quote.refund, 9, 4)} SOL comes back to your claim key and the curve moves to Raydium`} />}
+            {side === "buy" && shortfall > 0n && (
+              <Row k="From your wallet" v={walletCanCover ? `${fmtAmount(topUp, 9, 4)} SOL is shielded first (public, one approval), then the buy runs privately` : walletSol === undefined ? "connect a wallet to top up" : `wallet holds ${fmtAmount(walletSol, 9, 4)} SOL, not enough`} />
+            )}
           </>
         ) : (
           <Row k="Quote" v={quote && "error" in quote ? quote.error : side === "sell" && tokAvail === 0n ? `no shielded ${symbol} yet` : "—"} />
@@ -293,7 +327,7 @@ function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string;
       {err && <p className="mt-3 text-sm text-bad">{err}</p>}
       {done && <p className="mt-3 text-sm text-accent">{done}</p>}
       <button className="btn-primary mt-4 h-12 w-full text-[15px]" disabled={disabled} onClick={submit}>
-        {busy === "buy" ? "Buying, then claiming…" : busy === "sell" ? "Selling, then claiming…" : side === "buy" ? `Buy ${symbol} privately` : `Sell ${symbol} privately`}
+        {shielding ? "Shielding SOL from your wallet…" : busy === "buy" ? "Buying, then claiming…" : busy === "sell" ? "Selling, then claiming…" : side === "buy" ? shortfall > 0n && walletCanCover ? `Shield ${fmtAmount(topUp, 9, 3)} SOL, then buy ${symbol} privately` : `Buy ${symbol} privately` : `Sell ${symbol} privately`}
       </button>
     </section>
   );
