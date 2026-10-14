@@ -12,7 +12,7 @@ primary_region = "sin"
   NEXT_PUBLIC_INDEXER_URL = "https://scash-indexer.fly.dev"
   NEXT_PUBLIC_RELAYER_URL = "https://scash-relayer.fly.dev"
   NEXT_PUBLIC_PROGRAM_ID = "89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR"
-  NEXT_PUBLIC_SITE_URL = "https://scash.fly.dev"
+  NEXT_PUBLIC_SITE_URL = "https://scash.site"
 
 [http_service]
   internal_port = 3000
@@ -33,5 +33,5 @@ primary_region = "sin"
   path = "/"
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "512mb"
+  size = "shared-cpu-8x"
+  memory = "2gb"
