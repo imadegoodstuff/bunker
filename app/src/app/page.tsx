@@ -10,9 +10,20 @@ import { Builds } from "@/components/landing/Builds";
 const GH = "https://github.com/imadegoodstuff/scash";
 
 const steps = [
-  { n: "01", t: "Shield", b: "Move SOL or tokens from your wallet into the pool. This is the only public step." , icon: ShieldIcon },
-  { n: "02", t: "Send", b: "Pay any scash address. Amount, sender and recipient are encrypted; a relayer pays gas.", icon: SendIcon },
+  { n: "01", t: "Shield", b: "Move SOL or any token from your wallet into the pool. One signature. This is the only public step you ever take.", icon: ShieldIcon },
+  { n: "02", t: "Send, trade, hold", b: "Pay any scash address, buy a launch, or just sit. Amount, sender and recipient are encrypted; a relayer pays gas, so the receiving side never needs SOL.", icon: SendIcon },
   { n: "03", t: "Withdraw", b: "Exit to a fresh wallet whenever you like. Nothing on-chain links it to the deposit; round amounts and patience keep timing from doing so.", icon: ExitIcon },
+];
+
+const why: [string, string][] = [
+  ["No pause switch. No admin. No multisig.", "There is no key that can freeze, pause or move a note, and no committee that could be pressured into it. The only privileged action in the whole protocol is lowering the cap on new deposits. Once the public ceremony's keys are burned in, the upgrade authority is revoked and the vault is immutable."],
+  ["A launchpad that lives inside the pool.", "The first launchpad whose primary market exists only behind the privacy wall. You buy and sell new tokens from your shielded balance; your wallet never appears in a single launchpad transaction. At 20 SOL the curve becomes a Raydium pool with every LP token burned."],
+  ["Yield without a transaction.", "Notes hold shares, not fixed amounts. When fees are donated into a pool, every private balance in it grows at once: no claim, no transaction, no link to you. The share rate has no instruction that lowers it."],
+  ["Fees set by four AI agents, not a team.", "Each launched token's trading tax (0–5 %) is voted on every minute by four independent model-driven agents holding four keys. No proposer, no guardian, no veto. Every vote is on-chain with its reason, and the tax funds buybacks of the scash token."],
+  ["Nothing to enter, move or exit.", "The protocol charges no fee to shield, send or withdraw. You pay the relayer's network fee (0.05 % with a small floor), deducted inside the proof, and nothing else."],
+  ["2⁸⁸ addresses from one key.", "Zcash Sapling design: one viewing key yields an endless supply of unlinkable receiving addresses, and nothing has to be registered on-chain to receive. Share a fresh one with every counterparty."],
+  ["Built on Solana's 4 KB transactions.", "A full shielded transfer, proof and all, fits in one transaction on the new v1 format. No lookup-table gymnastics, no multi-step settlement, no partial state to clean up."],
+  ["Every byte is checkable.", "CI verifies the on-chain bytecode against the build, the proving keys against the circuits, and the ceremony transcript against the chain on every run. The spec, the security policy and the audit package are public, and every ciphertext is on-chain, so any copy of the open-source app recovers your notes."],
 ];
 
 const guarantees = [
@@ -25,6 +36,7 @@ const guarantees = [
 const faq = [
   ["Is the deposit private?", "No. Shielding is public: an address put X SOL into the pool. Everything after it is private. You hide among the other notes of the same asset, so use round amounts and wait before withdrawing."],
   ["Who pays the network fee?", "A relayer. Its fee is deducted inside the proof from your notes, so the address that receives funds never needs SOL for gas."],
+  ["How does the launchpad stay private?", "A buy is an unshield whose exit target is the token's curve; the tokens land at a one-use key derived from your seed and are shielded straight back into that token's own pool. A sell is the same in reverse. The curve, the relayer and the chain see throwaway keys, never your wallet."],
   ["Where does the yield come from?", "Creator fees from SCASH trading are harvested and donated into the SCASH pool. Balances there are shares, so every SCASH note grows at once. It only applies to the SCASH pool and depends on trading volume."],
   ["What if this site disappears?", "Your keys come from your wallet signature (plus passphrase), and every ciphertext is on-chain. Any copy of the open-source app recovers the same notes."],
   ["Is it audited?", "An independent audit is not published yet. The code, the ceremony transcript and the audit package are public, and the proving keys switch to the public ceremony's keys when it completes."],
@@ -40,51 +52,56 @@ export default function Landing() {
         {/* hero */}
         <section className="hero-glow relative overflow-hidden">
           <div className="dots pointer-events-none absolute inset-0 -z-10" />
-          <div className="mx-auto grid max-w-6xl items-center gap-14 px-6 pb-20 pt-20 md:pt-28 lg:grid-cols-[1fr_1fr] lg:gap-10">
+          <div className="mx-auto grid max-w-6xl items-center gap-10 px-5 pb-16 pt-14 sm:px-6 sm:pt-20 md:pt-28 lg:grid-cols-[1.05fr_0.95fr] lg:gap-10">
             <div>
               <Reveal>
-                <span className="eyebrow">shielded pool · solana</span>
-                <h1 className="display mt-5 text-[2.9rem] sm:text-6xl xl:text-[5.4rem]">
-                  Money on Solana,
+                <span className="eyebrow">solana&apos;s first shielded pool · private launchpad</span>
+                <h1 className="display mt-5 text-[2.6rem] sm:text-6xl xl:text-[5.2rem]">
+                  Private money on Solana.
                   <br />
-                  <span className="serif italic font-normal gradient-text">without an audience.</span>
+                  <span className="serif italic font-normal gradient-text">Private launches, too.</span>
                 </h1>
               </Reveal>
               <Reveal delay={0.1}>
-                <p className="mt-7 max-w-md text-[17px] leading-relaxed text-mute">
-                  Balances live in encrypted notes. The chain only ever sees proofs. Shield, send, withdraw — three steps, one wallet signature.
+                <p className="mt-6 max-w-lg text-[16px] leading-relaxed text-mute sm:mt-7 sm:text-[17px]">
+                  A Zcash-Sapling shielded pool on Solana mainnet: balances live in encrypted notes, the chain only sees proofs, and a launchpad runs entirely inside the pool. Shield once; send, trade and launch with no trace back to your wallet.
                 </p>
-                <div className="mt-9 flex flex-wrap items-center gap-3">
+                <div className="mt-8 flex flex-wrap items-center gap-3 sm:mt-9">
                   <Link href="/app" className="btn-primary px-6">Open app</Link>
                   <Link href="/launch" className="btn-ghost">Launchpad</Link>
-                  <a href="#how" className="btn-ghost">See how it works</a>
+                  <a href="#how" className="btn-ghost hidden sm:inline-flex">See how it works</a>
                 </div>
-                <p className="mt-5 text-xs text-dim">Mainnet · open source · Zcash Sapling design</p>
+                <ul className="mt-6 flex flex-wrap gap-x-5 gap-y-2 font-mono text-[11px] uppercase tracking-wider text-dim">
+                  <li className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-ok" /> live on mainnet</li>
+                  <li>no admin key</li>
+                  <li>open source</li>
+                  <li>zcash sapling design</li>
+                </ul>
               </Reveal>
             </div>
-            <Reveal delay={0.15}><Veil /></Reveal>
+            <Reveal delay={0.15}><div className="hidden sm:block"><Veil /></div></Reveal>
           </div>
-          <div className="mx-auto max-w-6xl px-6 pb-16">
+          <div className="mx-auto max-w-6xl px-5 pb-14 sm:px-6 sm:pb-16">
             <Reveal><div className="border-t border-line pt-8"><Figures /></div></Reveal>
           </div>
         </section>
 
         {/* three steps */}
-        <section id="how" className="band">
-          <div className="mx-auto max-w-6xl px-6 py-28">
+        <section id="how" className="band scroll-mt-24">
+          <div className="mx-auto max-w-6xl px-5 py-20 sm:px-6 sm:py-28">
             <Reveal>
               <span className="eyebrow">how it works</span>
               <h2 className="display mt-4 max-w-2xl text-4xl md:text-5xl">Three moves. <span className="serif italic font-normal text-mute">That&apos;s the whole product.</span></h2>
             </Reveal>
-            <div className="mt-14 grid gap-4 md:grid-cols-3">
+            <div className="mt-10 grid gap-4 sm:mt-14 md:grid-cols-3">
               {steps.map((s, i) => (
                 <Reveal key={s.t} delay={i * 0.08}>
-                  <div className="glass h-full p-7">
+                  <div className="glass h-full p-6 sm:p-7">
                     <div className="flex items-center justify-between">
                       <s.icon />
                       <span className="font-mono text-[11px] text-dim">{s.n}</span>
                     </div>
-                    <h3 className="mt-8 text-2xl tracking-tight">{s.t}</h3>
+                    <h3 className="mt-6 text-2xl tracking-tight sm:mt-8">{s.t}</h3>
                     <p className="mt-3 text-[15px] leading-relaxed text-mute">{s.b}</p>
                   </div>
                 </Reveal>
@@ -93,9 +110,70 @@ export default function Landing() {
           </div>
         </section>
 
+        {/* why */}
+        <section id="why" className="scroll-mt-24 border-t border-line">
+          <div className="mx-auto max-w-6xl px-5 py-20 sm:px-6 sm:py-28">
+            <Reveal>
+              <span className="eyebrow">why scash</span>
+              <h2 className="display mt-4 max-w-3xl text-4xl md:text-5xl">Built like a protocol, <span className="serif italic font-normal text-mute">not a product.</span></h2>
+              <p className="mt-5 max-w-xl text-[15px] leading-relaxed text-mute">
+                Everything below is enforced by the programs, mirrored in the SDK and checked in CI. None of it depends on trusting us.
+              </p>
+            </Reveal>
+            <div className="mt-10 grid gap-4 sm:mt-14 md:grid-cols-2">
+              {why.map(([t, b], i) => (
+                <Reveal key={t} delay={(i % 2) * 0.06}>
+                  <div className="glass h-full p-6 sm:p-7">
+                    <div className="flex items-start justify-between gap-4">
+                      <h3 className="text-xl tracking-tight">{t}</h3>
+                      <span className="shrink-0 font-mono text-[11px] text-dim">0{i + 1}</span>
+                    </div>
+                    <p className="mt-3 text-[15px] leading-relaxed text-mute">{b}</p>
+                  </div>
+                </Reveal>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* launchpad */}
+        <section id="launchpad" className="scroll-mt-24 border-t border-line band">
+          <div className="mx-auto grid max-w-6xl gap-10 px-5 py-20 sm:px-6 sm:py-28 lg:grid-cols-[1fr_1fr] lg:gap-20">
+            <Reveal>
+              <span className="eyebrow">the private launchpad</span>
+              <h2 className="display mt-4 text-4xl md:text-5xl">Launch, buy, sell. <span className="serif italic font-normal text-mute">Nobody sees who.</span></h2>
+              <p className="mt-5 max-w-md text-[15px] leading-relaxed text-mute">
+                Anyone can launch a token in two transactions. The creator gets no allocation, no authority and no fee switch; the mint has no mint or freeze authority from its first block. Every buy and sell is a shielded transfer that exits onto the curve and comes straight back into the token&apos;s own pool.
+              </p>
+              <div className="mt-8 flex flex-wrap gap-3">
+                <Link href="/launch" className="btn-primary px-6">Open the launchpad</Link>
+                <a href={`${GH}/blob/main/SPEC.md#16-the-launchpad`} className="btn-ghost">Read the mechanics</a>
+              </div>
+            </Reveal>
+            <Reveal delay={0.1}>
+              <div className="glass p-6 sm:p-7">
+                <ol className="space-y-5 text-sm">
+                  {[
+                    ["Curve", "793.1 M of 1 B tokens on a constant-product curve. Buys and sells arrive from the pool through one-use keys; your wallet is in none of them."],
+                    ["Tax", "0–5 %, voted every minute by four AI agents. Wash trading and bots get taxed up; calm markets get taxed down. All of it goes to the agents' treasury."],
+                    ["Graduation", "At 20 SOL raised the curve sells its last token. The SOL and the reserved 20.7 % of supply become a Raydium pool; every LP token is burned, so the liquidity is permanent."],
+                    ["After", "The agents stop setting that token's tax. The treasury buys back the scash token at random moments and burns it or airdrops it to holders."],
+                  ].map(([t, b], i) => (
+                    <li key={t} className="grid grid-cols-[2rem_1fr] gap-3 sm:grid-cols-[2rem_6.5rem_1fr]">
+                      <span className="font-mono text-[11px] text-dim">0{i + 1}</span>
+                      <span className="font-medium sm:col-auto">{t}</span>
+                      <span className="col-span-2 text-mute sm:col-span-1">{b}</span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            </Reveal>
+          </div>
+        </section>
+
         {/* ledger */}
         <section className="border-t border-line">
-          <div className="mx-auto grid max-w-6xl items-center gap-12 px-6 py-28 lg:grid-cols-[0.9fr_1.1fr] lg:gap-20">
+          <div className="mx-auto grid max-w-6xl items-center gap-10 px-5 py-20 sm:px-6 sm:py-28 lg:grid-cols-[0.9fr_1.1fr] lg:gap-20">
             <Reveal>
               <span className="eyebrow">the public record</span>
               <h2 className="display mt-4 text-4xl md:text-5xl">Same chain. <span className="serif italic font-normal text-mute">Nothing to read.</span></h2>
@@ -109,19 +187,19 @@ export default function Landing() {
 
         {/* follow one payment */}
         <section className="border-t border-line band">
-          <div className="mx-auto max-w-6xl px-6 py-28">
+          <div className="mx-auto max-w-6xl px-5 py-20 sm:px-6 sm:py-28">
             <Reveal>
               <span className="eyebrow">follow one payment</span>
               <h2 className="display mt-4 text-4xl md:text-5xl">Who learns what.</h2>
               <p className="mt-4 max-w-lg text-[15px] text-mute">Send 0.4 SOL to a friend and watch what each party on the way can see.</p>
             </Reveal>
-            <Reveal delay={0.1}><div className="mt-14"><Anatomy /></div></Reveal>
+            <Reveal delay={0.1}><div className="mt-10 sm:mt-14"><Anatomy /></div></Reveal>
           </div>
         </section>
 
         {/* yield */}
-        <section id="yield" className="border-t border-line">
-          <div className="mx-auto grid max-w-6xl gap-12 px-6 py-28 lg:grid-cols-[1fr_1fr] lg:gap-20">
+        <section id="yield" className="scroll-mt-24 border-t border-line">
+          <div className="mx-auto grid max-w-6xl gap-10 px-5 py-20 sm:px-6 sm:py-28 lg:grid-cols-[1fr_1fr] lg:gap-20">
             <Reveal>
               <span className="eyebrow">holder yield</span>
               <h2 className="display mt-4 text-4xl md:text-5xl">Shares, <span className="serif italic font-normal text-mute">not tokens.</span></h2>
@@ -130,16 +208,16 @@ export default function Landing() {
               </p>
             </Reveal>
             <Reveal delay={0.1}>
-              <div className="glass p-7">
+              <div className="glass p-6 sm:p-7">
                 <div className="text-xs text-mute">SCASH per share</div>
                 <div className="mt-2 font-mono text-5xl tabular-nums tracking-tight">1.0000</div>
                 <div className="mt-2 text-xs text-dim">at launch · rises with every donation · the program has no instruction that lowers it</div>
                 <ol className="mt-8 space-y-4 border-t border-line pt-6 text-sm">
                   {[["Trade", "every SCASH trade pays a creator fee"], ["Harvest", "anyone calls the harvester; it swaps the fee to SCASH and donates it"], ["Grow", "the pool grows, every share is backed by more SCASH"]].map(([t, b], i) => (
-                    <li key={t} className="grid grid-cols-[2rem_6rem_1fr] items-baseline gap-2">
+                    <li key={t} className="grid grid-cols-[2rem_1fr] gap-2 sm:grid-cols-[2rem_6rem_1fr] sm:items-baseline">
                       <span className="font-mono text-[11px] text-dim">0{i + 1}</span>
                       <span className="font-medium">{t}</span>
-                      <span className="text-mute">{b}</span>
+                      <span className="col-span-2 text-mute sm:col-span-1">{b}</span>
                     </li>
                   ))}
                 </ol>
@@ -149,16 +227,16 @@ export default function Landing() {
         </section>
 
         {/* guarantees */}
-        <section id="security" className="border-t border-line band">
-          <div className="mx-auto max-w-6xl px-6 py-28">
+        <section id="security" className="scroll-mt-24 border-t border-line band">
+          <div className="mx-auto max-w-6xl px-5 py-20 sm:px-6 sm:py-28">
             <Reveal>
               <span className="eyebrow">guarantees</span>
               <h2 className="display mt-4 text-4xl md:text-5xl">No keys but yours.</h2>
             </Reveal>
-            <div className="mt-12 grid gap-4 md:grid-cols-2">
+            <div className="mt-10 grid gap-4 sm:mt-12 md:grid-cols-2">
               {guarantees.map(([t, b], i) => (
                 <Reveal key={t} delay={i * 0.06}>
-                  <div className="glass p-7">
+                  <div className="glass h-full p-6 sm:p-7">
                     <h3 className="text-lg font-medium tracking-tight">{t}</h3>
                     <p className="mt-3 text-[15px] leading-relaxed text-mute">{b}</p>
                   </div>
@@ -170,15 +248,15 @@ export default function Landing() {
                 <span>Groth16 · BN254 · 33k constraints</span>
                 <span>Poseidon · 2²⁶ leaves · 128-root ring</span>
                 <span>Verified in CI against the exact on-chain verifier</span>
-                <a className="link" href={`${GH}/blob/main/SECURITY.md`}>Known limitations →</a>
+                <a className="link" href={`${GH}/blob/main/SECURITY.md`}>Security policy →</a>
               </div>
             </Reveal>
           </div>
         </section>
 
         {/* faq */}
-        <section id="faq" className="border-t border-line">
-          <div className="mx-auto grid max-w-6xl gap-10 px-6 py-28 lg:grid-cols-[18rem_1fr]">
+        <section id="faq" className="scroll-mt-24 border-t border-line">
+          <div className="mx-auto grid max-w-6xl gap-8 px-5 py-20 sm:px-6 sm:py-28 lg:grid-cols-[18rem_1fr] lg:gap-10">
             <Reveal>
               <h2 className="display text-4xl">Questions.</h2>
               <p className="mt-3 text-sm text-mute">Everything else is in the <a href={`${GH}/blob/main/SPEC.md`} className="link underline underline-offset-4">spec</a>.</p>
@@ -197,24 +275,29 @@ export default function Landing() {
         {/* cta */}
         <section className="relative overflow-hidden border-t border-line">
           <div className="hero-glow absolute inset-0 -z-10" />
-          <div className="mx-auto flex max-w-6xl flex-col items-start justify-between gap-8 px-6 py-24 md:flex-row md:items-center">
+          <div className="mx-auto flex max-w-6xl flex-col items-start justify-between gap-8 px-5 py-20 sm:px-6 sm:py-24 md:flex-row md:items-center">
             <Reveal>
               <h2 className="display text-4xl md:text-5xl">Your balance is <span className="serif italic font-normal gradient-text">nobody&apos;s business.</span></h2>
             </Reveal>
-            <Reveal delay={0.1}><Link href="/app" className="btn-primary px-6">Open app</Link></Reveal>
+            <Reveal delay={0.1}>
+              <div className="flex flex-wrap gap-3">
+                <Link href="/app" className="btn-primary px-6">Open app</Link>
+                <Link href="/launch" className="btn-ghost">Launch a token</Link>
+              </div>
+            </Reveal>
           </div>
         </section>
 
         <footer className="border-t border-line">
-          <div className="mx-auto grid max-w-6xl gap-10 px-6 py-14 text-sm md:grid-cols-[1fr_repeat(3,10rem)]">
+          <div className="mx-auto grid max-w-6xl gap-10 px-5 py-14 text-sm sm:px-6 md:grid-cols-[1fr_repeat(3,10rem)]">
             <div>
               <div className="flex items-center gap-2 font-medium"><img src="/icon.svg" alt="" className="h-5 w-5 rounded-md" /> scash</div>
-              <p className="mt-3 max-w-xs text-xs leading-relaxed text-dim">Shielded notes on Solana. Open source, MIT licensed.</p>
+              <p className="mt-3 max-w-xs text-xs leading-relaxed text-dim">Solana&apos;s shielded pool and private launchpad. Open source, MIT licensed.</p>
               <Builds />
             </div>
-            <Col title="Product" links={[["App", "/app"], ["Spec", `${GH}/blob/main/SPEC.md`]]} />
+            <Col title="Product" links={[["App", "/app"], ["Launchpad", "/launch"], ["Spec", `${GH}/blob/main/SPEC.md`]]} />
             <Col title="Security" links={[["Policy", `${GH}/blob/main/SECURITY.md`], ["Ceremony", `${GH}/blob/main/ceremony/README.md`], ["Audit package", `${GH}/tree/main/audit`]]} />
-            <Col title="Code" links={[["GitHub", GH], ["Program", `${GH}/tree/main/programs/scash_vault`]]} />
+            <Col title="Code" links={[["GitHub", GH], ["Vault program", `${GH}/tree/main/programs/scash_vault`], ["Launch program", `${GH}/tree/main/programs/scash_launch`]]} />
           </div>
         </footer>
       </main>
