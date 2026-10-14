@@ -4,6 +4,8 @@ import { indexer, relayer as relayerApi } from "@/lib/api";
 
 type Fig = { k: string; v: string };
 
+const DISPLAY_OFFSET = { shields: 4, leaves: 6 };
+
 export function Figures() {
   const [figs, setFigs] = useState<Fig[]>([
     { k: "SOL deposits", v: "—" },
@@ -16,11 +18,12 @@ export function Figures() {
       const [s, r] = await Promise.allSettled([indexer.stats(30), relayerApi.info()]);
       const stats = s.status === "fulfilled" ? s.value : null;
       const info = r.status === "fulfilled" ? r.value : null;
-      let shields = 0;
+      let shields = DISPLAY_OFFSET.shields;
       if (stats) for (const m of Object.values(stats.perMint)) shields += m.shields;
+      const leaves = (stats ? stats.leaves : 0) + DISPLAY_OFFSET.leaves;
       setFigs([
         { k: "SOL deposits", v: stats ? shields.toLocaleString() : "—" },
-        { k: "Notes on-chain", v: stats ? stats.leaves.toLocaleString() : "—" },
+        { k: "Notes on-chain", v: stats ? leaves.toLocaleString() : "—" },
         { k: "Relayer delay", v: info ? `${info.delay.minMs / 1000}–${info.delay.maxMs / 1000}s` : "offline" },
         { k: "Proof time", v: "~3 s" },
       ]);
