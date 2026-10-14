@@ -11,6 +11,7 @@ import {
 import { ApiError, indexer, relayer, type AssetQuote, type RelayerInfo } from "./api";
 import { ARTIFACTS, ASSETS, MAINNET, PROGRAM_ID, RPC_URL, type AssetMeta } from "./config";
 import { describe, walletTokens } from "./walletAssets";
+import { awaitConfirmation, ConfirmError } from "./confirm";
 
 const U64_MAX = (1n << 64n) - 1n;
 
@@ -311,10 +312,11 @@ export const useScash = create<State>((set, get) => {
       if (!pool) {
         if (native) throw new Error("pool not found on chain");
         set({ tx: { stage: "signing", message: `Approve in your wallet: this opens the ${asset.symbol} pool (one-time, ~0.002 SOL rent)` } });
-        const openTx = buildV0(owner, [createPoolIx(owner, asset.mint, U64_MAX, tokenProgram, PROGRAM_ID)], (await conn.getLatestBlockhash()).blockhash, undefined, { cuLimit: 100_000 });
+        const openBh = await conn.getLatestBlockhash();
+        const openTx = buildV0(owner, [createPoolIx(owner, asset.mint, U64_MAX, tokenProgram, PROGRAM_ID)], openBh.blockhash, undefined, { cuLimit: 100_000 });
         const openSig = await sendTx(openTx);
         set({ tx: { stage: "confirming", message: "Opening the pool", signature: openSig } });
-        await conn.confirmTransaction(openSig, "confirmed");
+        await awaitConfirmation(conn, openSig, openBh);
         if (rl?.dynamicAssets) await relayer.asset(asset.mint.toBase58()).catch(() => undefined);
         await get().refreshPools();
         pool = get().pools[asset.symbol];
@@ -332,16 +334,24 @@ export const useScash = create<State>((set, get) => {
       set({ lastProveMs: performance.now() - t0, tx: { stage: "signing", message: "Approve the transaction in your wallet" } });
       const tableKeys = [rl?.lookupTable, get().assetQuotes[asset.mint.toBase58()]?.lookupTable].filter((k): k is string => !!k);
       const tables = (await Promise.all(tableKeys.map((k) => fetchLookupTable(conn, new PublicKey(k)).catch(() => undefined)))).filter((t) => !!t);
-      const tx = buildV0(owner, [built.instruction], (await conn.getLatestBlockhash()).blockhash, tables);
+      const bh = await conn.getLatestBlockhash();
+      const tx = buildV0(owner, [built.instruction], bh.blockhash, tables);
       if (tx.serialize().length > 1232) throw new Error("transaction too large for this token yet; the relayer is still preparing its lookup table, try again in a minute");
       const sig = await sendTx(tx);
       set({ tx: { stage: "confirming", message: "Waiting for confirmation", signature: sig } });
-      await get().connection.confirmTransaction(sig, "confirmed");
+      await awaitConfirmation(conn, sig, bh);
       set((s) => ({ tx: { stage: "done", signature: sig }, activity: s.activity.map((a) => (a.id === id ? { ...a, status: "confirmed", signature: sig } : a)) }));
       await get().refreshPools();
       await get().sync();
     } catch (e) {
       const msg = (e as Error).message;
+      if (e instanceof ConfirmError && !e.expired && !/failed on-chain/.test(msg)) {
+        // Sent, not yet seen: the chain decides, not a timer. Keep the record
+        // pending with its signature and let `sync` pick the note up.
+        set((s) => ({ tx: { stage: "confirming", message: msg, signature: e.signature }, activity: s.activity.map((a) => (a.id === id ? { ...a, signature: e.signature } : a)) }));
+        setTimeout(() => { void get().refreshPools().then(() => get().sync()); }, 15_000);
+        throw e;
+      }
       set((s) => ({ tx: { stage: "failed", message: msg }, activity: s.activity.map((a) => (a.id === id ? { ...a, status: "failed", error: msg } : a)) }));
       throw e;
     }

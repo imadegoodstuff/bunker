@@ -15,6 +15,7 @@ import {
 import { indexer, type LaunchRow } from "./api";
 import { useScash } from "./store";
 import { ARTIFACTS, PROGRAM_ID, type AssetMeta } from "./config";
+import { awaitConfirmation } from "./confirm";
 
 export interface ClaimRecord {
   nonce: number;
@@ -152,8 +153,7 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
     const tx = buildV0(key.publicKey, ixs, blockhash, await tables(rec.kind === "buy" ? mint : SOL));
     tx.sign([key]);
     const sig = await c.sendTransaction(tx, { skipPreflight: false });
-    const res = await c.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
-    if (res.value.err) throw new Error(`claim failed: ${JSON.stringify(res.value.err)}`);
+    await awaitConfirmation(c, sig, { blockhash, lastValidBlockHeight });
     upsert({ ...rec, status: "claimed", claimSignature: sig });
     // the indexer needs a moment to see the leaf; sync twice
     await scash.refreshPools();
@@ -204,12 +204,12 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
         let bh = await c.getLatestBlockhash();
         const t1 = buildV0(owner, alt.ixs, bh.blockhash, undefined, { cuLimit: 100_000 });
         const s1 = await sendTx(t1);
-        await c.confirmTransaction({ signature: s1, ...bh }, "confirmed");
+        await awaitConfirmation(c, s1, bh);
         bh = await c.getLatestBlockhash();
         const t2 = buildV0(owner, [launchIx(owner, mint.publicKey, meta, alt.table, PROGRAM_ID)], bh.blockhash, undefined, { cuLimit: 400_000 });
         t2.sign([mint]);
         const s2 = await sendTx(t2);
-        await c.confirmTransaction({ signature: s2, ...bh }, "confirmed");
+        await awaitConfirmation(c, s2, bh);
         useScash.getState().pushActivity({ id: crypto.randomUUID(), kind: "launch", asset: meta.symbol, amount: 0n, at: Date.now(), status: "confirmed", signature: s2 });
         const { curve } = await get().refresh(mint.publicKey.toBase58());
         // show it in the list now, from the curve we just read; `slot: 0` marks it as not yet indexed
