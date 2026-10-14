@@ -9,7 +9,7 @@ import { LaunchShell, Row } from "@/components/launch/LaunchShell";
 import { useLaunchpad, priceLamportsPerToken, CLAIM_BUDGET, SLIPPAGE_BPS, SOL, type ClaimRecord } from "@/lib/launchpad";
 import { useScash } from "@/lib/store";
 import { indexer, type LaunchRow, type TradeRow, type FeeEventRow } from "@/lib/api";
-import { fmtAmount, short, timeAgo } from "@/lib/format";
+import { fmtAmount, fmtPrice, parseAmount, short, timeAgo } from "@/lib/format";
 import { explorerTx, explorerAddr } from "@/lib/config";
 
 const BUY_SIZES = [0.1, 0.25, 0.5, 1, 2];
@@ -68,7 +68,7 @@ function Token({ mint }: { mint: string }) {
               <div>
                 <div className="label">{meta?.name ?? "Token"}</div>
                 <div className="mt-2 flex items-baseline gap-3">
-                  <span className="text-[2.5rem] leading-none tracking-[-0.04em] tabular-nums">{(price / 1e9).toPrecision(3)}</span>
+                  <span className="text-[2.5rem] leading-none tracking-[-0.04em] tabular-nums" title={`${(price / 1e9).toPrecision(6)} SOL per ${symbol}`}>{fmtPrice(price / 1e9)}</span>
                   <span className="text-lg text-mute">SOL / {symbol}</span>
                 </div>
               </div>
@@ -164,6 +164,10 @@ function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string;
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [buySize, setBuySize] = useState(0.5);
   const [sellPart, setSellPart] = useState(50n);
+  // "custom" lets the trader type any amount; the chips stay the recommended path
+  const [custom, setCustom] = useState(false);
+  const [customBuy, setCustomBuy] = useState("");
+  const [customSell, setCustomSell] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
 
@@ -180,7 +184,8 @@ function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string;
       if (!feePolicy || !rents) return null;
       if (side === "buy") {
         if (!solPool) return null;
-        const lamports = BigInt(Math.round(buySize * 1e9));
+        const lamports = custom ? parseAmount(customBuy || "0", 9) : BigInt(Math.round(buySize * 1e9));
+        if (lamports <= 0n) return null;
         const pct = (lamports * BigInt(feePolicy.bps)) / 10_000n;
         const fee = pct > BigInt(feePolicy.min) ? pct : BigInt(feePolicy.min);
         const delivered = amountForBurn(solPool, sharesForWithdraw(solPool, lamports)) - fee;
@@ -190,8 +195,9 @@ function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string;
         return { amount: lamports, relayerFee: fee, curveFee: q.fee, out: q.out, minOut: w.out - (w.out * SLIPPAGE_BPS) / 10_000n, refund: q.refund };
       }
       if (!tokenPool) return null;
-      const tokens = (tokAvail * sellPart) / 100n;
-      if (tokens === 0n) return null;
+      const tokens = custom ? parseAmount(customSell || "0", decimals) : (tokAvail * sellPart) / 100n;
+      if (tokens <= 0n) return null;
+      if (tokens > tokAvail) return { error: `more than your shielded ${symbol}` } as const;
       const tip = BigInt(feePolicy.min);
       const delivered = amountForBurn(tokenPool, sharesForWithdraw(tokenPool, tokens));
       const q = quotePrivateSell(curve, delivered, tip);
@@ -200,7 +206,7 @@ function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string;
     } catch (e) {
       return { error: (e as Error).message } as const;
     }
-  }, [side, buySize, sellPart, solPool, tokenPool, tokAvail, curve, worstFee, rents, feePolicy]);
+  }, [side, buySize, sellPart, custom, customBuy, customSell, decimals, symbol, solPool, tokenPool, tokAvail, curve, worstFee, rents, feePolicy]);
 
   const submit = async () => {
     setErr(null); setDone(null);
@@ -233,13 +239,33 @@ function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string;
       </div>
       <div className="mt-5 flex flex-wrap gap-2">
         {side === "buy"
-          ? BUY_SIZES.map((s) => <button key={s} className="chip" data-active={buySize === s} aria-pressed={buySize === s} onClick={() => setBuySize(s)}>{s} SOL</button>)
-          : SELL_PARTS.map(([label, p]) => <button key={label} className="chip" aria-pressed={sellPart === p} onClick={() => setSellPart(p)}>{label}</button>)}
+          ? BUY_SIZES.map((s) => <button key={s} className="chip" data-active={!custom && buySize === s} aria-pressed={!custom && buySize === s} onClick={() => { setCustom(false); setBuySize(s); }}>{s} SOL</button>)
+          : SELL_PARTS.map(([label, p]) => <button key={label} className="chip" data-active={!custom && sellPart === p} aria-pressed={!custom && sellPart === p} onClick={() => { setCustom(false); setSellPart(p); }}>{label}</button>)}
+        <button className="chip" data-active={custom} aria-pressed={custom} onClick={() => setCustom(true)}>custom</button>
         <span className="ml-auto self-center text-[11px] text-dim">
           {side === "buy" ? `shielded SOL: ${fmtAmount(solAvail, 9, 3)}` : `shielded ${symbol}: ${fmtAmount(tokAvail, decimals, 0)}`}
         </span>
       </div>
-      <p className="mt-2 text-[11px] text-dim">Fixed sizes only: a trade that matches many others says less about you.</p>
+      {custom && (
+        <div className="mt-3 flex items-center gap-3 rounded-2xl border border-line-strong px-4 py-3 focus-within:border-accent/60">
+          <input
+            className="w-full bg-transparent text-2xl tracking-[-0.02em] tabular-nums outline-none placeholder:text-dim"
+            placeholder="0"
+            inputMode="decimal"
+            value={side === "buy" ? customBuy : customSell}
+            onChange={(e) => (side === "buy" ? setCustomBuy(e.target.value.trim()) : setCustomSell(e.target.value.trim()))}
+          />
+          <span className="text-sm text-mute">{side === "buy" ? "SOL" : symbol}</span>
+          {side === "sell" && tokAvail > 0n && (
+            <button className="chip" onClick={() => setCustomSell(fmtAmount(tokAvail, decimals, decimals).replace(/,/g, ""))}>max</button>
+          )}
+        </div>
+      )}
+      <p className="mt-2 text-[11px] text-dim">
+        {custom
+          ? "Any amount works. An unusual size is easier to pick out among the trades than one that matches many others."
+          : "Standard sizes: a trade that matches many others says less about you."}
+      </p>
 
       <dl className="mt-5 space-y-2 rounded-2xl border border-line bg-black/20 p-4 text-xs">
         {quote && !("error" in quote) ? (

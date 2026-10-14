@@ -15,6 +15,21 @@ export function parseAmount(s: string, decimals: number): bigint {
   return BigInt(w || "0") * 10n ** BigInt(decimals) + BigInt((f + "0".repeat(decimals)).slice(0, decimals) || "0");
 }
 
+const SUB = "₀₁₂₃₄₅₆₇₈₉";
+/**
+ * A price that may be tiny, without scientific notation: 6.58e-9 becomes
+ * "0.0₈658" (eight zeros, then the significant digits), 0.0123 stays "0.0123".
+ */
+export function fmtPrice(x: number, sig = 3): string {
+  if (!isFinite(x) || x <= 0) return "0";
+  if (x >= 1) return x.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  if (x >= 0.001) return x.toPrecision(sig).replace(/\.?0+$/, "");
+  const zeros = -Math.floor(Math.log10(x)) - 1; // leading zeros after "0."
+  const digits = Math.round(x * 10 ** (zeros + sig)).toString().slice(0, sig).replace(/0+$/, "");
+  const sub = String(zeros).split("").map((c) => SUB[Number(c)]).join("");
+  return zeros > 2 ? `0.0${sub}${digits}` : `0.${"0".repeat(zeros)}${digits}`;
+}
+
 export function short(s: string, n = 6) {
   return s.length <= 2 * n + 1 ? s : `${s.slice(0, n)}…${s.slice(-n)}`;
 }
