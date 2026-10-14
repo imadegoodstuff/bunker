@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 600" width="1800" height="600">
+  <defs>
+    <radialGradient id="v" cx="0.5" cy="0.4" r="0.9">
+      <stop offset="0" stop-color="#121214"/>
+      <stop offset="1" stop-color="#09090a"/>
+    </radialGradient>
+    <marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8a8a90"/>
+    </marker>
+    <marker id="ma" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#e8a75c"/>
+    </marker>
+  </defs>
+  <rect width="1800" height="600" fill="url(#v)"/>
+
+  <!-- title -->
+  <g transform="translate(70 44) scale(0.7)">
+    <rect width="64" height="64" rx="14" fill="#0a0a0a" stroke="#242428" stroke-width="0.75"/>
+    <path d="M42 22c-2-4-6-6-10-6-6 0-11 3.5-11 9 0 5 4 7 10 8.5 5 1.2 7 2.2 7 4.5 0 2.6-2.8 4-6 4-4 0-7-2-9-5" fill="none" stroke="#ededed" stroke-width="4.5" stroke-linecap="round"/>
+  </g>
+  <text x="128" y="76" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="24" font-weight="500" fill="#ededed">scash</text>
+  <text x="202" y="76" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="24" fill="#8a8a90">Solana's first shielded pool, with a private launchpad inside it</text>
+  <text x="1730" y="76" text-anchor="end" font-family="'JetBrains Mono', Consolas, monospace" font-size="14" letter-spacing="2" fill="#6b6b72">THREE PROGRAMS / FOUR AGENTS / NO ADMIN</text>
+
+  <!-- wallet -->
+  <g transform="translate(70 150)">
+    <rect width="230" height="200" rx="22" fill="#0e0e10" stroke="#2a2a2e"/>
+    <text x="24" y="40" font-family="'JetBrains Mono', Consolas, monospace" font-size="12" letter-spacing="2" fill="#6b6b72">PUBLIC</text>
+    <text x="24" y="82" font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="26" font-weight="500" fill="#ededed">Your wallet</text>
+    <text x="24" y="116" font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="16" fill="#8a8a90">SOL or any token</text>
+    <text x="24" y="170" font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="14" fill="#6b6b72">seen once, at the deposit</text>
+  </g>
+  <line x1="300" y1="250" x2="380" y2="250" stroke="#8a8a90" stroke-width="1.8" marker-end="url(#m)"/>
+  <text x="340" y="238" text-anchor="middle" font-family="'JetBrains Mono', Consolas, monospace" font-size="12" letter-spacing="1" fill="#8a8a90">shield</text>
+
+  <!-- pool -->
+  <g transform="translate(390 120)">
+    <rect width="400" height="300" rx="26" fill="#0e0e10" stroke="#3a3a40"/>
+    <text x="28" y="42" font-family="'JetBrains Mono', Consolas, monospace" font-size="12" letter-spacing="2" fill="#e8a75c">SHIELDED POOL</text>
+    <text x="28" y="82" font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="26" font-weight="500" fill="#ededed">scash_vault</text>
+    <g font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="16" fill="#bdbdc4">
+      <text x="28" y="124">Sapling notes, Groth16 in the browser</text>
+      <text x="28" y="152">Merkle depth 26, nullifier = 1-byte PDA</text>
+      <text x="28" y="180">Share-based pools, yield by donation</text>
+    </g>
+    <rect x="28" y="206" width="344" height="68" rx="14" fill="#141416" stroke="#2a2a2e"/>
+    <text x="48" y="232" font-family="'JetBrains Mono', Consolas, monospace" font-size="11" letter-spacing="2" fill="#6b6b72">TURNSTILE</text>
+    <text x="48" y="260" font-family="'JetBrains Mono', Consolas, monospace" font-size="19" fill="#ededed">total out &#8804; total in</text>
+  </g>
+
+  <line x1="790" y1="250" x2="880" y2="250" stroke="#e8a75c" stroke-width="2" marker-end="url(#ma)"/>
+  <text x="835" y="236" text-anchor="middle" font-family="'JetBrains Mono', Consolas, monospace" font-size="11" letter-spacing="1" fill="#e8a75c">private trade</text>
+  <text x="835" y="270" text-anchor="middle" font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="11" fill="#8a8a90">throwaway key</text>
+
+  <!-- launchpad -->
+  <g transform="translate(890 120)">
+    <rect width="380" height="300" rx="26" fill="#0e0e10" stroke="#3a3a40"/>
+    <text x="28" y="42" font-family="'JetBrains Mono', Consolas, monospace" font-size="12" letter-spacing="2" fill="#e8a75c">PRIVATE LAUNCHPAD</text>
+    <text x="28" y="82" font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="26" font-weight="500" fill="#ededed">scash_launch</text>
+    <g font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="16" fill="#bdbdc4">
+      <text x="28" y="124">Token-2022 mint, no authorities</text>
+      <text x="28" y="152">Constant-product curve</text>
+      <text x="28" y="180">Tax 0 to 5 %, voted by agents</text>
+      <text x="28" y="208">Graduates at 20 SOL</text>
+    </g>
+    <text x="28" y="262" font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="14" fill="#6b6b72">on-chain: curve, amount, a key seen once</text>
+  </g>
+
+  <line x1="1270" y1="200" x2="1350" y2="200" stroke="#8a8a90" stroke-width="1.8" marker-end="url(#m)"/>
+  <g transform="translate(1360 160)">
+    <rect width="140" height="80" rx="18" fill="#0e0e10" stroke="#2a2a2e"/>
+    <text x="70" y="36" text-anchor="middle" font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="18" font-weight="500" fill="#ededed">Raydium</text>
+    <text x="70" y="60" text-anchor="middle" font-family="'JetBrains Mono', Consolas, monospace" font-size="11" letter-spacing="1" fill="#6b6b72">AUTO-MIGRATE</text>
+  </g>
+
+  <!-- tax -> agents -->
+  <line x1="1270" y1="330" x2="1350" y2="330" stroke="#e8a75c" stroke-width="2" marker-end="url(#ma)"/>
+  <text x="1310" y="318" text-anchor="middle" font-family="'JetBrains Mono', Consolas, monospace" font-size="11" letter-spacing="1" fill="#e8a75c">tax</text>
+
+  <!-- agents -->
+  <g transform="translate(1360 270)">
+    <rect width="370" height="250" rx="22" fill="#0e0e10" stroke="#3a3a40"/>
+    <text x="24" y="38" font-family="'JetBrains Mono', Consolas, monospace" font-size="12" letter-spacing="2" fill="#e8a75c">FOUR AGENTS, ONE TREASURY</text>
+    <g font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="13" fill="#ededed">
+      <g transform="translate(24 56)"><rect width="76" height="40" rx="12" fill="#141416" stroke="#2a2a2e"/><text x="38" y="25" text-anchor="middle">A</text></g>
+      <g transform="translate(106 56)"><rect width="76" height="40" rx="12" fill="#141416" stroke="#2a2a2e"/><text x="38" y="25" text-anchor="middle">B</text></g>
+      <g transform="translate(188 56)"><rect width="76" height="40" rx="12" fill="#141416" stroke="#2a2a2e"/><text x="38" y="25" text-anchor="middle">C</text></g>
+      <g transform="translate(270 56)"><rect width="76" height="40" rx="12" fill="#141416" stroke="#2a2a2e"/><text x="38" y="25" text-anchor="middle">D</text></g>
+    </g>
+    <g font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="14" fill="#bdbdc4">
+      <text x="24" y="130">Vote once a minute. Median, one step</text>
+      <text x="24" y="154">per epoch, quorum of 2, hard cap 5 %.</text>
+      <text x="24" y="190">Treasury buys back $SCASH, then burns</text>
+      <text x="24" y="214">or airdrops it. No human in the loop.</text>
+    </g>
+  </g>
+
+  <!-- harvest back to pool -->
+  <path d="M1360 470 L590 470 L590 422" fill="none" stroke="#8a8a90" stroke-width="1.8" marker-end="url(#m)"/>
+  <text x="975" y="460" text-anchor="middle" font-family="'JetBrains Mono', Consolas, monospace" font-size="12" letter-spacing="1" fill="#8a8a90">harvest: fees become yield for every shielded SOL holder</text>
+
+  <!-- footer -->
+  <g font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="15" fill="#bdbdc4">
+    <circle cx="76" cy="415" r="3.5" fill="#e8a75c"/><text x="92" y="420">No admin key</text>
+    <circle cx="76" cy="447" r="3.5" fill="#e8a75c"/><text x="92" y="452">No pause over withdrawals</text>
+    <circle cx="76" cy="479" r="3.5" fill="#e8a75c"/><text x="92" y="484">No protocol fee</text>
+  </g>
+  <text x="70" y="560" font-family="'JetBrains Mono', Consolas, monospace" font-size="17" letter-spacing="1" fill="#ededed">scash.site</text>
+  <text x="1730" y="560" text-anchor="end" font-family="'JetBrains Mono', Consolas, monospace" font-size="13" letter-spacing="2" fill="#6b6b72">OPEN SOURCE / BYTECODE VERIFIED</text>
+</svg>

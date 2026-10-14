@@ -1,12 +1,12 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import { amountForBurn, sharesForWithdraw, quotePrivateBuy, quotePrivateSell, rolled, worstFeeBps, raydium, type CurveState, type PoolState } from "@scash/sdk";
+import { amountForBurn, buyReserve, quotePrivateBuy, quotePrivateSell, rolled, worstFeeBps, raydium, type CurveState, type PoolState } from "@scash/sdk";
 import { PublicKey } from "@solana/web3.js";
 import { FeePolicy } from "@/components/launch/FeePolicy";
 import { Unlock } from "@/components/Unlock";
 import { LaunchShell, Row } from "@/components/launch/LaunchShell";
-import { useLaunchpad, priceLamportsPerToken, CLAIM_BUDGET, SLIPPAGE_BPS, SOL, type ClaimRecord } from "@/lib/launchpad";
+import { useLaunchpad, priceLamportsPerToken, deliveredFor, CLAIM_BUDGET, SLIPPAGE_BPS, SOL, type ClaimRecord } from "@/lib/launchpad";
 import { useScash } from "@/lib/store";
 import { indexer, type LaunchRow, type TradeRow, type FeeEventRow } from "@/lib/api";
 import { fmtAmount, fmtPrice, parseAmount, short, timeAgo } from "@/lib/format";
@@ -205,7 +205,8 @@ function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string;
         if (lamports <= 0n) return null;
         const pct = (lamports * BigInt(feePolicy.bps)) / 10_000n;
         const fee = pct > BigInt(feePolicy.min) ? pct : BigInt(feePolicy.min);
-        const delivered = amountForBurn(solPool, sharesForWithdraw(solPool, lamports)) - fee;
+        const delivered = deliveredFor(solPool, lamports) - fee;
+        if (delivered <= 0n) return { error: `below the relayer fee (${fmtAmount(fee, 9, 4)} SOL)` } as const;
         const q = quotePrivateBuy(curve, delivered, rents, CLAIM_BUDGET);
         // min_out assumes the worst fee an epoch boundary inside the next few minutes can bring
         const w = quotePrivateBuy({ ...curve, tradeFeeBps: worstFee }, delivered, rents, CLAIM_BUDGET);
@@ -216,12 +217,18 @@ function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string;
       if (tokens <= 0n) return null;
       if (tokens > tokAvail) return { error: `more than your shielded ${symbol}` } as const;
       const tip = BigInt(feePolicy.min);
-      const delivered = amountForBurn(tokenPool, sharesForWithdraw(tokenPool, tokens));
+      const delivered = deliveredFor(tokenPool, tokens);
       const q = quotePrivateSell(curve, delivered, tip);
       const w = quotePrivateSell({ ...curve, tradeFeeBps: worstFee }, delivered, tip);
       return { amount: tokens, relayerFee: tip, curveFee: q.fee, out: q.out, minOut: w.out - (w.out * SLIPPAGE_BPS) / 10_000n, refund: 0n };
     } catch (e) {
-      return { error: (e as Error).message } as const;
+      const msg = (e as Error).message;
+      if (/too small/.test(msg) && rents && feePolicy) {
+        // rents the claim needs + the relayer's minimum + a little for the trade itself
+        const floor = buyReserve(rents, CLAIM_BUDGET) + BigInt(feePolicy.min) + 1_000_000n;
+        return { error: `minimum buy ≈ ${fmtAmount(floor, 9, 3)} SOL (claim rents + relayer fee)` } as const;
+      }
+      return { error: msg } as const;
     }
   }, [side, buySize, sellPart, custom, customBuy, customSell, decimals, symbol, solPool, tokenPool, tokAvail, curve, worstFee, rents, feePolicy]);
 

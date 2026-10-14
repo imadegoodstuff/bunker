@@ -32,6 +32,15 @@ export interface ClaimRecord {
 
 /** Lamports a buy leaves at the claim key for its own transaction fee; whatever is unused stays there (dust). */
 export const CLAIM_BUDGET = 20_000n;
+
+/**
+ * What the vault pays out for a withdrawal of `amount`, after the shares→amount
+ * round trip. An empty pool (nothing shielded yet, or everything withdrawn) is
+ * exactly 1:1 by construction, which `amountForBurn` alone does not say.
+ */
+export function deliveredFor(pool: PoolState, amount: bigint): bigint {
+  return pool.totalShares === 0n ? amount : amountForBurn(pool, sharesForWithdraw(pool, amount));
+}
 /** Slippage tolerated between quote and execution (other trades can land first). */
 export const SLIPPAGE_BPS = 100n;
 export const SOL = SystemProgram.programId;
@@ -247,7 +256,7 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
       if (!feePolicy) throw new Error("relayer has no SOL policy");
       const pct = (lamports * BigInt(feePolicy.bps)) / 10_000n;
       const fee = pct > BigInt(feePolicy.min) ? pct : BigInt(feePolicy.min);
-      const delivered = amountForBurn(solPool, sharesForWithdraw(solPool, lamports)) - fee;
+      const delivered = deliveredFor(solPool, lamports) - fee;
       const q = quotePrivateBuy(worst, delivered, rents, CLAIM_BUDGET);
       const minOut = q.out - (q.out * SLIPPAGE_BPS) / 10_000n;
       const nonce = get().nextNonce;
@@ -286,7 +295,7 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
       if (!feePolicy) throw new Error("relayer has no SOL policy");
       // the relayer is tipped in SOL out of the proceeds: its SOL minimum, which already covers its costs
       const tip = BigInt(feePolicy.min);
-      const delivered = amountForBurn(pool, sharesForWithdraw(pool, tokens));
+      const delivered = deliveredFor(pool, tokens);
       const q = quotePrivateSell(worst, delivered, tip);
       const minOut = q.out - (q.out * SLIPPAGE_BPS) / 10_000n;
       const nonce = get().nextNonce;
