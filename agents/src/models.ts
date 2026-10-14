@@ -55,7 +55,7 @@ export async function complete(spec: ModelSpec, prompt: string, apiKey: string, 
     const j = (await post(
       "https://api.anthropic.com/v1/messages",
       { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
-      { model: spec.model, max_tokens: 300, temperature: 0.2, messages: [{ role: "user", content: prompt }] },
+      { model: spec.model, max_tokens: 1200, temperature: 0.2, messages: [{ role: "user", content: prompt }] },
       timeoutMs
     )) as { content?: { type: string; text?: string }[] };
     return (j.content ?? []).map((c) => c.text ?? "").join("");
@@ -64,7 +64,7 @@ export async function complete(spec: ModelSpec, prompt: string, apiKey: string, 
     const j = (await post(
       `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(spec.model)}:generateContent`,
       { "x-goog-api-key": apiKey },
-      { contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 300, responseMimeType: "application/json" } },
+      { contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 1200, responseMimeType: "application/json" } },
       timeoutMs
     )) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
     return (j.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? "").join("");
@@ -73,7 +73,7 @@ export async function complete(spec: ModelSpec, prompt: string, apiKey: string, 
   const j = (await post(
     e.url,
     { authorization: `Bearer ${apiKey}` },
-    { model: spec.model, temperature: 0.2, max_tokens: 300, messages: [{ role: "user", content: prompt }] },
+    { model: spec.model, temperature: 0.2, max_tokens: 1200, messages: [{ role: "user", content: prompt }] },
     timeoutMs
   )) as { choices?: { message?: { content?: string } }[] };
   return j.choices?.[0]?.message?.content ?? "";

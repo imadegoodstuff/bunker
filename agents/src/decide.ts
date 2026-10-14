@@ -71,7 +71,13 @@ export function parseDecision(text: string): Decision | null {
       if (parsed && typeof parsed === "object" && ("fee_bps" in parsed || "fee_pct" in parsed)) { o = parsed; break; }
     } catch { /* try the next candidate */ }
   }
-  if (!o) return null;
+  if (!o) {
+    // A reply cut off mid-JSON (output budget, a model that thinks out loud
+    // first) still names its fee; take it and let the reason be whatever is there.
+    const m = /"fee_(bps|pct)"\s*:\s*"?(-?\d+(?:\.\d+)?)/.exec(text);
+    if (!m) return null;
+    o = { [`fee_${m[1]}`]: Number(m[2]), reason: /"reason"\s*:\s*"([^"]*)/.exec(text)?.[1] ?? "" };
+  }
   const num = (k: string) => (typeof o[k] === "number" ? (o[k] as number) : typeof o[k] === "string" ? Number(o[k]) : NaN);
   let fee = num("fee_bps");
   if (Number.isNaN(fee)) fee = num("fee_pct") * 100;
