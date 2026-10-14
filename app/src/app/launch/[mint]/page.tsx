@@ -54,11 +54,16 @@ function Token({ mint }: { mint: string }) {
   const price = migrated && ammSol && ammTokens ? (Number(ammSol) / Number(ammTokens)) * 10 ** decimals : priceLamportsPerToken(curve, decimals);
   const prog = curve.graduated ? 1 : Math.min(1, Number(curve.realSol) / Number(curve.graduationLamports || 1n));
   const image = meta && "image" in meta ? meta.image : null;
+  const header = meta && "header" in meta ? meta.header ?? null : null;
 
   return (
     <div className="grid gap-5 lg:grid-cols-[1fr_22rem]">
       <div className="space-y-5">
-        <section className="glass noise px-7 py-7">
+        <section className="glass noise overflow-hidden px-7 py-7">
+          {header && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={header} alt="" className="-mx-7 -mt-7 mb-6 aspect-[3/1] w-[calc(100%+3.5rem)] max-w-none object-cover" />
+          )}
           <div className="flex flex-wrap items-baseline justify-between gap-3">
             <div className="flex items-center gap-4">
               {image ? (

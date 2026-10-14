@@ -723,8 +723,8 @@ so this section states its boundary rather than its marketing.
   config from mainnet-beta, so the e2e creates a real pool through the real
   program rather than a mock.
 - **Launch metadata hosting.** The indexer's `POST /meta` is the project's
-  only writable public endpoint. It accepts one image (type sniffed from the
-  bytes, ≤ 512 KiB) plus bounded text, stores both content-addressed and
+  only writable public endpoint. It accepts an icon and an optional header
+  (types sniffed from the bytes, ≤ 4.5 MB each) plus bounded text, stores all of it content-addressed and
   immutable, rate-limits per IP, logs nothing about the uploader, and serves
   files only by their hash names. A mint's URI is a 200-byte string the
   program does not interpret; a launch made outside the app can point

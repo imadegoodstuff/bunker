@@ -98,17 +98,39 @@ function CreateCard() {
   const [symbol, setSymbol] = useState("");
   const [description, setDescription] = useState("");
   const [image, setImage] = useState<string | null>(null);
+  const [header, setHeader] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  const pickImage = (file: File | undefined) => {
+  // The same rules listing sites apply, checked before upload so a creator
+  // uploads one set of files everywhere: icon 1:1 and ≥ 100 px, header 3:1 and
+  // ≥ 600 px wide, PNG/JPEG/GIF/WebP, ≤ 4.5 MB each.
+  const pickImage = (file: File | undefined, kind: "icon" | "header") => {
     setErr(null);
-    setImage(null);
+    (kind === "icon" ? setImage : setHeader)(null);
     if (!file) return;
-    if (!["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type)) return setErr("Image must be PNG, JPEG, GIF or WebP");
-    if (file.size > 512 * 1024) return setErr("Image must be 512 KiB or smaller");
+    const what = kind === "icon" ? "Icon" : "Header";
+    if (!["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type)) return setErr(`${what} must be PNG, JPEG, GIF or WebP`);
+    if (file.size > 4.5 * 1024 * 1024) return setErr(`${what} must be 4.5 MB or smaller`);
     const r = new FileReader();
-    r.onload = () => setImage(String(r.result));
-    r.onerror = () => setErr("Could not read the image");
+    r.onload = () => {
+      const url = String(r.result);
+      const probe = new Image();
+      probe.onload = () => {
+        const { naturalWidth: w, naturalHeight: h } = probe;
+        if (kind === "icon") {
+          if (w < 100) return setErr("Icon must be at least 100 px wide");
+          if (Math.abs(w - h) > Math.max(2, w * 0.02)) return setErr(`Icon must be square (1:1); this one is ${w}×${h}`);
+          setImage(url);
+        } else {
+          if (w < 600) return setErr("Header must be at least 600 px wide");
+          if (Math.abs(w / h - 3) > 0.06) return setErr(`Header must be 3:1 (for example 1500×500); this one is ${w}×${h}`);
+          setHeader(url);
+        }
+      };
+      probe.onerror = () => setErr(`Could not decode the ${what.toLowerCase()}`);
+      probe.src = url;
+    };
+    r.onerror = () => setErr(`Could not read the ${what.toLowerCase()}`);
     r.readAsDataURL(file);
   };
 
@@ -119,7 +141,7 @@ function CreateCard() {
     if (!image) return setErr("An image is required");
     if (name.length > 32 || symbol.length > 10 || description.length > 500) return setErr("Name ≤ 32, symbol ≤ 10, description ≤ 500 characters");
     try {
-      const mint = await launch({ name: name.trim(), symbol: symbol.trim().toUpperCase(), description: description.trim(), image }, publicKey, (tx) => sendTransaction(tx, connection));
+      const mint = await launch({ name: name.trim(), symbol: symbol.trim().toUpperCase(), description: description.trim(), image, header: header ?? undefined }, publicKey, (tx) => sendTransaction(tx, connection));
       router.push(`/launch/${mint.toBase58()}`);
     } catch (e) {
       setErr((e as Error).message);
@@ -142,10 +164,23 @@ function CreateCard() {
             <span className="flex h-14 w-14 items-center justify-center rounded-lg bg-white/5 font-mono text-[10px] uppercase text-dim">image</span>
           )}
           <span className="text-xs leading-relaxed text-mute">
-            <span className="text-fg">{image ? "Image chosen" : "Choose an image (required)"}</span>
-            <br />PNG, JPEG, GIF or WebP, up to 512 KiB. Hosted immutably, content-addressed.
+            <span className="text-fg">{image ? "Icon chosen" : "Icon (required)"}</span>
+            <br />Square, at least 100×100. PNG, JPEG, GIF or WebP, up to 4.5 MB. Hosted immutably, content-addressed.
           </span>
-          <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" className="hidden" onChange={(e) => pickImage(e.target.files?.[0])} />
+          <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" className="hidden" onChange={(e) => pickImage(e.target.files?.[0], "icon")} />
+        </label>
+        <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-dashed border-line p-3 transition-colors hover:border-accent/50">
+          {header ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={header} alt="" className="h-10 w-[7.5rem] shrink-0 rounded-lg object-cover" />
+          ) : (
+            <span className="flex h-10 w-[7.5rem] shrink-0 items-center justify-center rounded-lg bg-white/5 font-mono text-[10px] uppercase text-dim">header</span>
+          )}
+          <span className="text-xs leading-relaxed text-mute">
+            <span className="text-fg">{header ? "Header chosen" : "Header (optional)"}</span>
+            <br />3:1 banner, at least 600 px wide (1500×500 is typical). Shown on the token page and written into the metadata for listing sites.
+          </span>
+          <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" className="hidden" onChange={(e) => pickImage(e.target.files?.[0], "header")} />
         </label>
         <input className="input" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} maxLength={32} />
         <input className="input font-mono uppercase" placeholder="SYMBOL" value={symbol} onChange={(e) => setSymbol(e.target.value)} maxLength={10} />

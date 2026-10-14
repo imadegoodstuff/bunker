@@ -5,7 +5,7 @@ import { Db } from "./db.js";
 import { Scanner } from "./scanner.js";
 import { contiguousPrefix } from "./paging.js";
 import { inspectProgram, type ProgramInfo } from "./program.js";
-import { buildMeta, MetaError, MetaStore, RateLimit } from "./meta.js";
+import { buildMeta, MAX_IMAGE_BYTES, MetaError, MetaStore, RateLimit } from "./meta.js";
 import { dirname, join } from "node:path";
 
 const RPC = process.env.RPC_URL ?? "https://api.mainnet-beta.solana.com";
@@ -120,24 +120,27 @@ app.get<{ Querystring: { sinceSlot?: string; days?: string } }>("/stats", async 
  * public on-chain already (curve reserves, trade sizes, fee flows); what is
  * absent is who traded — a private trade's only wallet is a throwaway claim key.
  */
-/** The token image for a launch whose metadata this indexer hosts (`uri` under PUBLIC_URL/meta); null for foreign URIs. */
-const imageCache = new Map<string, string | null>();
-function imageOf(uri: unknown): string | null {
-  if (typeof uri !== "string") return null;
+/** The token icon and optional header for a launch whose metadata this indexer hosts (`uri` under PUBLIC_URL/meta); nulls for foreign URIs. */
+type Images = { image: string | null; header: string | null };
+const imageCache = new Map<string, Images>();
+function imagesOf(uri: unknown): Images {
+  const none: Images = { image: null, header: null };
+  if (typeof uri !== "string") return none;
   const prefix = `${PUBLIC_URL.replace(/\/+$/, "")}/meta/`;
-  if (!uri.startsWith(prefix)) return null;
+  if (!uri.startsWith(prefix)) return none;
   const cached = imageCache.get(uri);
-  if (cached !== undefined) return cached;
-  let image: string | null = null;
+  if (cached) return cached;
+  const out: Images = { ...none };
   try {
     const f = meta.get(uri.slice(prefix.length));
-    const j = f ? (JSON.parse(f.bytes.toString("utf8")) as { image?: unknown }) : undefined;
-    if (typeof j?.image === "string" && j.image.startsWith(prefix)) image = j.image;
-  } catch { /* not ours or malformed: no image */ }
-  imageCache.set(uri, image);
-  return image;
+    const j = f ? (JSON.parse(f.bytes.toString("utf8")) as { image?: unknown; header?: unknown }) : undefined;
+    if (typeof j?.image === "string" && j.image.startsWith(prefix)) out.image = j.image;
+    if (typeof j?.header === "string" && j.header.startsWith(prefix)) out.header = j.header;
+  } catch { /* not ours or malformed: no images */ }
+  imageCache.set(uri, out);
+  return out;
 }
-const withImage = (l: Record<string, unknown>) => ({ ...l, image: imageOf(l.uri) });
+const withImage = (l: Record<string, unknown>) => ({ ...l, ...imagesOf(l.uri) });
 
 app.get<{ Querystring: { limit?: string; offset?: string } }>("/launches", async (req) =>
   db.launches(Math.min(Number(req.query.limit ?? 50), 200), Number(req.query.offset ?? 0)).map(withImage)
@@ -151,19 +154,21 @@ app.get<{ Params: { mint: string }; Querystring: { limit?: string; beforeSlot?: 
 });
 
 /**
- * Launch metadata. The app uploads the token's image (required) with its
- * name/symbol/description before the launch transaction; the mint's URI then
- * points at the JSON written here. Content-addressed and immutable; the only
- * writable endpoint of the indexer, so it is bounded (512 KiB, sniffed image
- * types, per-IP rate limit) and holds nothing that identifies the uploader.
+ * Launch metadata. The app uploads the token's icon (required) and an optional
+ * 3:1 header with its name/symbol/description before the launch transaction;
+ * the mint's URI then points at the JSON written here. Content-addressed and
+ * immutable; the only writable endpoint of the indexer, so it is bounded
+ * (4.5 MB per image, sniffed image types, per-IP rate limit) and holds nothing
+ * that identifies the uploader.
  */
-app.post<{ Body: { name?: string; symbol?: string; description?: string; image?: string } }>("/meta", { bodyLimit: 1024 * 1024 }, async (req, reply) => {
+const META_BODY_LIMIT = Math.ceil((2 * MAX_IMAGE_BYTES * 4) / 3) + 64 * 1024; // two base64 images plus text
+app.post<{ Body: { name?: string; symbol?: string; description?: string; image?: string; header?: string } }>("/meta", { bodyLimit: META_BODY_LIMIT }, async (req, reply) => {
   if (!metaLimit.allow(req.ip)) return reply.code(429).send({ error: "too many uploads from this address; try again later" });
   try {
     const b = req.body ?? {};
-    const files = buildMeta({ name: b.name ?? "", symbol: b.symbol ?? "", description: b.description, image: b.image ?? "" }, PUBLIC_URL);
+    const files = buildMeta({ name: b.name ?? "", symbol: b.symbol ?? "", description: b.description, image: b.image ?? "", header: b.header || undefined }, PUBLIC_URL);
     meta.put(files);
-    return { uri: files.uri, image: files.image };
+    return { uri: files.uri, image: files.image, header: files.header ?? null };
   } catch (e) {
     if (e instanceof MetaError) return reply.code(400).send({ error: e.message });
     throw e;

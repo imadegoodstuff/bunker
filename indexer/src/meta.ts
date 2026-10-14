@@ -7,7 +7,8 @@ import { createHash } from "node:crypto";
 import { mkdirSync, existsSync, writeFileSync, renameSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const MAX_IMAGE_BYTES = 512 * 1024;
+/** Per image. Listing sites accept up to 4.5 MB for an icon or header, so a creator can upload the same file here. */
+export const MAX_IMAGE_BYTES = Math.floor(4.5 * 1024 * 1024);
 export const MAX_NAME = 32;
 export const MAX_SYMBOL = 10;
 export const MAX_DESCRIPTION = 500;
@@ -20,8 +21,12 @@ const MAGIC: { mime: string; ext: string; head: number[]; at?: number }[] = [
 ];
 export const EXT_MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", gif: "image/gif", webp: "image/webp", json: "application/json" };
 
-export interface MetaInput { name: string; symbol: string; description?: string; image: string }
-export interface MetaFiles { imageName: string; imageBytes: Uint8Array; jsonName: string; json: string; mime: string }
+/** `image` is the square icon (required); `header` an optional 3:1 banner. Both are base64 data URLs. */
+export interface MetaInput { name: string; symbol: string; description?: string; image: string; header?: string }
+export interface MetaFiles {
+  imageName: string; imageBytes: Uint8Array; jsonName: string; json: string; mime: string;
+  headerName?: string; headerBytes?: Uint8Array;
+}
 
 export class MetaError extends Error {}
 
@@ -29,10 +34,11 @@ export class MetaError extends Error {}
 export function decodeImage(dataUrl: string): { bytes: Uint8Array; mime: string; ext: string } {
   const m = /^data:([a-z0-9./+-]+);base64,([A-Za-z0-9+/=\s]+)$/i.exec(dataUrl ?? "");
   if (!m) throw new MetaError("image must be a base64 data URL");
-  if (m[2].length > Math.ceil((MAX_IMAGE_BYTES * 4) / 3) + 16) throw new MetaError(`image larger than ${MAX_IMAGE_BYTES / 1024} KiB`);
+  const limit = `${(MAX_IMAGE_BYTES / (1024 * 1024)).toFixed(1)} MB`;
+  if (m[2].length > Math.ceil((MAX_IMAGE_BYTES * 4) / 3) + 16) throw new MetaError(`image larger than ${limit}`);
   const bytes = new Uint8Array(Buffer.from(m[2].replace(/\s/g, ""), "base64"));
   if (bytes.length === 0) throw new MetaError("empty image");
-  if (bytes.length > MAX_IMAGE_BYTES) throw new MetaError(`image larger than ${MAX_IMAGE_BYTES / 1024} KiB`);
+  if (bytes.length > MAX_IMAGE_BYTES) throw new MetaError(`image larger than ${limit}`);
   const kind = MAGIC.find((k) => k.head.every((b, i) => bytes[(k.at ?? 0) + i] === b));
   if (!kind) throw new MetaError("image must be PNG, JPEG, GIF or WebP");
   return { bytes, mime: kind.mime, ext: kind.ext };
@@ -48,7 +54,7 @@ const clean = (s: unknown, max: number, what: string, required: boolean): string
 };
 
 /** Validate an upload and lay out the two files it becomes. `publicUrl` is where `/meta/<file>` is served from. */
-export function buildMeta(input: MetaInput, publicUrl: string): MetaFiles & { uri: string; image: string } {
+export function buildMeta(input: MetaInput, publicUrl: string): MetaFiles & { uri: string; image: string; header?: string } {
   const name = clean(input.name, MAX_NAME, "name", true);
   const symbol = clean(input.symbol, MAX_SYMBOL, "symbol", true);
   if (!/^[A-Za-z0-9._-]+$/.test(symbol)) throw new MetaError("symbol may only use letters, digits, . _ -");
@@ -57,9 +63,20 @@ export function buildMeta(input: MetaInput, publicUrl: string): MetaFiles & { ur
   const imageName = `${sha256(img.bytes)}.${img.ext}`;
   const base = publicUrl.replace(/\/+$/, "");
   const image = `${base}/meta/${imageName}`;
-  const json = JSON.stringify({ name, symbol, description, image, properties: { files: [{ uri: image, type: img.mime }], category: "image" } });
+  const files = [{ uri: image, type: img.mime }];
+  let header: string | undefined, headerName: string | undefined, headerBytes: Uint8Array | undefined;
+  if (input.header) {
+    const h = decodeImage(input.header);
+    headerName = `${sha256(h.bytes)}.${h.ext}`;
+    headerBytes = h.bytes;
+    header = `${base}/meta/${headerName}`;
+    files.push({ uri: header, type: h.mime });
+  }
+  // `image` is the standard field every wallet and explorer reads; `header`
+  // is the banner listing sites ask for, kept next to it so one URI carries both.
+  const json = JSON.stringify({ name, symbol, description, image, ...(header ? { header } : {}), properties: { files, category: "image" } });
   const jsonName = `${sha256(Buffer.from(json))}.json`;
-  return { imageName, imageBytes: img.bytes, jsonName, json, mime: img.mime, uri: `${base}/meta/${jsonName}`, image };
+  return { imageName, imageBytes: img.bytes, jsonName, json, mime: img.mime, headerName, headerBytes, uri: `${base}/meta/${jsonName}`, image, header };
 }
 
 export function sha256(b: Uint8Array): string {
@@ -75,6 +92,7 @@ export class MetaStore {
   }
   put(files: MetaFiles) {
     this.write(files.imageName, files.imageBytes);
+    if (files.headerName && files.headerBytes) this.write(files.headerName, files.headerBytes);
     this.write(files.jsonName, Buffer.from(files.json));
   }
   private write(name: string, bytes: Uint8Array) {
