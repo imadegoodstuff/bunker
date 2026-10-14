@@ -177,14 +177,21 @@ async function sendVote(a: Agent, mint: PublicKey, d: Decision): Promise<string>
 const votedIn = new Map<string, bigint>();
 /**
  * Trade count (buys + sells) of each curve when the agents last looked at it.
- * A token nobody has traded since then costs no model call: the agents are
- * asked only when there is new volume to judge. A quiet token's last votes
- * simply age out and its fee stays put, which is what "no activity" should mean.
+ * New volume always earns a fresh look. Without it the agents still speak:
+ * once when a token first appears (so a new launch is never "no vote yet"),
+ * and again whenever an agent's standing vote is about to age out, so a quiet
+ * token keeps a live quorum instead of drifting into "no quorum" every four
+ * minutes. The cost is one model call per agent per ~3 minutes per live token.
  */
 const seenTrades = new Map<string, bigint>();
-/** the first time a token is seen it must already have at least one trade before anyone is asked */
 function hasNewVolume(mint: string, curve: CurveState): boolean {
-  return curve.buys + curve.sells > (seenTrades.get(mint) ?? 0n);
+  const seen = seenTrades.get(mint);
+  return seen === undefined || curve.buys + curve.sells > seen;
+}
+/** an agent's on-chain vote is within one epoch of expiring (or absent) */
+function voteGoingStale(curve: CurveState, agent: number, slot: bigint): boolean {
+  const v = curve.votes[agent];
+  return v.slot === 0n || slot - v.slot >= policy.VOTE_TTL_SLOTS - policy.EPOCH_SLOTS;
 }
 
 /**
@@ -247,10 +254,11 @@ async function tick() {
       continue;
     }
     if (curve.feesAccrued >= HARVEST_MIN) void harvest(launches[i], curve, mints[i], slot);
-    if (!hasNewVolume(launches[i].mint, curve)) continue;
+    const fresh = hasNewVolume(launches[i].mint, curve);
     seenTrades.set(launches[i].mint, curve.buys + curve.sells);
     let v: TokenView | undefined;
     for (const a of agents) {
+      if (!fresh && !voteGoingStale(curve, a.index, slot)) continue;
       const k = `${a.index}:${launches[i].mint}`;
       if (votedIn.get(k) === epoch) continue;
       votedIn.set(k, epoch);
@@ -263,7 +271,7 @@ async function tick() {
           record({ ...base, error: `model returned no usable vote: ${text.slice(0, 120)}` });
           continue;
         }
-        if (!shouldSend(curve.votes[a.index], d, slot)) {
+        if (!voteGoingStale(curve, a.index, slot) && !shouldSend(curve.votes[a.index], d, slot)) {
           record({ ...base, decision: d, skipped: "unchanged and still fresh on chain" });
           continue;
         }
