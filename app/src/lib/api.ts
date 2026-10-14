@@ -57,11 +57,28 @@ export interface RelayerInfo {
   lookupTable: string | null;
   /** exit target the relayer forwards to (the launchpad), or null if it refuses exits */
   launchProgram?: string | null;
+  /** the relayer prices any SPL mint with a pool on demand (see `asset`) */
+  dynamicAssets?: boolean;
   queued: number;
+}
+
+/** The relayer's answer for one SPL mint: can it be relayed, at what fee, with which lookup table. */
+export interface AssetQuote {
+  mint: string;
+  decimals: number;
+  tokenProgram: string;
+  pool: boolean;
+  supported: boolean;
+  reason?: string;
+  fee?: { min: string; bps: number; dest: string };
+  lookupTable?: string;
+  priceUsd?: number;
+  solUsd?: number;
 }
 
 export const relayer = {
   info: () => j<RelayerInfo>(`${RELAYER_URL}/info`),
+  asset: (mint: string) => j<AssetQuote>(`${RELAYER_URL}/asset/${mint}`),
   relay: (data: string, keys: { pubkey: string; isSigner: boolean; isWritable: boolean }[]) =>
     j<{ id: string; releaseAt: number; cu?: number }>(`${RELAYER_URL}/relay`, { method: "POST", body: JSON.stringify({ data, keys }) }),
   job: (id: string) => j<{ id: string; status: "queued" | "submitting" | "confirmed" | "failed"; signature?: string; error?: string; releaseAt: number }>(`${RELAYER_URL}/job/${id}`),

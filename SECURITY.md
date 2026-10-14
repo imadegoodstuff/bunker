@@ -606,13 +606,24 @@ engineering, not policy, so both are now code.
   out" condition the reviewer named, made observable before it happens.
   `relayer/src/fees.test.ts` pins the percentile, the clamp, the lone-spike
   case, and the keep-last-good-price behaviour.
-- **Not changed, on purpose, and still open.** (1) SPL-denominated fees are
-  priced by the operator in `FEE_POLICY`; the relayer logs the SOL cost at
-  startup for comparison but does not convert at a market rate — it has no
-  oracle it trusts for that. (2) The Merkle tree is one writable account; all
-  assets contend for it (SPEC §8). (3) Origin binding of the signed message
+- **Any token in the wallet is shieldable; the relayer prices it live.**
+  Pools are permissionless, so the app lists every mint the connected wallet
+  holds and the first shield of a new mint opens its pool (the depositor pays
+  the rent). For the relayed leg the relayer answers `GET /asset/:mint`
+  (`relayer/src/assets.ts`): it converts its 4-input SOL cost floor into the
+  token at Jupiter's price with a 50 % margin (`DYNAMIC_MARGIN_BPS`), creates
+  its own token account and a per-mint lookup table on first use, and finds
+  those tables again after a restart by authority. Tokens Jupiter does not
+  price are shield-only: the relayer refuses to take a fee it cannot value, and
+  the app says so. `FEE_POLICY` still wins for any mint the operator priced by
+  hand; `DYNAMIC_ASSETS=0` turns the market path off. The price feed is a
+  single HTTP source and is trusted only for the relayer's own fee — a wrong
+  price costs the relayer money, never a user's funds. Withdrawals of a token
+  land in the recipient's associated token account, which must already exist.
+- **Not changed, on purpose, and still open.** (1) The Merkle tree is one writable account; all
+  assets contend for it (SPEC §8). (2) Origin binding of the signed message
   (Sign-In-With-Solana) is still declined for the recovery reason given in §1.
-  (4) The cofactor-clearing fix, like everything in §3, has been reviewed from
+  (3) The cofactor-clearing fix, like everything in §3, has been reviewed from
   source by outside readers and tested against the attack it answers; it has
   not been independently audited, and this file does not claim that it has.
 

@@ -19,6 +19,10 @@ export interface AssetMeta {
   denominations: number[];
   /** Only the native SCASH pool receives harvested creator fees. Everything else earns nothing. */
   yieldBearing?: boolean;
+  /** token image, when a registry knows one */
+  image?: string;
+  /** found in the connected wallet rather than configured */
+  fromWallet?: boolean;
 }
 
 export const ASSETS: AssetMeta[] = [

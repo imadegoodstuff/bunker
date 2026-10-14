@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { PublicKey } from "@solana/web3.js";
+import { PublicKey, SystemProgram } from "@solana/web3.js";
 import { motion } from "framer-motion";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { ASSETS, type AssetMeta } from "@/lib/config";
@@ -37,7 +37,7 @@ function useDeviceNotice() {
 export function TransactPanel() {
   const { publicKey, sendTransaction } = useWallet();
   const { connection } = useConnection();
-  const { balances, pools, relayer, shield, send, unshield, notes, sync, syncedTo, totalLeaves, freezeAuthority, lastProveMs } = useScash();
+  const { balances, pools, relayer, shield, send, unshield, notes, sync, syncedTo, totalLeaves, freezeAuthority, lastProveMs, walletAssets, walletBalances, assetQuotes, scanWallet, phase } = useScash();
   const deviceNotice = useDeviceNotice();
   const [mode, setMode] = useState<Mode>("shield");
   const [asset, setAsset] = useState<AssetMeta>(ASSETS[0]);
@@ -48,10 +48,28 @@ export function TransactPanel() {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Every token in the connected wallet is shieldable; list them next to SOL.
+  const assets = useMemo(() => [...ASSETS, ...Object.values(walletAssets)], [walletAssets]);
+  const owner = publicKey?.toBase58();
+  useEffect(() => {
+    if (!publicKey || phase !== "ready") return;
+    void scanWallet(publicKey).catch(() => undefined);
+    const t = setInterval(() => void scanWallet(publicKey).catch(() => undefined), 60_000);
+    return () => clearInterval(t);
+  }, [owner, phase]); // publicKey is keyed by `owner`; scanWallet is a stable store action
+  useEffect(() => {
+    if (!assets.some((a) => a.symbol === asset.symbol)) setAsset(ASSETS[0]);
+  }, [assets, asset.symbol]);
+
   const pool = pools[asset.symbol];
+  const isSol = asset.mint.equals(SystemProgram.programId);
   const shieldedShares = balances[asset.symbol] ?? 0n;
   const shieldedAmount = pool ? amountForBurn(pool, shieldedShares) : shieldedShares;
-  const feePolicy = relayer?.fees.find((f) => f.mint === asset.mint.toBase58());
+  const publicBalance = walletBalances[asset.symbol];
+  const quote = isSol ? undefined : assetQuotes[asset.mint.toBase58()];
+  const staticPolicy = relayer?.fees.find((f) => f.mint === asset.mint.toBase58());
+  const feePolicy = staticPolicy ?? (quote?.supported && quote.fee ? { mint: quote.mint, min: quote.fee.min, bps: quote.fee.bps } : undefined);
+  const shieldOnly = !isSol && !staticPolicy && !!quote && !quote.supported && quote.pool;
 
   const parsed = useMemo(() => {
     try { return parseAmount(amount || "0", asset.decimals); } catch { return null; }
@@ -107,15 +125,18 @@ export function TransactPanel() {
           <p className="mt-3 text-xs text-dim">
             {notes.length} note{notes.length === 1 ? "" : "s"} · synced {syncedTo.toLocaleString()} / {totalLeaves.toLocaleString()}
             {" · "}<button onClick={() => sync()} className="link underline-offset-4 hover:underline">rescan</button>
-            {!pool && <span className="ml-2 text-warn">pool not created</span>}
+            {!pool && (isSol ? <span className="ml-2 text-warn">pool not created</span> : <span className="ml-2 text-dim">no pool yet · your first shield opens it</span>)}
           </p>
         </div>
-        {ASSETS.length > 1 && (
-          <select className="input !h-10 !w-auto" value={asset.symbol} onChange={(e) => setAsset(ASSETS.find((a) => a.symbol === e.target.value)!)}>
-            {ASSETS.map((a) => <option key={a.symbol} value={a.symbol}>{a.symbol}</option>)}
+        {assets.length > 1 && (
+          <select className="input !h-10 !w-auto max-w-[11rem]" value={asset.symbol} onChange={(e) => setAsset(assets.find((a) => a.symbol === e.target.value)!)}>
+            {assets.map((a) => <option key={a.symbol} value={a.symbol}>{a.symbol}{a.fromWallet && walletBalances[a.symbol] !== undefined ? ` · ${fmtAmount(walletBalances[a.symbol], a.decimals)}` : ""}</option>)}
           </select>
         )}
       </div>
+      {publicKey && assets.length === 1 && (
+        <p className="px-7 pt-3 text-xs text-dim">Only SOL in this wallet. Any token you hold shows up here and can be shielded.</p>
+      )}
 
       {/* modes */}
       <div className="px-7 pt-7">
@@ -136,7 +157,9 @@ export function TransactPanel() {
           <div className="flex items-baseline justify-between">
             <span className="label">Amount</span>
             <span className="text-xs text-dim">
-              {mode === "shield" ? "from your public wallet" : `available ${fmtAmount(shieldedAmount, asset.decimals)} ${asset.symbol}`}
+              {mode === "shield"
+                ? publicBalance !== undefined ? `wallet holds ${fmtAmount(publicBalance, asset.decimals)} ${asset.symbol}` : "from your public wallet"
+                : `available ${fmtAmount(shieldedAmount, asset.decimals)} ${asset.symbol}`}
             </span>
           </div>
           <div className={`mt-2 flex items-center gap-3 rounded-2xl border px-4 py-3 transition-colors focus-within:border-accent/60 ${tooMuch ? "border-bad/60" : "border-line-strong"}`}>
@@ -155,6 +178,9 @@ export function TransactPanel() {
             ))}
             {mode !== "shield" && (
               <button className="chip" onClick={() => setAmount(fmtAmount(shieldedAmount, asset.decimals, asset.decimals).replace(/,/g, ""))}>max</button>
+            )}
+            {mode === "shield" && !isSol && publicBalance !== undefined && publicBalance > 0n && (
+              <button className="chip" onClick={() => setAmount(fmtAmount(publicBalance, asset.decimals, asset.decimals).replace(/,/g, ""))}>all</button>
             )}
             {mode === "shield" && <span className="ml-auto self-center text-[11px] text-dim">round amounts blend in better</span>}
           </div>
@@ -181,8 +207,8 @@ export function TransactPanel() {
         )}
 
         <dl className="space-y-2 rounded-2xl border border-line bg-black/20 p-4 text-xs">
-          <Row k="Network fee" v={mode === "shield" ? "paid by you" : "paid by the relayer"} />
-          <Row k="Relayer fee" v={mode === "shield" ? "none" : feePolicy ? `${fmtAmount(fee, asset.decimals)} ${asset.symbol}` : "relayer offline"} />
+          <Row k="Network fee" v={mode === "shield" ? pool ? "paid by you" : "paid by you, plus ~0.002 SOL pool rent (once)" : "paid by the relayer"} />
+          <Row k="Relayer fee" v={mode === "shield" ? "none" : feePolicy ? `${fmtAmount(fee, asset.decimals)} ${asset.symbol}` : !relayer ? "relayer offline" : shieldOnly ? "not relayed" : !pool ? "after the pool opens" : "quoting…"} />
           {mode !== "shield" && <Row k="Recipient gets" v={`${fmtAmount(receives, asset.decimals)} ${asset.symbol}`} strong />}
           {mode !== "shield" && <Row k="Delay" v={relayer ? `${relayer.delay.minMs / 1000}–${relayer.delay.maxMs / 1000}s, random` : "—"} />}
           {mode === "shield" && <Row k="Visible on-chain" v="your wallet deposited this amount" />}
@@ -190,6 +216,16 @@ export function TransactPanel() {
           <Row k="Proof time" v={lastProveMs ? `${(lastProveMs / 1000).toFixed(1)} s on this device` : "~3 s on a laptop, longer on phones"} />
         </dl>
 
+        {!isSol && pool && (
+          <p className="text-xs leading-relaxed text-dim">
+            You hide among {asset.symbol} notes only, not SOL notes: a new pool is a small crowd. Round amounts and patience matter more here.
+          </p>
+        )}
+        {shieldOnly && mode !== "shield" && (
+          <p className="rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-warn">
+            {quote?.reason ?? "The relayer does not take its fee in this token."} You can still shield {asset.symbol}; private sends and withdrawals need a token the relayer can price.
+          </p>
+        )}
         {freezeAuthority[asset.symbol] && (
           <p className="rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-warn">
             {asset.symbol}&apos;s issuer keeps a freeze authority ({freezeAuthority[asset.symbol].slice(0, 4)}…{freezeAuthority[asset.symbol].slice(-4)}).
@@ -199,7 +235,7 @@ export function TransactPanel() {
         {deviceNotice && <p className="text-xs leading-relaxed text-dim">{deviceNotice}</p>}
 
         {err && <p className="text-sm text-bad">{err}</p>}
-        <button className="btn-primary h-12 w-full text-[15px]" disabled={busy || !pool || (mode !== "shield" && !relayer)} onClick={submit}>
+        <button className="btn-primary h-12 w-full text-[15px]" disabled={busy || (!pool && (isSol || mode !== "shield")) || (mode !== "shield" && (!relayer || !feePolicy))} onClick={submit}>
           {cta}
         </button>
       </div>

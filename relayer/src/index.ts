@@ -10,6 +10,7 @@ import {
 import { FeePolicy } from "./policy.js";
 import { SubmitQueue } from "./queue.js";
 import { PriorityFeeOracle } from "./fees.js";
+import { DynamicAssets } from "./assets.js";
 
 const RPC = process.env.RPC_URL ?? "https://api.mainnet-beta.solana.com";
 const PROGRAM = new PublicKey(process.env.PROGRAM_ID ?? DEFAULT_PROGRAM.toBase58());
@@ -41,6 +42,15 @@ if (process.env.LOOKUP_TABLE) {
   console.log(`[relayer] using lookup table ${process.env.LOOKUP_TABLE} (${queue.table.state.addresses.length} addresses)`);
 }
 queue.start();
+// Any SPL mint with a pool: fee priced off Jupiter, per-mint lookup table made
+// on demand. DYNAMIC_ASSETS=0 limits the relayer to FEE_POLICY.
+const dynamic = new DynamicAssets(conn, signer, PROGRAM, {
+  priceUrl: process.env.PRICE_URL ?? "https://lite-api.jup.ag/price/v3",
+  marginBps: Number(process.env.DYNAMIC_MARGIN_BPS ?? 5_000),
+  bps: Number(process.env.DYNAMIC_FEE_BPS ?? 5),
+  priceTtlMs: Number(process.env.PRICE_TTL_MS ?? 60_000),
+  enabled: process.env.DYNAMIC_ASSETS !== "0",
+});
 
 function loadKeypair(): Keypair {
   const raw = process.env.RELAYER_KEYPAIR ?? (process.env.RELAYER_KEYPAIR_PATH ? readFileSync(process.env.RELAYER_KEYPAIR_PATH, "utf8") : undefined);
@@ -123,8 +133,28 @@ app.get("/info", async () => ({
   lookupTable: process.env.LOOKUP_TABLE ?? null,
   /** exit target accepted for relayed private buys/sells; sells pay the SOL floor as an exit-data tip */
   launchProgram: LAUNCH?.toBase58() ?? null,
+  /** any SPL mint with a pool can be relayed; ask /asset/:mint for its fee */
+  dynamicAssets: dynamic.opts.enabled,
   queued: queue.size(),
 }));
+
+/**
+ * Fee quote for one SPL mint (SOL is in /info). Priced in the token off the
+ * 4-input cost floor; the first call for a mint with a pool also provisions the
+ * relayer's token account and the mint's lookup table.
+ */
+app.get<{ Params: { mint: string } }>("/asset/:mint", async (req, reply) => {
+  let mint: PublicKey;
+  try { mint = new PublicKey(req.params.mint); } catch { return reply.code(400).send({ error: "bad mint" }); }
+  if (mint.equals(SystemProgram.programId)) return reply.code(400).send({ error: "SOL is quoted in /info" });
+  const cost = await relayCostLamports(4);
+  const floor = cost + (cost * BigInt(COST_MARGIN_BPS)) / 10_000n;
+  try {
+    return await dynamic.quote(mint, floor);
+  } catch (e) {
+    return reply.code(400).send({ error: (e as Error).message });
+  }
+});
 
 app.get("/health", async () => {
   const bal = await conn.getBalance(signer.publicKey).catch(() => -1);
@@ -190,9 +220,22 @@ app.post<{ Body: RelayBody }>("/relay", async (req, reply) => {
   }
 
   const sell = launch?.kind === EXIT_SELL;
-  if (!sell && !policy.supports(mint.toBase58())) return reply.code(400).send({ error: "unsupported asset" });
+  // The relayer is `payer`: it funds one rent-exempt 1-byte PDA per nullifier
+  // (dummy inputs included, so a 2-in tx costs 2 rents, a 4-in tx 4), the
+  // signature fee and any priority fee. For SOL the fee must cover that cost
+  // plus a margin; a policy minimum below cost would make every relayed
+  // transaction a loss, and a zero-value "no-op" transact can never pay it.
+  // For SPL assets the fee is in tokens: FEE_POLICY if the operator priced the
+  // mint, otherwise a live market quote (DynamicAssets) with its own margin.
+  const costLamports = await relayCostLamports(parsed.nNf);
+  const solFloor = costLamports + (costLamports * BigInt(COST_MARGIN_BPS)) / 10_000n;
+  let dyn: Awaited<ReturnType<typeof dynamic.policyFor>>;
+  if (!sell && !policy.supports(mint.toBase58())) {
+    dyn = await dynamic.policyFor(mint, solFloor);
+    if (!dyn) return reply.code(400).send({ error: "unsupported asset" });
+  }
   const relayerDest = keys[11].pubkey;
-  const expectedDest = policy.get(mint.toBase58())?.dest;
+  const expectedDest = dyn?.dest.toBase58() ?? policy.get(mint.toBase58())?.dest;
   if (!sell && (mint.equals(SystemProgram.programId) ? !relayerDest.equals(signer.publicKey) : expectedDest && !relayerDest.equals(new PublicKey(expectedDest)))) {
     return reply.code(400).send({ error: "relayer destination mismatch" });
   }
@@ -206,15 +249,6 @@ app.post<{ Body: RelayBody }>("/relay", async (req, reply) => {
     const shares = -parsed.signedShares;
     amount = pool.totalShares === 0n ? 0n : (shares * pool.totalAssets) / pool.totalShares;
   }
-  // The relayer is `payer`: it funds one rent-exempt 1-byte PDA per nullifier
-  // (dummy inputs included, so a 2-in tx costs 2 rents, a 4-in tx 4), the
-  // signature fee and any priority fee. For SOL the fee must cover that cost
-  // plus a margin; a policy minimum below cost would make every relayed
-  // transaction a loss, and a zero-value "no-op" transact can never pay it.
-  // For SPL assets the fee is in tokens, so the operator must price FEE_POLICY
-  // above the SOL cost themselves (we log the cost at startup).
-  const costLamports = await relayCostLamports(parsed.nNf);
-  const solFloor = costLamports + (costLamports * BigInt(COST_MARGIN_BPS)) / 10_000n;
   if (sell) {
     // A private sell's vault fee would be in the token being sold, which this
     // relayer does not price; the launch program pays the relayer a SOL tip
@@ -225,8 +259,14 @@ app.post<{ Body: RelayBody }>("/relay", async (req, reply) => {
       return reply.code(402).send({ error: "relayer tip too low", required: required.toString(), relayerCostLamports: costLamports.toString() });
     }
   } else {
-    let required = policy.required(mint.toBase58(), amount);
-    if (mint.equals(SystemProgram.programId) && solFloor > required) required = solFloor;
+    let required: bigint;
+    if (dyn) {
+      const pct = (amount * BigInt(dyn.bps)) / 10_000n;
+      required = pct > dyn.min ? pct : dyn.min;
+    } else {
+      required = policy.required(mint.toBase58(), amount);
+      if (mint.equals(SystemProgram.programId) && solFloor > required) required = solFloor;
+    }
     if (parsed.ext.relayerFee < required) {
       return reply.code(402).send({ error: "fee too low", required: required.toString(), relayerCostLamports: costLamports.toString() });
     }
@@ -240,7 +280,8 @@ app.post<{ Body: RelayBody }>("/relay", async (req, reply) => {
 
   // --- simulate before accepting (catches bad proofs / stale roots / spent notes)
   const ix = new TransactionInstruction({ programId: PROGRAM, keys, data: Buffer.from(data) });
-  const sim = buildV0(signer.publicKey, [ix], (await conn.getLatestBlockhash()).blockhash, queue.tablesFor({ tables: launch?.tables }), { cuLimit: queue.opts.cuLimit });
+  const extraTables = [...(launch?.tables ?? []), ...(dyn ? [dyn.table] : [])];
+  const sim = buildV0(signer.publicKey, [ix], (await conn.getLatestBlockhash()).blockhash, queue.tablesFor({ tables: extraTables }), { cuLimit: queue.opts.cuLimit });
   sim.sign([signer]);
   if (sim.serialize().length > 1232) return reply.code(400).send({ error: "transaction too large", bytes: sim.serialize().length });
   const res = await conn.simulateTransaction(sim, { sigVerify: false });
@@ -250,7 +291,7 @@ app.post<{ Body: RelayBody }>("/relay", async (req, reply) => {
     return reply.code(422).send({ error: vaultError ? `simulation failed: ${vaultError}` : "simulation failed", vaultError, details: res.value.err, logs: res.value.logs?.slice(-8) });
   }
 
-  const job = queue.enqueue(ix, parsed.nullifiers, launch?.tables);
+  const job = queue.enqueue(ix, parsed.nullifiers, extraTables.length ? extraTables : undefined);
   return { id: job.id, releaseAt: job.releaseAt, cu: res.value.unitsConsumed };
 });
 

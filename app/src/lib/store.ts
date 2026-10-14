@@ -6,10 +6,13 @@ import { Connection, PublicKey, SystemProgram, type VersionedTransaction } from 
 import {
   ShieldedWallet, MerkleTree, assetId, seedFromSignature, encodeAddress, decodeAddress, decodePool, poolPda, treePda, decodeTree,
   buildV0, fetchLookupTable, type PoolState, type SpendableNote, SPENDING_KEY_MESSAGE, seedToBackup, seedFromBackup,
-  isStaleRootRejection, vaultErrorName, STALE_ROOT_ERRORS,
+  isStaleRootRejection, vaultErrorName, STALE_ROOT_ERRORS, createPoolIx, ataFor, TOKEN_PROGRAM_ID,
 } from "@scash/sdk";
-import { ApiError, indexer, relayer, type RelayerInfo } from "./api";
+import { ApiError, indexer, relayer, type AssetQuote, type RelayerInfo } from "./api";
 import { ARTIFACTS, ASSETS, MAINNET, PROGRAM_ID, RPC_URL, type AssetMeta } from "./config";
+import { describe, walletTokens } from "./walletAssets";
+
+const U64_MAX = (1n << 64n) - 1n;
 
 export type Phase = "idle" | "deriving" | "syncing" | "ready" | "error";
 export type TxStage = "idle" | "building" | "proving" | "signing" | "relaying" | "confirming" | "done" | "failed";
@@ -37,6 +40,12 @@ interface State {
   /** Wall-clock proving time of the last proof made on this device, in ms. */
   lastProveMs?: number;
   balances: Record<string, bigint>;
+  /** Tokens found in the connected public wallet, keyed by mint. Any of them can be shielded; the first shield opens the pool. */
+  walletAssets: Record<string, AssetMeta>;
+  /** Public (unshielded) balances per asset symbol, base units. */
+  walletBalances: Record<string, bigint>;
+  /** Relayer quotes per SPL mint: fee in the token, lookup table, or why it is shield-only. */
+  assetQuotes: Record<string, AssetQuote>;
   /** Launched tokens the wallet also scans for, keyed by mint; their shielded balances (shares) live in `tokenBalances`. */
   launchAssets: Record<string, AssetMeta>;
   tokenBalances: Record<string, bigint>;
@@ -56,6 +65,10 @@ interface State {
   lock: () => void;
   sync: () => Promise<void>;
   refreshPools: () => Promise<void>;
+  /** Configured assets plus whatever the connected wallet holds. */
+  assets: () => AssetMeta[];
+  /** Read the public wallet's token accounts and register every mint as a shieldable asset. */
+  scanWallet: (owner: PublicKey) => Promise<void>;
   rotateAddress: () => void;
   shield: (asset: AssetMeta, amount: bigint, owner: PublicKey, sendTx: (tx: VersionedTransaction) => Promise<string>, to?: string) => Promise<void>;
   send: (asset: AssetMeta, amount: bigint, to: string, memo?: string) => Promise<void>;
@@ -103,6 +116,9 @@ export const useScash = create<State>((set, get) => {
   pools: {},
   freezeAuthority: {},
   balances: {},
+  walletAssets: {},
+  walletBalances: {},
+  assetQuotes: {},
   launchAssets: {},
   tokenBalances: {},
   notes: [],
@@ -138,7 +154,7 @@ export const useScash = create<State>((set, get) => {
   },
 
   lock() {
-    set({ phase: "idle", wallet: undefined, tree: undefined, address: undefined, notes: [], balances: {}, tokenBalances: {}, syncedTo: 0, activity: [] });
+    set({ phase: "idle", wallet: undefined, tree: undefined, address: undefined, notes: [], balances: {}, tokenBalances: {}, syncedTo: 0, activity: [], walletAssets: {}, walletBalances: {} });
   },
 
   addLaunchAssets(assets) {
@@ -158,18 +174,52 @@ export const useScash = create<State>((set, get) => {
   updateActivity(id, patch) { set((s) => ({ activity: s.activity.map((a) => (a.id === id ? { ...a, ...patch } : a)) })); },
   setTx(tx) { set({ tx }); },
 
-  async refreshPools() {
+  assets() {
+    return [...ASSETS, ...Object.values(get().walletAssets)];
+  },
+
+  async scanWallet(owner) {
     const { connection } = get();
+    const tokens = await walletTokens(connection, owner);
+    const known = new Set(ASSETS.map((a) => a.mint.toBase58()));
+    const fresh = tokens.filter((t) => !known.has(t.mint.toBase58()));
+    const cur = get().walletAssets;
+    const metas = await describe(connection, fresh.filter((t) => !cur[t.mint.toBase58()]), new Set(get().assets().map((a) => a.symbol)));
+    const walletAssets = { ...cur };
+    for (const m of metas) walletAssets[m.mint.toBase58()] = m;
+    // drop assets the wallet no longer holds unless it has shielded notes of them
+    for (const k of Object.keys(walletAssets)) {
+      if (!tokens.some((t) => t.mint.toBase58() === k) && !(get().balances[walletAssets[k].symbol] ?? 0n)) delete walletAssets[k];
+    }
+    const walletBalances: Record<string, bigint> = {};
+    walletBalances.SOL = BigInt(await connection.getBalance(owner).catch(() => 0));
+    for (const t of tokens) {
+      const a = walletAssets[t.mint.toBase58()] ?? ASSETS.find((x) => x.mint.equals(t.mint));
+      if (a) walletBalances[a.symbol] = t.amount;
+    }
+    const added = metas.length > 0;
+    set({ walletAssets, walletBalances });
+    await get().refreshPools();
+    // notes of a token we did not know about may already be in the scanned prefix
+    if (added && get().wallet && get().syncedTo > 0) {
+      set({ syncedTo: 0 });
+      void get().sync();
+    }
+  },
+
+  async refreshPools() {
+    const { connection, relayer: rl } = get();
+    const all = get().assets();
     const pools: Record<string, PoolState> = {};
-    const infos = await connection.getMultipleAccountsInfo(ASSETS.map((a) => poolPda(a.mint, PROGRAM_ID)));
+    const infos = await connection.getMultipleAccountsInfo(all.map((a) => poolPda(a.mint, PROGRAM_ID)));
     infos.forEach((info, i) => {
-      if (info) pools[ASSETS[i].symbol] = decodePool(new Uint8Array(info.data));
+      if (info) pools[all[i].symbol] = decodePool(new Uint8Array(info.data));
     });
     // Mint layout (SPL Token and Token-2022 share it): freeze_authority is a
     // COption<Pubkey> at offset 46 — 4-byte tag, then 32 bytes. The program
     // deliberately does not refuse such mints (USDC has one); the UI shows it.
     const freezeAuthority: Record<string, string> = {};
-    const spl = ASSETS.filter((a) => !a.mint.equals(SystemProgram.programId));
+    const spl = all.filter((a) => !a.mint.equals(SystemProgram.programId));
     if (spl.length) {
       const mints = await connection.getMultipleAccountsInfo(spl.map((a) => a.mint));
       mints.forEach((m, i) => {
@@ -179,6 +229,17 @@ export const useScash = create<State>((set, get) => {
       });
     }
     set({ pools, freezeAuthority });
+    // Ask the relayer how it would price each SPL asset (and let it provision
+    // its token account + lookup table for the ones with pools).
+    if (rl?.dynamicAssets && spl.length) {
+      const quotes = { ...get().assetQuotes };
+      await Promise.all(spl.map(async (a) => {
+        const k = a.mint.toBase58();
+        if (rl.fees.some((f) => f.mint === k)) return;
+        try { quotes[k] = await relayer.asset(k); } catch { /* keep the last quote, if any */ }
+      }));
+      set({ assetQuotes: quotes });
+    }
   },
 
   async sync() {
@@ -186,7 +247,8 @@ export const useScash = create<State>((set, get) => {
     if (!wallet || !tree) return;
     let from = get().syncedTo;
     const launched = Object.values(get().launchAssets);
-    const assetIds = [...ASSETS, ...launched].map((a) => ({ a, id: assetId(a.mint) }));
+    const all = get().assets();
+    const assetIds = [...all, ...launched].map((a) => ({ a, id: assetId(a.mint) }));
     for (;;) {
       const page = await indexer.commitments(from, 1000);
       for (const row of page.items) {
@@ -205,7 +267,7 @@ export const useScash = create<State>((set, get) => {
     const nfs = await indexer.nullifiers(0);
     wallet.markSpent(nfs.map((n) => BigInt("0x" + n.nullifier)));
     const balances: Record<string, bigint> = {};
-    for (const a of ASSETS) balances[a.symbol] = wallet.balance(assetId(a.mint));
+    for (const a of all) balances[a.symbol] = wallet.balance(assetId(a.mint));
     const tokenBalances: Record<string, bigint> = {};
     for (const a of launched) tokenBalances[a.mint.toBase58()] = wallet.balance(assetId(a.mint));
     set({ balances, tokenBalances, notes: [...wallet.notes.values()] });
@@ -235,24 +297,43 @@ export const useScash = create<State>((set, get) => {
   async shield(asset, amount, owner, sendTx, to) {
     const { wallet, tree, pools, relayer: rl } = get();
     if (!wallet || !tree) throw new Error("wallet locked");
-    const pool = pools[asset.symbol];
-    if (!pool) throw new Error("pool not found on chain");
+    const native = asset.mint.equals(SystemProgram.programId);
+    const tokenProgram = asset.tokenProgram ?? TOKEN_PROGRAM_ID;
+    const conn = get().connection;
     const id = crypto.randomUUID();
     const act: ActivityItem = { id, kind: "shield", asset: asset.symbol, amount, at: Date.now(), status: "pending" };
-    set((s) => ({ activity: [act, ...s.activity], tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } }));
+    set((s) => ({ activity: [act, ...s.activity], tx: { stage: "building", message: "Preparing" } }));
     try {
+      // Pools are permissionless: the first shield of a mint opens its pool
+      // first (the depositor pays the ~0.002 SOL rent), then the relayer is
+      // asked to quote it so its lookup table exists before the shield itself.
+      let pool = pools[asset.symbol];
+      if (!pool) {
+        if (native) throw new Error("pool not found on chain");
+        set({ tx: { stage: "signing", message: `Approve in your wallet: this opens the ${asset.symbol} pool (one-time, ~0.002 SOL rent)` } });
+        const openTx = buildV0(owner, [createPoolIx(owner, asset.mint, U64_MAX, tokenProgram, PROGRAM_ID)], (await conn.getLatestBlockhash()).blockhash, undefined, { cuLimit: 100_000 });
+        const openSig = await sendTx(openTx);
+        set({ tx: { stage: "confirming", message: "Opening the pool", signature: openSig } });
+        await conn.confirmTransaction(openSig, "confirmed");
+        if (rl?.dynamicAssets) await relayer.asset(asset.mint.toBase58()).catch(() => undefined);
+        await get().refreshPools();
+        pool = get().pools[asset.symbol];
+        if (!pool) throw new Error("pool did not appear after opening it");
+      }
+      set({ tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } });
       const relayerKey = rl ? new PublicKey(rl.relayer) : owner;
       const t0 = performance.now();
       const built = await wallet.buildTransact({
         asset: assetId(asset.mint), mint: asset.mint, tokenProgram: asset.tokenProgram, pool, tree, chainTree: await loadChainTree(get().connection), artifacts: ARTIFACTS,
         kind: "shield", amount, to: to ? decodeAddress(wallet.bjj, to).address : undefined,
         relayer: relayerKey, relayerDest: relayerKey, relayerFee: 0n, payer: owner, depositor: owner,
-        depositorSource: asset.mint.equals(SystemProgram.programId) ? owner : undefined,
+        depositorSource: native ? owner : ataFor(owner, asset.mint, tokenProgram),
       });
       set({ lastProveMs: performance.now() - t0, tx: { stage: "signing", message: "Approve the transaction in your wallet" } });
-      const conn = get().connection;
-      const table = rl?.lookupTable ? await fetchLookupTable(conn, new PublicKey(rl.lookupTable)) : undefined;
-      const tx = buildV0(owner, [built.instruction], (await conn.getLatestBlockhash()).blockhash, table);
+      const tableKeys = [rl?.lookupTable, get().assetQuotes[asset.mint.toBase58()]?.lookupTable].filter((k): k is string => !!k);
+      const tables = (await Promise.all(tableKeys.map((k) => fetchLookupTable(conn, new PublicKey(k)).catch(() => undefined)))).filter((t) => !!t);
+      const tx = buildV0(owner, [built.instruction], (await conn.getLatestBlockhash()).blockhash, tables);
+      if (tx.serialize().length > 1232) throw new Error("transaction too large for this token yet; the relayer is still preparing its lookup table, try again in a minute");
       const sig = await sendTx(tx);
       set({ tx: { stage: "confirming", message: "Waiting for confirmation", signature: sig } });
       await get().connection.confirmTransaction(sig, "confirmed");
@@ -305,19 +386,43 @@ async function relayedTransact(
     activityKind?: ActivityItem["kind"]; label?: string;
   }
 ): Promise<string | undefined> {
-  const { wallet, tree, pools, relayer: rl } = get();
+  const { wallet, tree, pools, relayer: rl, assetQuotes } = get();
   if (!wallet || !tree) throw new Error("wallet locked");
   if (!rl) throw new Error("relayer unavailable");
   const pool = o.pool ?? pools[asset.symbol];
   if (!pool) throw new Error("pool not found on chain");
+  const native = asset.mint.equals(SystemProgram.programId);
+  const tokenProgram = asset.tokenProgram ?? TOKEN_PROGRAM_ID;
+  const relayerKey = new PublicKey(rl.relayer);
+  let relayerDest = relayerKey;
   let fee = o.fee;
   if (fee === undefined) {
-    const feePolicy = rl.fees.find((f) => f.mint === asset.mint.toBase58());
-    if (!feePolicy) throw new Error("relayer does not support this asset");
-    const pct = (amount * BigInt(feePolicy.bps)) / 10_000n;
-    fee = pct > BigInt(feePolicy.min) ? pct : BigInt(feePolicy.min);
+    const mintKey = asset.mint.toBase58();
+    const feePolicy = rl.fees.find((f) => f.mint === mintKey);
+    const quote = assetQuotes[mintKey];
+    if (feePolicy) {
+      const pct = (amount * BigInt(feePolicy.bps)) / 10_000n;
+      fee = pct > BigInt(feePolicy.min) ? pct : BigInt(feePolicy.min);
+      if (!native) relayerDest = ataFor(relayerKey, asset.mint, tokenProgram);
+    } else if (quote?.supported && quote.fee) {
+      const pct = (amount * BigInt(quote.fee.bps)) / 10_000n;
+      fee = pct > BigInt(quote.fee.min) ? pct : BigInt(quote.fee.min);
+      relayerDest = new PublicKey(quote.fee.dest);
+    } else {
+      throw new Error(quote?.reason ?? "relayer does not support this asset");
+    }
+  } else if (!native) {
+    relayerDest = ataFor(relayerKey, asset.mint, tokenProgram);
   }
-  const relayerKey = new PublicKey(rl.relayer);
+  // An SPL withdrawal lands in a token account, not a wallet: use the
+  // recipient's associated account, which must already exist (the relayer
+  // does not fund rent for strangers).
+  let recipient = o.recipient;
+  if (recipient && !native && !o.exit) {
+    const ata = ataFor(recipient, asset.mint, tokenProgram);
+    if (!(await get().connection.getAccountInfo(ata))) throw new Error(`${recipient.toBase58().slice(0, 4)}… has no ${asset.symbol} token account yet; send it any ${asset.symbol} once first (or pick a wallet that holds some)`);
+    recipient = ata;
+  }
   const id = crypto.randomUUID();
   const act: ActivityItem = { id, kind: o.activityKind ?? kind, asset: o.label ?? asset.symbol, amount, at: Date.now(), status: "pending" };
   set((s) => ({ activity: [act, ...s.activity], tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } }));
@@ -330,8 +435,8 @@ async function relayedTransact(
         asset: assetId(asset.mint), mint: asset.mint, tokenProgram: asset.tokenProgram, pool, tree, chainTree: await loadChainTree(get().connection), artifacts: ARTIFACTS,
         kind, amount,
         to: o.to ? decodeAddress(wallet.bjj, o.to).address : undefined,
-        recipient: o.recipient,
-        relayer: relayerKey, relayerDest: relayerKey, relayerFee: fee, payer: relayerKey,
+        recipient,
+        relayer: relayerKey, relayerDest, relayerFee: fee, payer: relayerKey,
         memo: o.memo ? new TextEncoder().encode(o.memo) : undefined,
         exitTarget: o.exit?.target, exitData: o.exit?.data, exitAccounts: o.exit?.accounts,
       });
