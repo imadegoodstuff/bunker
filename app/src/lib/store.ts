@@ -9,11 +9,21 @@ import {
   isStaleRootRejection, vaultErrorName, STALE_ROOT_ERRORS, createPoolIx, ataFor, TOKEN_PROGRAM_ID,
 } from "@scash/sdk";
 import { ApiError, indexer, relayer, type AssetQuote, type RelayerInfo } from "./api";
-import { ARTIFACTS, ASSETS, FALLBACK_RPC_URL, MAINNET, PROGRAM_ID, RPC_URL, type AssetMeta } from "./config";
+import { ASSETS, FALLBACK_RPC_URL, MAINNET, PROGRAM_ID, RPC_URL, type AssetMeta } from "./config";
 import { describe, walletTokens } from "./walletAssets";
 import { awaitConfirmation, ConfirmError } from "./confirm";
+import { artifactsForProof, prefetchArtifacts, type Progress } from "./artifacts";
 
 const U64_MAX = (1n << 64n) - 1n;
+
+/** Turns proving-key download progress into the tx modal's message, so a first-time proof is not a silent wait. */
+function reportArtifacts(set: (p: Partial<State>) => void) {
+  return (p: Progress) => {
+    if (!p.total) return;
+    const mb = (n: number) => (n / 1_048_576).toFixed(1);
+    set({ tx: { stage: "proving", message: `Fetching the proving key (one-time, ${mb(p.loaded)} / ${mb(p.total)} MB)` } });
+  };
+}
 
 export type Phase = "idle" | "deriving" | "syncing" | "ready" | "error";
 export type TxStage = "idle" | "building" | "proving" | "signing" | "relaying" | "confirming" | "done" | "failed";
@@ -135,6 +145,7 @@ export const useScash = create<State>((set, get) => {
 
   async unlock(signMessage, passphrase) {
     set({ phase: "deriving", error: undefined });
+    prefetchArtifacts();
     try {
       const sig = await signMessage(new TextEncoder().encode(SPENDING_KEY_MESSAGE));
       const seed = passphrase === null ? await seedFromSignature(sig, "", { allowEmpty: true }) : await seedFromSignature(sig, passphrase);
@@ -146,6 +157,7 @@ export const useScash = create<State>((set, get) => {
 
   async unlockFromSeed(backup) {
     set({ phase: "deriving", error: undefined });
+    prefetchArtifacts();
     try {
       await openWithSeed(seedFromBackup(backup));
     } catch (e) {
@@ -344,9 +356,11 @@ export const useScash = create<State>((set, get) => {
       }
       set({ tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } });
       const relayerKey = rl ? new PublicKey(rl.relayer) : owner;
+      const [artifacts, chainTree] = await Promise.all([artifactsForProof(reportArtifacts(set)), loadChainTree(get().connection)]);
+      set({ tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } });
       const t0 = performance.now();
       const built = await wallet.buildTransact({
-        asset: assetId(asset.mint), mint: asset.mint, tokenProgram: asset.tokenProgram, pool, tree, chainTree: await loadChainTree(get().connection), artifacts: ARTIFACTS,
+        asset: assetId(asset.mint), mint: asset.mint, tokenProgram: asset.tokenProgram, pool, tree, chainTree, artifacts,
         kind: "shield", amount, to: to ? decodeAddress(wallet.bjj, to).address : undefined,
         relayer: relayerKey, relayerDest: relayerKey, relayerFee: 0n, payer: owner, depositor: owner,
         depositorSource: native ? owner : ataFor(owner, asset.mint, tokenProgram),
@@ -474,9 +488,11 @@ async function relayedTransact(
   let accepted = false;
   try {
     const build = async () => {
+      const [artifacts, chainTree] = await Promise.all([artifactsForProof(reportArtifacts(set)), loadChainTree(get().connection)]);
+      set({ tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } });
       const t0 = performance.now();
       const built = await wallet.buildTransact({
-        asset: assetId(asset.mint), mint: asset.mint, tokenProgram: asset.tokenProgram, pool, tree, chainTree: await loadChainTree(get().connection), artifacts: ARTIFACTS,
+        asset: assetId(asset.mint), mint: asset.mint, tokenProgram: asset.tokenProgram, pool, tree, chainTree, artifacts,
         kind, amount,
         to: o.to ? decodeAddress(wallet.bjj, o.to).address : undefined,
         recipient,

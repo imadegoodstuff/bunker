@@ -14,7 +14,8 @@ import {
 } from "@scash/sdk";
 import { indexer, type LaunchRow } from "./api";
 import { useScash } from "./store";
-import { ARTIFACTS, PROGRAM_ID, type AssetMeta } from "./config";
+import { PROGRAM_ID, type AssetMeta } from "./config";
+import { artifactsForProof } from "./artifacts";
 import { awaitConfirmation } from "./confirm";
 
 export interface ClaimRecord {
@@ -130,7 +131,10 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
     const key = claimKeypair(seed(), BigInt(rec.nonce));
     const rents = get().rents ?? (await fetchClaimRents(conn()));
     const c = conn();
-    const chainTree = decodeTree(new Uint8Array((await c.getAccountInfo(treePda(PROGRAM_ID)))!.data));
+    const [chainTree, artifacts] = await Promise.all([
+      c.getAccountInfo(treePda(PROGRAM_ID)).then((a) => decodeTree(new Uint8Array(a!.data))),
+      artifactsForProof(),
+    ]);
     const ixs = [];
     if (rec.kind === "buy") {
       const ata = claimAta(key.publicKey, mint);
@@ -140,7 +144,7 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
       if (!pool) throw new Error("token pool missing");
       const moved = amountForMint(pool, sharesForDeposit(pool, bal));
       const built = await wallet.buildTransact({
-        asset: assetId(mint), mint, pool, tree, chainTree, artifacts: ARTIFACTS, kind: "shield", amount: bal,
+        asset: assetId(mint), mint, pool, tree, chainTree, artifacts, kind: "shield", amount: bal,
         ...claimShieldAccounts(key.publicKey, mint),
       });
       ixs.push(built.instruction);
@@ -153,7 +157,7 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
       const pool = useScash.getState().pools.SOL;
       if (!pool) throw new Error("SOL pool missing");
       const built = await wallet.buildTransact({
-        asset: assetId(SOL), mint: SOL, pool, tree, chainTree, artifacts: ARTIFACTS, kind: "shield", amount: lamports - keep,
+        asset: assetId(SOL), mint: SOL, pool, tree, chainTree, artifacts, kind: "shield", amount: lamports - keep,
         ...claimShieldAccounts(key.publicKey, SOL),
       });
       ixs.push(built.instruction);
