@@ -1,6 +1,8 @@
 import { PublicKey, SystemProgram } from "@solana/web3.js";
 
 export const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL ?? "https://api.mainnet-beta.solana.com";
+/** Keyless endpoint used only for public reads (wallet token balances) when the main one refuses. */
+export const FALLBACK_RPC_URL = process.env.NEXT_PUBLIC_FALLBACK_RPC_URL ?? "https://api.mainnet-beta.solana.com";
 /** The app runs on mainnet-beta only; the variable remains so a local build can label itself (e.g. "localnet"). */
 export const CLUSTER = process.env.NEXT_PUBLIC_CLUSTER ?? "mainnet-beta";
 export const MAINNET = CLUSTER === "mainnet-beta";

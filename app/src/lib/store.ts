@@ -9,7 +9,7 @@ import {
   isStaleRootRejection, vaultErrorName, STALE_ROOT_ERRORS, createPoolIx, ataFor, TOKEN_PROGRAM_ID,
 } from "@scash/sdk";
 import { ApiError, indexer, relayer, type AssetQuote, type RelayerInfo } from "./api";
-import { ARTIFACTS, ASSETS, MAINNET, PROGRAM_ID, RPC_URL, type AssetMeta } from "./config";
+import { ARTIFACTS, ASSETS, FALLBACK_RPC_URL, MAINNET, PROGRAM_ID, RPC_URL, type AssetMeta } from "./config";
 import { describe, walletTokens } from "./walletAssets";
 import { awaitConfirmation, ConfirmError } from "./confirm";
 
@@ -45,6 +45,10 @@ interface State {
   walletAssets: Record<string, AssetMeta>;
   /** Public (unshielded) balances per asset symbol, base units. */
   walletBalances: Record<string, bigint>;
+  /** Why the last wallet scan failed, if it did. */
+  walletScanError?: string;
+  /** When the last successful wallet scan finished (ms). */
+  walletScannedAt?: number;
   /** Relayer quotes per SPL mint: fee in the token, lookup table, or why it is shield-only. */
   assetQuotes: Record<string, AssetQuote>;
   /** Launched tokens the wallet also scans for, keyed by mint; their shielded balances (shares) live in `tokenBalances`. */
@@ -180,8 +184,24 @@ export const useScash = create<State>((set, get) => {
   },
 
   async scanWallet(owner) {
-    const { connection } = get();
-    const tokens = await walletTokens(connection, owner);
+    let connection = get().connection;
+    let tokens: Awaited<ReturnType<typeof walletTokens>>;
+    let sol: number;
+    try {
+      [tokens, sol] = await Promise.all([walletTokens(connection, owner), connection.getBalance(owner)]);
+    } catch (e) {
+      // The configured endpoint refused (rate limit, method not allowed from a
+      // browser, outage). Reading public token balances needs no key: try the
+      // public endpoint before giving up, and say what happened either way.
+      try {
+        connection = new Connection(FALLBACK_RPC_URL, "confirmed");
+        [tokens, sol] = await Promise.all([walletTokens(connection, owner), connection.getBalance(owner)]);
+      } catch {
+        set({ walletScanError: `could not read your wallet's tokens: ${(e as Error).message}` });
+        throw e;
+      }
+    }
+    set({ walletScanError: undefined });
     const known = new Set(ASSETS.map((a) => a.mint.toBase58()));
     const fresh = tokens.filter((t) => !known.has(t.mint.toBase58()));
     const cur = get().walletAssets;
@@ -193,13 +213,13 @@ export const useScash = create<State>((set, get) => {
       if (!tokens.some((t) => t.mint.toBase58() === k) && !(get().balances[walletAssets[k].symbol] ?? 0n)) delete walletAssets[k];
     }
     const walletBalances: Record<string, bigint> = {};
-    walletBalances.SOL = BigInt(await connection.getBalance(owner).catch(() => 0));
+    walletBalances.SOL = BigInt(sol);
     for (const t of tokens) {
       const a = walletAssets[t.mint.toBase58()] ?? ASSETS.find((x) => x.mint.equals(t.mint));
       if (a) walletBalances[a.symbol] = t.amount;
     }
     const added = metas.length > 0;
-    set({ walletAssets, walletBalances });
+    set({ walletAssets, walletBalances, walletScannedAt: Date.now() });
     await get().refreshPools();
     // notes of a token we did not know about may already be in the scanned prefix
     if (added && get().wallet && get().syncedTo > 0) {

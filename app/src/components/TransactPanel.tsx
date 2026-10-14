@@ -37,7 +37,7 @@ function useDeviceNotice() {
 export function TransactPanel() {
   const { publicKey, sendTransaction } = useWallet();
   const { connection } = useConnection();
-  const { balances, pools, relayer, shield, send, unshield, notes, sync, syncedTo, totalLeaves, freezeAuthority, lastProveMs, walletAssets, walletBalances, assetQuotes, scanWallet, phase } = useScash();
+  const { balances, pools, relayer, shield, send, unshield, notes, sync, syncedTo, totalLeaves, freezeAuthority, lastProveMs, walletAssets, walletBalances, assetQuotes, scanWallet, walletScanError, walletScannedAt } = useScash();
   const deviceNotice = useDeviceNotice();
   const [mode, setMode] = useState<Mode>("shield");
   const [asset, setAsset] = useState<AssetMeta>(ASSETS[0]);
@@ -52,11 +52,11 @@ export function TransactPanel() {
   const assets = useMemo(() => [...ASSETS, ...Object.values(walletAssets)], [walletAssets]);
   const owner = publicKey?.toBase58();
   useEffect(() => {
-    if (!publicKey || phase !== "ready") return;
+    if (!publicKey) return;
     void scanWallet(publicKey).catch(() => undefined);
     const t = setInterval(() => void scanWallet(publicKey).catch(() => undefined), 60_000);
     return () => clearInterval(t);
-  }, [owner, phase]); // publicKey is keyed by `owner`; scanWallet is a stable store action
+  }, [owner]); // publicKey is keyed by `owner`; scanWallet is a stable store action
   useEffect(() => {
     if (!assets.some((a) => a.symbol === asset.symbol)) setAsset(ASSETS[0]);
   }, [assets, asset.symbol]);
@@ -134,8 +134,17 @@ export function TransactPanel() {
           </select>
         )}
       </div>
-      {publicKey && assets.length === 1 && (
-        <p className="px-7 pt-3 text-xs text-dim">Only SOL in this wallet. Any token you hold shows up here and can be shielded.</p>
+      {publicKey && walletScanError && (
+        <p className="px-7 pt-3 text-xs text-warn">
+          {walletScanError} · <button className="link underline-offset-4 hover:underline" onClick={() => void scanWallet(publicKey).catch(() => undefined)}>retry</button>
+        </p>
+      )}
+      {publicKey && !walletScanError && assets.length === 1 && (
+        <p className="px-7 pt-3 text-xs text-dim">
+          {walletScannedAt
+            ? <>No tokens in {owner!.slice(0, 4)}…{owner!.slice(-4)} right now, only SOL. Any SPL or Token-2022 balance in the connected account shows up here and can be shielded. · <button className="link underline-offset-4 hover:underline" onClick={() => void scanWallet(publicKey).catch(() => undefined)}>rescan wallet</button></>
+            : "Reading your wallet's tokens…"}
+        </p>
       )}
 
       {/* modes */}

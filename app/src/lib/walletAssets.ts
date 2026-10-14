@@ -17,10 +17,11 @@ export interface WalletToken {
   amount: bigint;
 }
 
+/** Throws if the RPC refuses; the caller decides whether to fall back to another endpoint. */
 export async function walletTokens(conn: Connection, owner: PublicKey): Promise<WalletToken[]> {
   const out: WalletToken[] = [];
   for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
-    const res = await conn.getParsedTokenAccountsByOwner(owner, { programId }).catch(() => ({ value: [] }));
+    const res = await conn.getParsedTokenAccountsByOwner(owner, { programId });
     for (const { account } of res.value) {
       const info = (account.data as { parsed?: { info?: { mint: string; tokenAmount: { amount: string; decimals: number } } } }).parsed?.info;
       if (!info) continue;
