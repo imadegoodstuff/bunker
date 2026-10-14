@@ -114,28 +114,70 @@ export class SubmitQueue {
     for (const job of due) await this.submit(job);
   }
 
+  /**
+   * Did an earlier attempt land? Asked before every retry and whenever a
+   * resend is refused with NullifierSpent (0x9): that error means the payment
+   * happened — most likely ours, a moment ago — so the job is confirmed, not
+   * failed. Only the chain decides; a WebSocket that went quiet does not.
+   */
+  private async landed(job: Job): Promise<boolean> {
+    if (!job.signature) return false;
+    try {
+      const { value: [st] } = await this.conn.getSignatureStatuses([job.signature], { searchTransactionHistory: true });
+      return !!st && !st.err && (st.confirmationStatus === "confirmed" || st.confirmationStatus === "finalized");
+    } catch {
+      return false;
+    }
+  }
+
+  /** Poll for confirmation until the blockhash expires. No subscriptions, no fixed timeout. */
+  private async awaitConfirmation(sig: string, lastValidBlockHeight: number): Promise<void> {
+    for (;;) {
+      const { value: [st] } = await this.conn.getSignatureStatuses([sig]).catch(() => ({ value: [null] }));
+      if (st?.err) throw new Error(`on-chain error ${JSON.stringify(st.err)}`);
+      if (st && (st.confirmationStatus === "confirmed" || st.confirmationStatus === "finalized")) return;
+      const height = await this.conn.getBlockHeight("confirmed").catch(() => 0);
+      if (height > lastValidBlockHeight) {
+        const { value: [last] } = await this.conn.getSignatureStatuses([sig], { searchTransactionHistory: true }).catch(() => ({ value: [null] }));
+        if (last && !last.err && (last.confirmationStatus === "confirmed" || last.confirmationStatus === "finalized")) return;
+        if (last?.err) throw new Error(`on-chain error ${JSON.stringify(last.err)}`);
+        throw new Error("Blockhash not found: expired before inclusion");
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+
   private async submit(job: Job) {
     job.status = "submitting";
     job.attempts++;
     try {
+      if (job.attempts > 1 && (await this.landed(job))) { job.status = "confirmed"; return; }
       const { blockhash, lastValidBlockHeight } = await this.conn.getLatestBlockhash("confirmed");
       const tx = buildV0(this.signer.publicKey, [job.ix], blockhash, this.tablesFor(job), {
         cuLimit: this.opts.cuLimit,
         cuPriceMicroLamports: this.opts.cuPrice?.() ?? this.opts.cuPriceMicroLamports,
       });
       tx.sign([this.signer]);
-      const sig = await this.conn.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
+      let sig: string;
+      try {
+        sig = await this.conn.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
+      } catch (e) {
+        // preflight says the nullifier is spent: our earlier send did it
+        if (/0x9\b|NullifierSpent|nullifier already spent/i.test((e as Error).message) && (await this.landed(job))) { job.status = "confirmed"; return; }
+        throw e;
+      }
       job.signature = sig;
-      const res = await this.conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
-      if (res.value.err) throw new Error(JSON.stringify(res.value.err));
+      await this.awaitConfirmation(sig, lastValidBlockHeight);
       job.status = "confirmed";
     } catch (e) {
       const msg = (e as Error).message;
       // a stale root or spent nullifier will never succeed; anything else gets retried
-      const permanent = /custom program error|already in use|Blockhash not found/i.test(msg) && !/Blockhash not found/i.test(msg);
+      const permanent = /custom program error|on-chain error|already in use/i.test(msg);
       if (!permanent && job.attempts < this.opts.maxAttempts) {
         job.status = "queued";
         job.releaseAt = Date.now() + 5000;
+      } else if (await this.landed(job)) {
+        job.status = "confirmed";
       } else {
         job.status = "failed";
         job.error = msg;

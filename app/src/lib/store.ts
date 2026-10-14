@@ -377,6 +377,20 @@ export const useScash = create<State>((set, get) => {
  * older relayer without that field, classify its raw `details` with the same
  * SDK table rather than a regex.
  */
+/** Turn a raw web3.js preflight dump into one line a person can act on. */
+function friendlyRelayError(raw?: string): string {
+  if (!raw) return "the relayer could not land the transaction";
+  const m = /custom program error: (0x[0-9a-f]+)/i.exec(raw);
+  if (m) {
+    const name = vaultErrorName({ InstructionError: [0, { Custom: Number(m[1]) }] });
+    if (name === "NullifierSpent") return "these notes were already spent on-chain; your balance will update after a rescan";
+    if (name) return `the vault refused the transaction: ${name}`;
+    return `the vault refused the transaction (${m[1]})`;
+  }
+  if (/expired before inclusion|Blockhash not found/i.test(raw)) return "the network did not include the transaction in time; nothing was spent, try again";
+  return raw.length > 200 ? raw.slice(0, 200) + "…" : raw;
+}
+
 export function isStaleRootError(e: unknown): boolean {
   if (!(e instanceof ApiError) || e.status !== 422) return false;
   if (isStaleRootRejection(e.body)) return true;
@@ -502,7 +516,21 @@ async function relayedTransact(
         set((s) => ({ tx: { stage: "done", signature: st.signature }, activity: s.activity.map((a) => (a.id === id ? { ...a, status: "confirmed", signature: st.signature } : a)) }));
         break;
       }
-      if (st.status === "failed") throw new Error(st.error ?? "relayer failed");
+      if (st.status === "failed") {
+        // The relayer's verdict is advisory; the chain's is final. If it sent
+        // the transaction and then lost track of it (a dropped WebSocket, a
+        // retry refused because the nullifier was already spent by the first
+        // send), the signature it reports may well be confirmed.
+        if (st.signature) {
+          const landed = await awaitConfirmation(get().connection, st.signature, { maxMs: 20_000 }).then(() => true).catch(() => false);
+          if (landed) {
+            signature = st.signature;
+            set((s) => ({ tx: { stage: "done", signature: st.signature }, activity: s.activity.map((a) => (a.id === id ? { ...a, status: "confirmed", signature: st.signature } : a)) }));
+            break;
+          }
+        }
+        throw new Error(friendlyRelayError(st.error));
+      }
     }
     await get().refreshPools();
     await get().sync();
