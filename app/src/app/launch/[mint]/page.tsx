@@ -315,7 +315,7 @@ function TradePanel({ mint, curve, worstFee, symbol, decimals }: { mint: string;
           <>
             <Row k={side === "buy" ? "You spend" : "You sell"} v={side === "buy" ? `${fmtAmount(quote.amount, 9, 3)} SOL` : `${fmtAmount(quote.amount, decimals, 0)} ${symbol}`} />
             <Row k="Relayer" v={`${fmtAmount(quote.relayerFee, 9, 4)} SOL${side === "sell" ? " (tipped from the proceeds)" : ""}`} />
-            <Row k={`Curve tax (${(curve.tradeFeeBps / 100).toFixed(2).replace(/\.?0+$/, "")}%)`} v={`${fmtAmount(quote.curveFee, 9, 4)} SOL · to the agents' treasury`} />
+            <Row k={`Curve tax (${(curve.tradeFeeBps / 100).toFixed(2).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "")}%)`} v={`${fmtAmount(quote.curveFee, 9, 4)} SOL · to the agents' treasury`} />
             <Row k="You receive" v={side === "buy" ? `≈ ${fmtAmount(quote.out, decimals, 0)} ${symbol}` : `≈ ${fmtAmount(quote.out, 9, 4)} SOL`} strong />
             <Row k={worstFee > curve.tradeFeeBps ? `Minimum (if the fee steps to ${(worstFee / 100).toFixed(1)}%)` : "Minimum"} v={side === "buy" ? `${fmtAmount(quote.minOut, decimals, 0)} ${symbol}` : `${fmtAmount(quote.minOut, 9, 4)} SOL`} />
             {quote.refund > 0n && <Row k="Graduation" v={`this buy takes the last tokens; ${fmtAmount(quote.refund, 9, 4)} SOL comes back to your claim key and the curve moves to Raydium`} />}

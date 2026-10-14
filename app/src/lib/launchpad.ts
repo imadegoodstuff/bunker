@@ -168,10 +168,10 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
     const sig = await c.sendTransaction(tx, { skipPreflight: false });
     await awaitConfirmation(c, sig, { blockhash, lastValidBlockHeight });
     upsert({ ...rec, status: "claimed", claimSignature: sig });
-    // the indexer needs a moment to see the leaf; sync twice
+    // the indexer needs a moment to see the leaf: keep syncing until its leaf
+    // count reaches the chain's, so the new note shows up in the holdings
     await scash.refreshPools();
-    await scash.sync();
-    setTimeout(() => void useScash.getState().sync(), 6000);
+    await scash.syncUntilCaughtUp();
     return "claimed";
   }
 

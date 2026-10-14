@@ -7,7 +7,8 @@ import { timeAgo } from "@/lib/format";
 
 export const AGENT_NAMES = ["Agent A", "Agent B", "Agent C", "Agent D"];
 
-const pct = (bps: number) => `${(bps / 100).toFixed(bps % 100 ? 2 : 0).replace(/\.?0+$/, "")}%`;
+// trailing zeros go only after a decimal point: 0 bps is "0%", not "%"
+const pct = (bps: number) => `${(bps / 100).toFixed(bps % 100 ? 2 : 0).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "")}%`;
 
 /** The four-agent tax policy for one token: the tax charged now, each agent's standing vote, and where the next minute takes it. */
 export function FeePolicy({ curve, slot, events }: { curve: CurveState; slot: bigint; events: FeeEventRow[] }) {

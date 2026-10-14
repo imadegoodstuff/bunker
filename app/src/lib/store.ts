@@ -79,6 +79,8 @@ interface State {
   exportSeed: () => string | undefined;
   lock: () => void;
   sync: () => Promise<void>;
+  /** Sync repeatedly until the indexer has every leaf the chain has (or `maxMs` passes). Resolves to whether it caught up. */
+  syncUntilCaughtUp: (maxMs?: number) => Promise<boolean>;
   refreshPools: () => Promise<void>;
   /** Configured assets plus whatever the connected wallet holds. */
   assets: () => AssetMeta[];
@@ -115,6 +117,52 @@ function b64ToBytes(s: string) {
 }
 
 export const useScash = create<State>((set, get) => {
+  let syncing: Promise<void> | null = null;
+  let queued: Promise<void> | null = null;
+
+  async function syncPass() {
+    const { wallet, tree } = get();
+    if (!wallet || !tree) return;
+    let from = get().syncedTo;
+    const launched = Object.values(get().launchAssets);
+    const all = get().assets();
+    const assetIds = [...all, ...launched].map((a) => ({ a, id: assetId(a.mint) }));
+    for (;;) {
+      const page = await indexer.commitments(from, 1000);
+      for (const row of page.items) {
+        const cm = BigInt("0x" + row.commitment);
+        if (row.index === tree.size) await tree.insert(cm);
+        const ct = b64ToBytes(row.ciphertext);
+        for (const { id } of assetIds) {
+          const n = await wallet.scan({ index: row.index, commitment: cm, ciphertext: ct }, id);
+          if (n) break;
+        }
+      }
+      from = page.next;
+      set({ syncedTo: from, totalLeaves: page.total });
+      if (page.items.length < 1000) break;
+    }
+    const nfs = await indexer.nullifiers(0);
+    wallet.markSpent(nfs.map((n) => BigInt("0x" + n.nullifier)));
+    const balances: Record<string, bigint> = {};
+    for (const a of all) balances[a.symbol] = wallet.balance(assetId(a.mint));
+    const tokenBalances: Record<string, bigint> = {};
+    for (const a of launched) tokenBalances[a.mint.toBase58()] = wallet.balance(assetId(a.mint));
+    set({ balances, tokenBalances, notes: [...wallet.notes.values()] });
+
+    // sanity: our local root must be one the chain knows
+    try {
+      const info = await get().connection.getAccountInfo(treePda(PROGRAM_ID));
+      if (info) {
+        const t = decodeTree(new Uint8Array(info.data));
+        const local = await tree.root();
+        if (Number(t.nextIndex) === tree.size && t.currentRoot !== local) {
+          set({ error: "Local tree root does not match chain; indexer may be lagging or corrupt." });
+        }
+      }
+    } catch { /* non-fatal */ }
+  }
+
   async function openWithSeed(seed: Uint8Array) {
     const wallet = await ShieldedWallet.fromSeed(seed);
     const tree = new MerkleTree(26);
@@ -276,46 +324,35 @@ export const useScash = create<State>((set, get) => {
   },
 
   async sync() {
-    const { wallet, tree } = get();
-    if (!wallet || !tree) return;
-    let from = get().syncedTo;
-    const launched = Object.values(get().launchAssets);
-    const all = get().assets();
-    const assetIds = [...all, ...launched].map((a) => ({ a, id: assetId(a.mint) }));
-    for (;;) {
-      const page = await indexer.commitments(from, 1000);
-      for (const row of page.items) {
-        const cm = BigInt("0x" + row.commitment);
-        if (row.index === tree.size) await tree.insert(cm);
-        const ct = b64ToBytes(row.ciphertext);
-        for (const { id } of assetIds) {
-          const n = await wallet.scan({ index: row.index, commitment: cm, ciphertext: ct }, id);
-          if (n) break;
-        }
-      }
-      from = page.next;
-      set({ syncedTo: from, totalLeaves: page.total });
-      if (page.items.length < 1000) break;
+    // One pass at a time: a second caller waits for the running one (which
+    // already covers the leaves it wants) instead of racing it on the tree.
+    // A caller that arrives mid-pass (e.g. after resetting `syncedTo` for a
+    // newly known asset) gets one more pass after the current one.
+    if (syncing) {
+      if (!queued) queued = syncing.catch(() => undefined).then(() => { queued = null; return get().sync(); });
+      return queued;
     }
-    const nfs = await indexer.nullifiers(0);
-    wallet.markSpent(nfs.map((n) => BigInt("0x" + n.nullifier)));
-    const balances: Record<string, bigint> = {};
-    for (const a of all) balances[a.symbol] = wallet.balance(assetId(a.mint));
-    const tokenBalances: Record<string, bigint> = {};
-    for (const a of launched) tokenBalances[a.mint.toBase58()] = wallet.balance(assetId(a.mint));
-    set({ balances, tokenBalances, notes: [...wallet.notes.values()] });
+    syncing = syncPass().finally(() => { syncing = null; });
+    return syncing;
+  },
 
-    // sanity: our local root must be one the chain knows
-    try {
-      const info = await get().connection.getAccountInfo(treePda(PROGRAM_ID));
-      if (info) {
-        const t = decodeTree(new Uint8Array(info.data));
-        const local = await tree.root();
-        if (Number(t.nextIndex) === tree.size && t.currentRoot !== local) {
-          set({ error: "Local tree root does not match chain; indexer may be lagging or corrupt." });
-        }
-      }
-    } catch { /* non-fatal */ }
+  async syncUntilCaughtUp(maxMs = 90_000) {
+    // The indexer ticks every few seconds and fetches each transaction after
+    // it; a leaf that just landed is not served for a while. Sync until the
+    // indexer's leaf count reaches the chain's, so balances reflect the note
+    // that was just created, instead of trusting one retry.
+    const deadline = Date.now() + maxMs;
+    for (;;) {
+      await get().sync();
+      let target = 0;
+      try {
+        const info = await get().connection.getAccountInfo(treePda(PROGRAM_ID));
+        if (info) target = Number(decodeTree(new Uint8Array(info.data)).nextIndex);
+      } catch { /* retry below */ }
+      if (target > 0 && get().syncedTo >= target) return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise((r) => setTimeout(r, 2500));
+    }
   },
 
   rotateAddress() {
@@ -376,7 +413,7 @@ export const useScash = create<State>((set, get) => {
       await awaitConfirmation(conn, sig, bh);
       set((s) => ({ tx: { stage: "done", signature: sig }, activity: s.activity.map((a) => (a.id === id ? { ...a, status: "confirmed", signature: sig } : a)) }));
       await get().refreshPools();
-      await get().sync();
+      void get().syncUntilCaughtUp();
     } catch (e) {
       const msg = (e as Error).message;
       if (e instanceof ConfirmError && !e.expired && !/failed on-chain/.test(msg)) {
@@ -570,6 +607,8 @@ async function relayedTransact(
     }
     await get().refreshPools();
     await get().sync();
+    // the change note (or a sell's proceeds, once claimed) shows up when the indexer has the leaf
+    void get().syncUntilCaughtUp();
     return signature;
   } catch (e) {
     if (accepted) {
