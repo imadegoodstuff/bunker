@@ -30,6 +30,23 @@ export function fmtPrice(x: number, sig = 3): string {
   return zeros > 2 ? `0.0${sub}${digits}` : `0.${"0".repeat(zeros)}${digits}`;
 }
 
+/**
+ * Width for a graduation bar: anything raised at all shows at least a sliver
+ * (0.003 of 20 SOL is 0.015 %, invisible otherwise), the rest is linear.
+ */
+export function barWidth(progress: number, floor = 0.02): string {
+  if (!(progress > 0)) return "0%";
+  return `${(Math.max(floor, Math.min(1, progress)) * 100).toFixed(2)}%`;
+}
+
+/** A percentage of the way to graduation with enough digits to be non-zero: 0.015 % rather than 0.0 %. */
+export function fmtProgress(progress: number): string {
+  if (!(progress > 0)) return "0%";
+  const p = Math.min(1, progress) * 100;
+  const digits = p >= 10 ? 0 : p >= 1 ? 1 : p >= 0.1 ? 2 : 3;
+  return `${p.toFixed(digits)}%`;
+}
+
 export function short(s: string, n = 6) {
   return s.length <= 2 * n + 1 ? s : `${s.slice(0, n)}…${s.slice(-n)}`;
 }

@@ -25,6 +25,9 @@ export interface Decision {
 /** Votes are placed on a quarter-point grid (0, 25, 50 … 500 bps); the program accepts any integer in bounds. */
 export const VOTE_GRID_BPS = 25;
 
+/** What the prompt calls an orderly market's tax; the launch fee the program starts every curve at. */
+export const BASELINE_BPS = 100;
+
 /** Snap any (fee, holder) to what the program accepts: the fee to the nearest grid point inside the bounds, the holders' share to its pinned value. */
 export function snap(feeBps: number, holderBps: number = policy.HOLDER_MIN_BPS): { feeBps: number; holderBps: number } {
   const grid = (x: number, min: number, max: number, step: number) => {
@@ -103,7 +106,8 @@ export function prompt(view: TokenView, persona: string): string {
     `You are one of four independent AI agents that set the trading tax of a token on a shielded launchpad on Solana. ${persona}`,
     `There is no human proposer, guardian, or veto: once a minute (every ${policy.EPOCH_SLOTS} slots) the program takes the median of the four agents' fresh votes and moves the tax at most ${policy.FEE_STEP_BPS / 100} percentage point toward it.`,
     `Allowed values: fee_bps from ${policy.FEE_MIN_BPS} to ${policy.FEE_MAX_BPS} in steps of ${VOTE_GRID_BPS} (basis points of each trade; 100 bps = 1 %). The whole tax goes to the agents' treasury, which buys back and burns or airdrops the scash token.`,
-    `Goals, in order: keep the curve liquid and attractive to honest traders (low tax when trading is orderly); make rapid wash-trading, sniping, bots and sell-pressure spikes expensive (raise the tax while they last, up to the maximum); bring the tax back down as soon as the market calms.`,
+    `Goals, in order: keep the curve liquid and attractive to honest traders; make rapid wash-trading, sniping, bots and sell-pressure spikes expensive (raise the tax while they last, up to the maximum); bring the tax back toward the baseline as soon as the market calms.`,
+    `Baseline: an orderly market pays about ${BASELINE_BPS} bps. The tax is what funds the buybacks and the yield, so 0 is not the resting state: go to 0 only for a deliberate reason you can name (for example a dead curve that needs any volume at all). Vary your vote with the data: a quiet minute after activity is worth a step toward the baseline, a burst of same-side trades a step or two away from it, a fresh curve with its first buys a little below the baseline to help discovery. Prefer a small move every time you are asked over repeating the same number.`,
     ``,
     `Token ${view.symbol} (${view.mint}), slot ${view.slot}, epoch ${view.epoch}.`,
     `Tax now ${c.tradeFeeBps} bps. Standing votes: ${votes}.`,

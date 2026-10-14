@@ -9,7 +9,7 @@ import { LaunchShell, Row } from "@/components/launch/LaunchShell";
 import { useLaunchpad, priceLamportsPerToken, deliveredFor, CLAIM_BUDGET, SLIPPAGE_BPS, SOL, type ClaimRecord } from "@/lib/launchpad";
 import { useScash } from "@/lib/store";
 import { indexer, type LaunchRow, type TradeRow, type FeeEventRow } from "@/lib/api";
-import { fmtAmount, fmtPrice, parseAmount, short, timeAgo } from "@/lib/format";
+import { barWidth, fmtAmount, fmtPrice, fmtProgress, parseAmount, short, timeAgo } from "@/lib/format";
 import { explorerTx, explorerAddr, ASSETS } from "@/lib/config";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 
@@ -81,8 +81,11 @@ function Token({ mint }: { mint: string }) {
             </div>
             <a className="link font-mono text-xs" href={explorerAddr(mint)} target="_blank" rel="noreferrer">{short(mint)}</a>
           </div>
-          <div className="mt-5 h-2 overflow-hidden rounded-full bg-white/5">
-            <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${(prog * 100).toFixed(1)}%` }} />
+          <div className="mt-5 flex items-center gap-3">
+            <div className="h-2 flex-1 overflow-hidden rounded-full bg-white/5">
+              <div className="h-full rounded-full bg-accent transition-all" style={{ width: barWidth(prog) }} />
+            </div>
+            <span className="text-[11px] tabular-nums text-dim">{migrated ? "graduated" : `${fmtProgress(prog)} to graduation`}</span>
           </div>
           <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-xs sm:grid-cols-4">
             {migrated ? (

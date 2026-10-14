@@ -6,7 +6,7 @@ import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { useRouter } from "next/navigation";
 import { LaunchShell, Row } from "@/components/launch/LaunchShell";
 import { useLaunchpad } from "@/lib/launchpad";
-import { fmtAmount, timeAgo } from "@/lib/format";
+import { barWidth, fmtAmount, fmtProgress, timeAgo } from "@/lib/format";
 import type { LaunchRow } from "@/lib/api";
 
 const WalletButton = dynamic(() => import("@solana/wallet-adapter-react-ui").then((m) => m.WalletMultiButton), { ssr: false });
@@ -69,12 +69,12 @@ function LaunchList() {
                 <span className="text-xs text-dim">{l.block_time ? timeAgo(l.block_time * 1000) : `slot ${l.slot}`}</span>
               </div>
               <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/5">
-                <div className="h-full rounded-full bg-accent" style={{ width: `${(p * 100).toFixed(1)}%` }} />
+                <div className="h-full rounded-full bg-accent" style={{ width: barWidth(p) }} />
               </div>
               <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-mute">
                 {l.amm_pool
                   ? <span>{fmtAmount(BigInt(l.amm_sol ?? "0"), 9, 2)} SOL + {fmtAmount(BigInt(l.amm_tokens ?? "0"), l.decimals, 0)} {l.symbol} in the pool</span>
-                  : <span>{fmtAmount(BigInt(l.real_sol), 9, 2)} / {fmtAmount(BigInt(l.graduation_lamports), 9, 0)} SOL raised</span>}
+                  : <span>{fmtAmount(BigInt(l.real_sol), 9, 3)} / {fmtAmount(BigInt(l.graduation_lamports), 9, 0)} SOL raised · {fmtProgress(p)}</span>}
                 <span>{l.buys} buys · {l.sells} sells</span>
                 <span>{fmtAmount(BigInt(l.sol_volume), 9, 2)} SOL volume</span>
                 <span>{fmtAmount(BigInt(l.tokens_donated), l.decimals, 0)} {l.symbol} paid to holders</span>
