@@ -44,15 +44,31 @@ export function snap(feeBps: number, holderBps: number = policy.HOLDER_MIN_BPS):
  * in the text with `fee_bps`/`holder_bps` (or `fee_pct`/`holder_pct`) and an
  * optional `reason`; snaps to the grid; returns null if nothing usable is there.
  */
-export function parseDecision(text: string): Decision | null {
-  const m = text.match(/\{[\s\S]*\}/);
-  if (!m) return null;
-  let o: Record<string, unknown>;
-  try {
-    o = JSON.parse(m[0]) as Record<string, unknown>;
-  } catch {
-    return null;
+/** Every balanced `{…}` in the text, outermost first; models wrap JSON in fences and prose. */
+function jsonObjects(text: string): string[] {
+  const out: string[] = [];
+  for (let i = text.indexOf("{"); i !== -1; i = text.indexOf("{", i + 1)) {
+    let depth = 0, inStr = false, esc = false;
+    for (let j = i; j < text.length; j++) {
+      const c = text[j];
+      if (inStr) { if (esc) esc = false; else if (c === "\\") esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') inStr = true;
+      else if (c === "{") depth++;
+      else if (c === "}" && --depth === 0) { out.push(text.slice(i, j + 1)); break; }
+    }
   }
+  return out;
+}
+
+export function parseDecision(text: string): Decision | null {
+  let o: Record<string, unknown> | undefined;
+  for (const cand of jsonObjects(text)) {
+    try {
+      const parsed = JSON.parse(cand) as Record<string, unknown>;
+      if (parsed && typeof parsed === "object" && ("fee_bps" in parsed || "fee_pct" in parsed)) { o = parsed; break; }
+    } catch { /* try the next candidate */ }
+  }
+  if (!o) return null;
   const num = (k: string) => (typeof o[k] === "number" ? (o[k] as number) : typeof o[k] === "string" ? Number(o[k]) : NaN);
   let fee = num("fee_bps");
   if (Number.isNaN(fee)) fee = num("fee_pct") * 100;

@@ -48,6 +48,18 @@ const PERSONAS = [
 
 /** Four vendors through the one Orbio connection, used when AGENT_i_MODEL is not set. */
 const DEFAULT_MODELS = ["orbio:openai/gpt-6-luna", "orbio:anthropic/claude-haiku-5.5", "orbio:google/gemini-3.8-flash", "orbio:x-ai/grok-4.7"];
+/**
+ * Same vendor, older models, tried in order when the gateway says the
+ * preferred one is not being served right now. An agent is still one vendor's
+ * judgement; it just does not fall silent because one model id is down.
+ */
+const FALLBACK_MODELS: Record<string, string[]> = {
+  openai: ["openai/gpt-5.5", "openai/gpt-5.4-mini", "openai/gpt-4.1-mini"],
+  anthropic: ["anthropic/claude-sonnet-4.6", "anthropic/claude-haiku-4.5", "anthropic/claude-sonnet-4.5"],
+  google: ["google/gemini-3.7-flash", "google/gemini-3.6-flash", "google/gemini-3.5-flash"],
+  "x-ai": ["x-ai/grok-4.6", "x-ai/grok-4.5"],
+};
+const NOT_SERVED = /model_not_available|No provider is currently serving|model not found|does not exist/i;
 
 // Sign in with Orbio (server app). The owner connects once at /auth/orbio/start; tokens live on the volume.
 const PUBLIC_URL = (process.env.PUBLIC_URL ?? `http://localhost:${PORT}`).replace(/\/$/, "");
@@ -68,12 +80,33 @@ interface Agent {
   model: ModelSpec;
   /** a static provider key, or undefined for Orbio through the OAuth connection */
   apiKey?: string;
+  /** the model id that last answered (the preferred one, or a same-vendor fallback) */
+  active?: string;
 }
 
 async function keyFor(a: Agent): Promise<string> {
   if (a.apiKey) return a.apiKey;
   if (!orbio) throw new Error("no key for this model");
   return orbio.token();
+}
+
+/** Ask the agent's model; on "not served" fall back through the same vendor's older models and remember which one answered. */
+async function ask(a: Agent, text: string): Promise<{ text: string; model: string }> {
+  const vendor = a.model.model.split("/")[0];
+  const chain = [a.active ?? a.model.model, a.model.model, ...(a.model.provider === "orbio" ? FALLBACK_MODELS[vendor] ?? [] : [])].filter((m, i, arr) => arr.indexOf(m) === i);
+  let lastErr: Error | undefined;
+  for (const model of chain) {
+    try {
+      const out = await complete({ ...a.model, model }, text, await keyFor(a));
+      if (a.active !== model) console.log(`[agents] agent ${a.index} answered by ${model}`);
+      a.active = model;
+      return { text: out, model };
+    } catch (e) {
+      lastErr = e as Error;
+      if (!NOT_SERVED.test(lastErr.message)) throw e;
+    }
+  }
+  throw lastErr ?? new Error("no model answered");
 }
 
 /** AGENT_{i}_KEYPAIR: JSON byte array of the secret key. AGENT_{i}_MODEL: provider:model (default: four vendors via Orbio). */
@@ -265,7 +298,8 @@ async function tick() {
       const base: LogEntry = { at: Date.now(), slot: slot.toString(), epoch: epoch.toString(), agent: a.index, agentKey: a.key.publicKey.toBase58(), model: `${a.model.provider}:${a.model.model}`, mint: launches[i].mint, symbol: launches[i].symbol };
       try {
         v ??= await view(launches[i], curve, slot);
-        const text = await complete(a.model, prompt(v, PERSONAS[a.index]), await keyFor(a));
+        const { text, model } = await ask(a, prompt(v, PERSONAS[a.index]));
+        base.model = `${a.model.provider}:${model}`;
         const d = parseDecision(text);
         if (!d) {
           record({ ...base, error: `model returned no usable vote: ${text.slice(0, 120)}` });
