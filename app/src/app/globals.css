@@ -53,7 +53,7 @@ body {
 ::selection { background: var(--color-signal); color: #0b0c0a; }
 
 /* ---------- type ---------- */
-.display { font-family: var(--font-display); letter-spacing: -0.035em; line-height: 0.95; font-weight: 600; }
+.display { font-family: var(--font-display); letter-spacing: -0.045em; line-height: 0.95; font-weight: 600; font-feature-settings: "ss01", "cv11", "tnum"; }
 .label { @apply font-mono text-[11px] uppercase tracking-[0.2em]; color: var(--color-mute); }
 .label-signal { @apply font-mono text-[11px] uppercase tracking-[0.2em]; color: var(--color-signal); }
 .num { font-variant-numeric: tabular-nums; }

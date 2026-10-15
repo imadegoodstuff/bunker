@@ -28,7 +28,7 @@ import {
   sharesForDeposit, sharesForWithdraw, toUnits, transactCallToJson, PROTOCOL_VERSION, type PoolState, type TransactCall,
 } from "./pool.js";
 import type { CircuitArtifacts, CircuitName } from "./prover.js";
-import { ShieldedWallet, type BuiltTransact, type TransactKind } from "./wallet.js";
+import { ShieldedWallet, type BuiltTransact, type LedgerEntry, type TransactKind } from "./wallet.js";
 import { bsc, type NetworkConfig, type NetworkName, networks } from "./networks.js";
 
 export type Token = EvmAddress | "BNB";
@@ -182,11 +182,13 @@ export class BunkerClient {
           throw new Error(`indexer skipped leaf ${this.leaves.length}`);
         }
         this.leaves.push(cm);
+        if (row.blockTime != null) this.noteBlockTime(row.block, row.blockTime);
         const ct = b64ToBytes(row.ciphertext);
+        const where = { block: row.block, blockTime: row.blockTime ?? null };
         if (row.kind === "open" && row.shares != null && row.ownerHash != null) {
-          await this.wallet.scanOpenNote({ index: row.index, commitment: cm, shares: BigInt(row.shares), ownerHash: BigInt("0x" + row.ownerHash.replace(/^0x/, "")), ciphertext: ct }, idFor(row.token));
+          await this.wallet.scanOpenNote({ index: row.index, commitment: cm, shares: BigInt(row.shares), ownerHash: BigInt("0x" + row.ownerHash.replace(/^0x/, "")), ciphertext: ct, ...where }, idFor(row.token));
         } else if (ct.length) {
-          await this.wallet.scan({ index: row.index, commitment: cm, ciphertext: ct }, idFor(row.token));
+          await this.wallet.scan({ index: row.index, commitment: cm, ciphertext: ct, ...where }, idFor(row.token));
         }
       }
       from = page.next;
@@ -194,12 +196,38 @@ export class BunkerClient {
       if (page.items.length < 1000) break;
     }
     const nfs = await this.indexer.nullifiers(0);
-    this.wallet.markSpent(nfs.map((n) => BigInt("0x" + n.nullifier)));
+    this.wallet.markSpent(nfs.map((n) => ({ nullifier: BigInt("0x" + n.nullifier), block: n.block, blockTime: this.timeForBlock(n.block) })));
     const [inserted, chainRoot] = await Promise.all([readInsertedIndex(this.publicClient, this.network.pool), readLastRoot(this.publicClient, this.network.pool)]);
     const upTo = Math.min(inserted, this.leaves.length);
     for (let i = this.tree.size; i < upTo; i++) await this.tree.insert(this.leaves[i]);
     this.wallet.markInserted(this.tree.size);
     if (this.tree.size === inserted && chainRoot !== (await this.tree.root())) throw new Error("local tree root does not match the chain; the indexer may be lagging or corrupt");
+  }
+
+  // block -> unix time anchors learned from commitment rows (sorted, deduplicated per block)
+  private blockAnchors: { block: number; time: number }[] = [];
+  private noteBlockTime(block: number, time: number) {
+    const last = this.blockAnchors[this.blockAnchors.length - 1];
+    if (!last || block > last.block) this.blockAnchors.push({ block, time });
+  }
+  /** Time of a block from the nearest known anchor; BSC blocks are ~0.75 s apart, so the estimate is tight. */
+  timeForBlock(block: number): number | null {
+    const a = this.blockAnchors;
+    if (a.length === 0) return null;
+    let lo = 0, hi = a.length - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (a[mid].block <= block) lo = mid; else hi = mid - 1; }
+    const near = a[lo].block <= block ? a[lo] : a[0];
+    if (near.block === block) return near.time;
+    const next = a[lo + 1];
+    if (next && near.block < block && block < next.block) {
+      return Math.round(near.time + ((block - near.block) * (next.time - near.time)) / (next.block - near.block));
+    }
+    return Math.round(near.time + (block - near.block) * 0.75);
+  }
+
+  /** Every note this vault has ever owned (received and spent), oldest first; the raw material for a balance history. */
+  history(token?: Token): LedgerEntry[] {
+    return this.wallet.history(token === undefined ? undefined : assetId(norm(token).toLowerCase()));
   }
 
   /** Keep syncing until the local view has every leaf the chain has (the indexer trails the chain by a few seconds). */

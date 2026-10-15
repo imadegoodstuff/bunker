@@ -2,6 +2,7 @@
 import { useBunker } from "@/lib/store";
 import { Unlock } from "@/components/Unlock";
 import { VaultPanel } from "@/components/VaultPanel";
+import { VaultCharts } from "@/components/VaultCharts";
 import { TxOverlay } from "@/components/TxOverlay";
 import { Activity, AddressCard, AnonymityPanel, BackupCard } from "@/components/Cards";
 import { LegacyPanel } from "@/components/LegacyPanel";
@@ -22,6 +23,7 @@ export default function VaultPage() {
       <div className="grid lg:grid-cols-[1fr_360px] gap-4">
         <div className="space-y-4">
           <VaultPanel />
+          <VaultCharts />
           <LegacyPanel />
         </div>
         <div className="space-y-4">

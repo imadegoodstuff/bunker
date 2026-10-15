@@ -14,7 +14,28 @@ export interface IndexedOutput {
   index: number; // leaf index
   commitment: bigint;
   ciphertext: Uint8Array;
+  /** where the chain recorded it, if the caller knows (feeds the ledger) */
+  block?: number;
+  blockTime?: number | null;
 }
+
+/** One note this wallet has ever owned: when it arrived and, once spent, when it left. Times are unix seconds. */
+export interface LedgerEntry {
+  commitment: bigint;
+  nullifier: bigint;
+  asset: bigint;
+  /** shares */
+  value: bigint;
+  position: number;
+  receivedBlock: number | null;
+  receivedAt: number | null;
+  spentBlock: number | null;
+  spentAt: number | null;
+  memo?: Uint8Array;
+}
+
+/** A nullifier seen on-chain, with where (and optionally when) it appeared. */
+export interface SeenNullifier { nullifier: bigint; block: number; blockTime?: number | null }
 
 /** An `OpenNote` event: a note the pool minted for an exit hook's proceeds. */
 export interface IndexedOpenNote {
@@ -23,6 +44,8 @@ export interface IndexedOpenNote {
   shares: bigint;
   ownerHash: bigint;
   ciphertext: Uint8Array;
+  block?: number;
+  blockTime?: number | null;
 }
 
 export interface WalletState {
@@ -56,6 +79,10 @@ export class ShieldedWallet {
   readonly bjj: BabyJub;
   readonly notes = new Map<string, SpendableNote>(); // key = commitment hex
   readonly nullifierOf = new Map<string, bigint>(); // commitment -> nf
+  /** Every note ever owned, in arrival order; spent ones stay with their spend time. */
+  readonly ledger: LedgerEntry[] = [];
+  private ledgerByNf = new Map<string, LedgerEntry>();
+  private seenCm = new Set<string>();
   private pending = new Set<string>();
   /** Leaves in the on-chain tree (`ShieldedPool.insertedIndex`); notes at or past it are queued and not yet spendable. */
   private inserted = Number.POSITIVE_INFINITY;
@@ -109,7 +136,7 @@ export class ShieldedWallet {
     const note: Note = { asset, value: r.plaintext.value, gd, pkd, rseed: r.plaintext.rseed, rho: r.plaintext.rho, rcm: r.plaintext.rcm };
     const cm = await noteCommitment(note);
     if (cm !== out.commitment) return null;
-    return this.remember(note, cm, out.index, r.plaintext.memo);
+    return this.remember(note, cm, out.index, r.plaintext.memo, out);
   }
 
   /**
@@ -126,29 +153,50 @@ export class ShieldedWallet {
     const cm = await openNoteCommitment(asset, ev.shares, ev.ownerHash, r.plaintext.rho, r.plaintext.rcm);
     if (cm !== ev.commitment) return null;
     const note: Note = { asset, value: ev.shares, gd, pkd, rseed: r.plaintext.rseed, rho: r.plaintext.rho, rcm: r.plaintext.rcm };
-    return this.remember(note, cm, ev.index, undefined);
+    return this.remember(note, cm, ev.index, undefined, ev);
   }
 
-  private async remember(note: Note, cm: bigint, index: number, memo: Uint8Array | undefined): Promise<SpendableNote> {
+  private async remember(note: Note, cm: bigint, index: number, memo: Uint8Array | undefined, where?: { block?: number; blockTime?: number | null }): Promise<SpendableNote> {
     const sn: SpendableNote = { ...note, commitment: cm, position: index, memo };
     const key = cm.toString(16);
-    if (note.value > 0n) {
+    if (note.value > 0n && !this.seenCm.has(key)) {
+      this.seenCm.add(key);
+      const nf = await nullifier(this.fvk.nk, note.rho, index);
       this.notes.set(key, sn);
-      this.nullifierOf.set(key, await nullifier(this.fvk.nk, note.rho, index));
+      this.nullifierOf.set(key, nf);
+      const entry: LedgerEntry = {
+        commitment: cm, nullifier: nf, asset: note.asset, value: note.value, position: index, memo,
+        receivedBlock: where?.block ?? null, receivedAt: where?.blockTime ?? null, spentBlock: null, spentAt: null,
+      };
+      this.ledger.push(entry);
+      this.ledgerByNf.set(nf.toString(16), entry);
     }
     return sn;
   }
 
-  /** Drop notes whose nullifier has appeared on-chain. */
-  markSpent(nullifiers: Iterable<bigint>) {
-    const spent = new Set(Array.from(nullifiers, (n) => n.toString(16)));
+  /** Drop notes whose nullifier has appeared on-chain; with `SeenNullifier`s the ledger also learns when. */
+  markSpent(nullifiers: Iterable<bigint | SeenNullifier>) {
+    const spent = new Map<string, SeenNullifier | null>();
+    for (const n of nullifiers) {
+      if (typeof n === "bigint") spent.set(n.toString(16), null);
+      else spent.set(n.nullifier.toString(16), n);
+    }
     for (const [key, nf] of this.nullifierOf) {
-      if (spent.has(nf.toString(16))) {
+      const hex = nf.toString(16);
+      if (spent.has(hex)) {
         this.notes.delete(key);
         this.nullifierOf.delete(key);
         this.pending.delete(key);
+        const e = this.ledgerByNf.get(hex);
+        const seen = spent.get(hex);
+        if (e && e.spentBlock == null) { e.spentBlock = seen?.block ?? -1; e.spentAt = seen?.blockTime ?? null; }
       }
     }
+  }
+
+  /** Ledger entries for one asset (or all), oldest first. */
+  history(asset?: bigint): LedgerEntry[] {
+    return asset === undefined ? [...this.ledger] : this.ledger.filter((e) => e.asset === asset);
   }
 
   /** Spendable shares: owned, not reserved, already in the tree. `queuedBalance` has the rest. */

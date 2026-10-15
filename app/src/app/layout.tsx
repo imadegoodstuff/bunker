@@ -1,13 +1,14 @@
 import type { Metadata, Viewport } from "next";
-import { Space_Grotesk, IBM_Plex_Mono, Manrope } from "next/font/google";
+import { Geist, Geist_Mono, Instrument_Sans } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/Providers";
 import { Shell } from "@/components/Shell";
 import { SITE_URL } from "@/lib/config";
 
-const display = Space_Grotesk({ subsets: ["latin"], weight: ["500", "600", "700"], variable: "--font-display", display: "swap" });
-const mono = IBM_Plex_Mono({ subsets: ["latin"], weight: ["400", "500"], variable: "--font-mono", display: "swap" });
-const sans = Manrope({ subsets: ["latin"], weight: ["400", "500", "600"], variable: "--font-sans", display: "swap" });
+// Geist for display and numbers (sharp, tight), Geist Mono for labels, Instrument Sans for body copy
+const display = Geist({ subsets: ["latin"], weight: ["500", "600", "700"], variable: "--font-display", display: "swap" });
+const mono = Geist_Mono({ subsets: ["latin"], weight: ["400", "500"], variable: "--font-mono", display: "swap" });
+const sans = Instrument_Sans({ subsets: ["latin"], weight: ["400", "500", "600"], variable: "--font-sans", display: "swap" });
 
 const TITLE = "BUNKER — shielded pool and private launchpad on BNB Chain";
 const DESC = "A Zcash-Sapling shielded pool on BNB Smart Chain with a launchpad that runs inside it. Shield once; send, trade and launch with no trace back to your wallet. Zero-knowledge proofs made in your browser, open source.";
