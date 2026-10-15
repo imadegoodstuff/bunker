@@ -21,6 +21,11 @@ circuits/ptau/*.ptau
 *.sym
 *.wtns
 
+# hardhat
+contracts/artifacts/
+contracts/cache/
+contracts/typechain-types/
+
 # secrets and local state
 .env
 .env.*

@@ -1,0 +1,23 @@
+{
+  "name": "@bunker/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BUNKER on BNB Smart Chain: the shielded pool (Groth16 over BN254, Poseidon Merkle tree), the private launchpad and its tokens.",
+  "license": "MIT",
+  "scripts": {
+    "build": "hardhat compile && node scripts/export-abi.cjs",
+    "verifiers": "node scripts/export-verifiers.cjs",
+    "test": "hardhat test",
+    "node": "hardhat node",
+    "deploy:local": "hardhat run scripts/deploy.cjs --network localhost",
+    "deploy:bsc": "hardhat run scripts/deploy.cjs --network bsc",
+    "deploy:bscTestnet": "hardhat run scripts/deploy.cjs --network bscTestnet"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "circomlibjs": "^0.1.7",
+    "hardhat": "^2.26.0",
+    "poseidon-solidity": "^0.0.5",
+    "snarkjs": "^0.7.6"
+  }
+}

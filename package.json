@@ -6,6 +6,7 @@
   "license": "MIT",
   "workspaces": [
     "circuits",
+    "contracts",
     "sdk",
     "relayer",
     "indexer",
