@@ -12,7 +12,9 @@ primary_region = "sin"
   CHAIN_ID = "56"
   RPC_URL = "https://bsc-dataseed.bnbchain.org"
   DB_PATH = "/data/bunker-indexer.sqlite"
-  SCAN_CHUNK = "2000"
+  # public BSC endpoints cap eth_getLogs ranges well below 2000 blocks
+  SCAN_CHUNK = "400"
+  RPC_URLS = "https://bsc-dataseed1.defibit.io,https://bsc.drpc.org,https://bsc-dataseed1.ninicoin.io"
   CONFIRMATIONS = "3"
   SCAN_INTERVAL_MS = "3000"
   # Launch metadata (token images + JSON) is written under /data/meta and served from PUBLIC_URL/meta/…
