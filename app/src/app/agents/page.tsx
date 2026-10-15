@@ -1,5 +1,6 @@
 "use client";
 import Link from "next/link";
+import { modelName } from "@/lib/modelName";
 import { useEffect, useState } from "react";
 import { policy } from "@bunker/sdk";
 import { agents, type AgentLogEntry } from "@/lib/api";
@@ -31,8 +32,8 @@ export default function AgentsPage() {
           : health === null ? <div className="bg-slab p-4 font-mono text-[11px] text-bad md:col-span-4">agent service unreachable; votes already on chain still apply</div>
           : health.agents.map((a) => (
             <div key={a.index} className="bg-slab p-4">
-              <div className="label mb-1">agent {a.index}</div>
-              <div className="display text-lg truncate">{a.model}</div>
+              <div className="label mb-1">{modelName(a.model).vendor || `agent ${a.index}`}</div>
+              <div className="display text-lg truncate">{modelName(a.model).name}</div>
               <a href={explorerAddr(a.key)} target="_blank" rel="noreferrer" className="font-mono text-[11px] text-dim hover:text-fg">{short(a.key, 5)} ↗</a>
             </div>
           ))}
@@ -45,7 +46,7 @@ export default function AgentsPage() {
             {log.map((e, i) => (
               <li key={i} className="py-3 grid md:grid-cols-[150px_90px_1fr] gap-2 text-[12px]">
                 <div className="font-mono text-[10.5px] text-dim">{timeAgo(e.at)} · blk {e.block}</div>
-                <div className="font-mono text-[11px]"><span className="text-mute">agent {e.agent}</span> · <Link href={`/launch/${e.token}`} className="text-steel hover:text-fg">{e.symbol}</Link></div>
+                <div className="font-mono text-[11px]"><span className="text-mute">{modelName(e.model).name}</span> · <Link href={`/launch/${e.token}`} className="text-steel hover:text-fg">{e.symbol}</Link></div>
                 <div className="text-mute leading-relaxed">
                   {e.decision ? <><span className="text-signal font-mono">{(e.decision.feeBps / 100).toFixed(2)}%</span> — {e.decision.reason}</> : e.skipped ? <span className="text-dim">{e.skipped}</span> : e.error ? <span className="text-bad">{e.error}</span> : null}
                   {e.sent ? <span className="font-mono text-[10px] text-dim"> · sent</span> : null}

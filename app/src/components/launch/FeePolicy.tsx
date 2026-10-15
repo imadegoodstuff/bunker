@@ -4,6 +4,7 @@ import { policy, epochOf, rolled, type CurveState } from "@bunker/sdk";
 import { agents, type AgentLogEntry } from "@/lib/api";
 import { short, timeAgo } from "@/lib/format";
 import { explorerAddr } from "@/lib/config";
+import { modelName } from "@/lib/modelName";
 
 /**
  * The agent-set fee for one curve: where it is, where the fresh votes want it,
@@ -15,7 +16,9 @@ export function FeePolicy({ curve, block, agentKeys }: { curve: CurveState; bloc
   const epoch = epochOf(block);
   const fresh = curve.votes.filter((v) => v.blockNumber > 0n && block - v.blockNumber <= policy.VOTE_TTL_BLOCKS);
   const [log, setLog] = useState<AgentLogEntry[]>([]);
+  const [models, setModels] = useState<Record<number, string>>({});
   useEffect(() => { agents.log(curve.token, 8).then(setLog).catch(() => undefined); }, [curve.token, epoch]);
+  useEffect(() => { agents.health().then((h) => setModels(Object.fromEntries(h.agents.map((a) => [a.index, a.model])))).catch(() => undefined); }, []);
 
   return (
     <section className="slab p-5">
@@ -34,8 +37,9 @@ export function FeePolicy({ curve, block, agentKeys }: { curve: CurveState; bloc
           return (
             <li key={i} className="flex items-center gap-3">
               <span className={`w-1.5 h-1.5 ${stale ? "bg-dim" : "bg-signal"}`} />
-              <span className="text-mute">agent {i}</span>
-              {agentKeys[i] ? <a href={explorerAddr(agentKeys[i])} target="_blank" rel="noreferrer" className="text-dim hover:text-fg">{short(agentKeys[i], 4)}</a> : null}
+              <span className="text-fg">{modelName(models[i]).name}</span>
+              {modelName(models[i]).vendor ? <span className="text-dim">{modelName(models[i]).vendor}</span> : <span className="text-dim">agent {i}</span>}
+              {agentKeys[i] ? <a href={explorerAddr(agentKeys[i])} target="_blank" rel="noreferrer" className="text-dim hover:text-fg hidden sm:inline">{short(agentKeys[i], 4)}</a> : null}
               <span className={`ml-auto num ${stale ? "text-dim" : "text-fg"}`}>{v.blockNumber === 0n ? "no vote" : `${(v.feeBps / 100).toFixed(2)}% · blk ${v.blockNumber.toString()}`}</span>
             </li>
           );
@@ -45,7 +49,7 @@ export function FeePolicy({ curve, block, agentKeys }: { curve: CurveState; bloc
         <div className="border-t rule pt-3 space-y-2">
           {log.map((e, i) => (
             <div key={i} className="text-[11px] leading-relaxed">
-              <span className="font-mono text-dim">{timeAgo(e.at)} · agent {e.agent} · {e.model}</span>
+              <span className="font-mono text-dim">{timeAgo(e.at)} · {modelName(e.model).name} · {modelName(e.model).vendor}</span>
               {e.decision ? <p className="text-mute">{(e.decision.feeBps / 100).toFixed(2)}% — {e.decision.reason}</p> : e.skipped ? <p className="text-dim">{e.skipped}</p> : e.error ? <p className="text-bad">{e.error}</p> : null}
             </div>
           ))}
