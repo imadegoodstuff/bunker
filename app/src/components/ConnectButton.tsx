@@ -26,9 +26,9 @@ export function ConnectButton() {
     );
   }
   return (
-    <button className="btn btn-sm font-mono" title="disconnect" onClick={() => { lock(); w.disconnect(); }}>
-      <span className="inline-block w-1.5 h-1.5 bg-signal" />
-      {short(w.address, 4)}
+    <button className="btn btn-sm font-mono" title={w.device ? "lock (the vault stays on this device)" : "disconnect"} onClick={() => { lock(); w.disconnect(); }}>
+      <span className={`inline-block w-1.5 h-1.5 ${w.device ? "bg-steel" : "bg-signal"}`} />
+      {w.device ? "device · " : ""}{short(w.address, 4)}
     </button>
   );
 }

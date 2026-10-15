@@ -21,6 +21,10 @@ export interface WalletState {
   /** false before the first render on the client, so SSR and hydration agree */
   ready: boolean;
   available: boolean;
+  /** true while a device vault's built-in gas account is the connected wallet */
+  device: boolean;
+  useDevice: (p: EIP1193Provider, address: EvmAddress) => void;
+  dropDevice: () => void;
   connect: () => Promise<void>;
   disconnect: () => void;
   switchChain: () => Promise<void>;
@@ -28,7 +32,9 @@ export interface WalletState {
   writeContract: (req: { address: EvmAddress; abi: readonly unknown[]; functionName: string; args: readonly unknown[]; value?: bigint }) => Promise<Hex>;
 }
 
-const provider = () => (typeof window !== "undefined" ? window.ethereum : undefined);
+/** A device vault's built-in gas account, once one is open; it takes precedence over an injected wallet. */
+let device: EIP1193Provider | undefined;
+const provider = () => device ?? (typeof window !== "undefined" ? window.ethereum : undefined);
 let client: WalletClient | undefined;
 let listening = false;
 const DISCONNECTED = "bunker.wallet.disconnected";
@@ -70,6 +76,19 @@ export const useWallet = create<WalletState>((set, get) => {
     connecting: false,
     ready: false,
     available: false,
+    device: false,
+    useDevice(p, address) {
+      device = p;
+      client = undefined;
+      localStorage.removeItem(DISCONNECTED);
+      set({ available: true, device: true, address, chainId: CHAIN_ID, error: undefined });
+    },
+    dropDevice() {
+      device = undefined;
+      client = undefined;
+      const injected = typeof window !== "undefined" ? window.ethereum : undefined;
+      set({ device: false, address: undefined, chainId: undefined, available: !!injected });
+    },
     async connect() {
       const p = provider();
       if (!p) { set({ error: "no wallet found in this browser" }); return; }
@@ -87,6 +106,7 @@ export const useWallet = create<WalletState>((set, get) => {
       }
     },
     disconnect() {
+      if (get().device) { get().dropDevice(); return; }
       localStorage.setItem(DISCONNECTED, "1");
       set({ address: undefined });
     },

@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Space_Grotesk, IBM_Plex_Mono, Manrope } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/Providers";
@@ -19,7 +19,11 @@ export const metadata: Metadata = {
   openGraph: { title: TITLE, description: DESC, type: "website", url: SITE_URL, siteName: "BUNKER" },
   twitter: { card: "summary_large_image", title: TITLE, description: DESC },
   icons: { icon: "/icon.png", apple: "/apple-icon.png" },
+  manifest: "/manifest.webmanifest",
+  appleWebApp: { capable: true, title: "BUNKER", statusBarStyle: "black-translucent" },
 };
+
+export const viewport: Viewport = { themeColor: "#0b0b0c", width: "device-width", initialScale: 1, viewportFit: "cover" };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

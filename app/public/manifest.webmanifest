@@ -1,0 +1,17 @@
+{
+  "name": "BUNKER — private BNB wallet",
+  "short_name": "BUNKER",
+  "description": "Shielded pool and private launchpad on BNB Smart Chain. Proofs are made on your phone; keys never leave it.",
+  "id": "/app",
+  "start_url": "/app",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b0b0c",
+  "theme_color": "#0b0b0c",
+  "icons": [
+    { "src": "/brand/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/brand/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/brand/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

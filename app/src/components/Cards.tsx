@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useBunker } from "@/lib/store";
+import { useWallet } from "@/lib/wallet";
 import { indexer } from "@/lib/api";
 import { explorerTx } from "@/lib/config";
 import { fmtAmount, short, timeAgo } from "@/lib/format";
@@ -36,19 +37,42 @@ export function AddressCard() {
 
 export function BackupCard() {
   const exportSeed = useBunker((s) => s.exportSeed);
+  const forgetDevice = useBunker((s) => s.forgetDevice);
+  const device = useWallet((w) => w.device);
+  const account = useWallet((w) => w.address);
   const [shown, setShown] = useState<string>();
+  const [confirm, setConfirm] = useState(false);
   return (
-    <Card title="Backup">
+    <Card title={device ? "Device vault" : "Backup"}>
+      {device && account ? (
+        <div className="mb-4">
+          <div className="label mb-1.5">built-in BNB account</div>
+          <code className="block font-mono text-[11px] break-all p-3 bg-bg border rule select-all">{account}</code>
+          <p className="mt-2 font-mono text-[10.5px] text-dim">send BNB or tokens here to shield them; it also pays claim gas on the launchpad</p>
+        </div>
+      ) : null}
       {shown ? (
         <>
           <code className="block font-mono text-[11px] break-all p-3 bg-bg border rule select-all">{shown}</code>
-          <p className="mt-3 font-mono text-[10.5px] text-warn">This is the spending key. Anyone who reads it can spend everything.</p>
+          <p className="mt-3 font-mono text-[10.5px] text-warn">This is the spending key. Anyone who reads it can spend everything{device ? ", including the built-in account" : ""}.</p>
           <button className="btn btn-ghost btn-sm mt-3" onClick={() => setShown(undefined)}>hide</button>
         </>
       ) : (
         <>
-          <p className="text-sm text-mute leading-relaxed">Your vault is reproducible from wallet + passphrase. Export the raw seed only if you want to open it without the wallet.</p>
-          <button className="btn btn-sm mt-3" onClick={() => setShown(exportSeed())}>reveal seed</button>
+          <p className="text-sm text-mute leading-relaxed">
+            {device
+              ? "This vault exists only on this device. The backup string is the only way to open it anywhere else."
+              : "Your vault is reproducible from wallet + passphrase. Export the raw seed only if you want to open it without the wallet."}
+          </p>
+          <div className="flex flex-wrap gap-2 mt-3">
+            <button className="btn btn-sm" onClick={() => setShown(exportSeed())}>reveal seed</button>
+            {device ? (
+              confirm
+                ? <button className="btn btn-sm border-bad text-bad" onClick={() => forgetDevice()}>yes, wipe it from this device</button>
+                : <button className="btn btn-ghost btn-sm" onClick={() => setConfirm(true)}>forget this device</button>
+            ) : null}
+          </div>
+          {confirm ? <p className="mt-2 font-mono text-[10.5px] text-warn">Only do this with the backup string saved. The built-in account and every note stay spendable from it.</p> : null}
         </>
       )}
     </Card>

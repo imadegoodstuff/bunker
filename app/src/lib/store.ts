@@ -13,6 +13,8 @@ import { ASSETS, BNB, KNOWN_TOKENS, MAINNET, POOL_ADDRESS, type AssetMeta } from
 import { publicClient } from "./chain";
 import { customTokens, describeToken, walletTokens } from "./walletAssets";
 import { artifactsForProof, prefetchArtifacts, type Progress } from "./artifacts";
+import { deviceProvider, forgetDeviceSeed, gasAccount, rememberDeviceSeed } from "./device";
+import { useWallet } from "./wallet";
 
 /** Turns proving-key download progress into the tx modal's message, so a first-time proof is not a silent wait. */
 function reportArtifacts(set: (p: Partial<State>) => void) {
@@ -77,6 +79,14 @@ interface State {
   /** `passphrase === null` means the user explicitly chose signature-only (SDK `allowEmpty`). */
   unlock: (signMessage: (m: string) => Promise<Hex>, passphrase: string | null) => Promise<void>;
   unlockFromSeed: (backup: string) => Promise<void>;
+  /**
+   * Open a vault that lives on this device: the seed is remembered in local
+   * storage and its derived gas account becomes the connected wallet. Used by
+   * the Android app and by anyone without a wallet extension.
+   */
+  openDevice: (seed: Uint8Array) => Promise<void>;
+  /** Wipe the remembered seed and lock. The notes stay spendable from the backup string. */
+  forgetDevice: () => void;
   /** Backup string for the current wallet. Anyone holding it can spend. */
   exportSeed: () => string | undefined;
   lock: () => void;
@@ -211,6 +221,26 @@ export const useBunker = create<State>((set, get) => {
     } catch (e) {
       set({ phase: "error", error: (e as Error).message });
     }
+  },
+
+  async openDevice(seed) {
+    set({ phase: "deriving", error: undefined });
+    prefetchArtifacts();
+    try {
+      const account = gasAccount(seed);
+      useWallet.getState().useDevice(deviceProvider(account), account.address);
+      rememberDeviceSeed(seed);
+      await openWithSeed(seed);
+      void get().scanWallet(account.address);
+    } catch (e) {
+      set({ phase: "error", error: (e as Error).message });
+    }
+  },
+
+  forgetDevice() {
+    forgetDeviceSeed();
+    useWallet.getState().dropDevice();
+    get().lock();
   },
 
   exportSeed() {
