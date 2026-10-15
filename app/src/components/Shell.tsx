@@ -72,7 +72,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen lg:grid lg:grid-cols-[232px_1fr]">
       {/* rail */}
-      <aside className={`fixed inset-y-0 left-0 z-40 w-[232px] flex flex-col border-r rule transition-transform lg:static lg:translate-x-0 ${open ? "translate-x-0" : "-translate-x-full"}`} style={{ background: "linear-gradient(180deg, #0c0c0e 0%, #08080a 100%)" }}>
+      <aside className={`fixed inset-y-0 left-0 z-40 w-[232px] flex flex-col border-r rule transition-transform lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 ${open ? "translate-x-0" : "-translate-x-full"}`} style={{ background: "linear-gradient(180deg, #0c0c0e 0%, #08080a 100%)" }}>
         <Link href="/" className="h-16 flex items-center px-5 border-b rule">
           <Wordmark className="h-7" />
         </Link>
