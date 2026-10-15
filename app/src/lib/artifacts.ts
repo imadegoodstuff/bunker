@@ -5,7 +5,7 @@
 // downloads. Now the 2x2 pair is fetched once in the background when the app
 // mounts, the 4x2 pair as soon as 2x2 has landed, and both are cached by the
 // browser (immutable headers) for the next visit.
-import type { CircuitArtifacts, CircuitName } from "@scash/sdk";
+import type { CircuitArtifacts, CircuitName } from "@bunker/sdk";
 import { ARTIFACTS } from "./config";
 
 type Bytes = { wasm: Uint8Array; zkey: Uint8Array };

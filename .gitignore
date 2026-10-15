@@ -44,3 +44,6 @@ Thumbs.db
 
 circuits/src/circomlib/
 
+
+contracts/deployments/31337.json
+

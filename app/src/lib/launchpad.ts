@@ -1,100 +1,102 @@
 "use client";
-// Launchpad client state: curves, private buys/sells through the vault's exit
-// target, and the throwaway "claim keys" that carry what a trade produced back
+// Launchpad client state: curves, private buys/sells through the pool's exit
+// hook, and the throwaway "claim keys" that carry what a trade produced back
 // into the shielded pool. Claim keys are derived from the spending seed, so
 // nothing here needs to be backed up: `recover()` re-derives them and sweeps
 // whatever is still waiting.
 import { create } from "zustand";
-import { Keypair, PublicKey, SystemProgram, type AddressLookupTableAccount, type VersionedTransaction } from "@solana/web3.js";
+import { createWalletClient, http, getAddress, parseEventLogs, type Hex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import {
-  LAUNCH_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, assetId, poolPda, decodePool, decodeCurve, curvePda, intakePda, intakeAta, claimAta,
-  claimKeypair, claimShieldAccounts, closeTokenAccountIx, exitData, exitAccounts, EXIT_BUY, EXIT_SELL, fetchClaimRents, quotePrivateBuy, quotePrivateSell, rolled, worstFeeBps,
-  amountForBurn, amountForMint, sharesForDeposit, sharesForWithdraw, buildV0, fetchLookupTable, launchIx, launchLookupTableIxs, lookupTableCovers,
-  decodeTree, treePda, type CurveState, type PoolState, type ClaimRents,
-} from "@scash/sdk";
+  assetId, claimKey, exitData, EXIT_BUY, EXIT_SELL, quotePrivateBuy, quotePrivateSell, rolled, worstFeeBps, readCurve, readPool, readParams,
+  amountForBurn, sharesForWithdraw, toUnits, launchCall, LaunchpadAbi, IERC20MetadataAbi, NATIVE_TOKEN, NATIVE_UNIT,
+  type CurveState, type PoolState, type LaunchpadParams, type EvmAddress,
+} from "@bunker/sdk";
 import { indexer, type LaunchRow } from "./api";
-import { useScash } from "./store";
-import { PROGRAM_ID, type AssetMeta } from "./config";
+import { useBunker, type Signer } from "./store";
+import { BNB, LAUNCHPAD_ADDRESS, POOL_ADDRESS, RPC_URL, type AssetMeta } from "./config";
+import { chain, publicClient } from "./chain";
 import { artifactsForProof } from "./artifacts";
-import { awaitConfirmation } from "./confirm";
 
 export interface ClaimRecord {
   nonce: number;
-  mint: string;
+  token: string;
   kind: "buy" | "sell";
   at: number;
   status: "pending" | "claiming" | "claimed" | "empty" | "failed";
   /** the relayed trade */
-  signature?: string;
+  txHash?: string;
   /** the claim shield */
-  claimSignature?: string;
+  claimTxHash?: string;
   error?: string;
 }
 
-/** Lamports a buy leaves at the claim key for its own transaction fee; whatever is unused stays there (dust). */
-export const CLAIM_BUDGET = 20_000n;
-
-/**
- * What the vault pays out for a withdrawal of `amount`, after the shares→amount
- * round trip. An empty pool (nothing shielded yet, or everything withdrawn) is
- * exactly 1:1 by construction, which `amountForBurn` alone does not say.
- */
-export function deliveredFor(pool: PoolState, amount: bigint): bigint {
-  return pool.totalShares === 0n ? amount : amountForBurn(pool, sharesForWithdraw(pool, amount));
-}
+/** Wei a buy leaves at the claim key for its own gas; whatever is unused stays there (dust). */
+export const CLAIM_BUDGET = BigInt(process.env.NEXT_PUBLIC_CLAIM_BUDGET_WEI ?? 3_000_000_000_000_000); // 0.003 BNB
+/** Gas a claim shield needs (a transact2x2 with one ERC-20 transfer is ~1.2M). */
+const CLAIM_GAS = 1_500_000n;
 /** Slippage tolerated between quote and execution (other trades can land first). */
 export const SLIPPAGE_BPS = 100n;
-export const SOL = SystemProgram.programId;
+
+/**
+ * What the pool pays out for a withdrawal of `units`, after the shares→amount
+ * round trip, in wei / base units.
+ */
+export function deliveredFor(pool: PoolState, units: bigint): bigint {
+  const u = pool.totalShares === 0n ? units : amountForBurn(pool, sharesForWithdraw(pool, units));
+  return u * pool.unit;
+}
 
 interface LaunchpadState {
   launches: LaunchRow[];
-  /** curve accounts exactly as stored on chain (fee policy not yet rolled to the current epoch) */
+  params?: LaunchpadParams;
+  /** curves exactly as stored on chain (fee policy not yet rolled to the current block) */
   curves: Record<string, CurveState>;
-  /** the slot at which each curve was last read */
-  slots: Record<string, bigint>;
+  /** the block at which each curve was last read */
+  blocks: Record<string, bigint>;
   tokenPools: Record<string, PoolState>;
-  rents?: ClaimRents;
   claims: ClaimRecord[];
   nextNonce: number;
   loaded: boolean;
+  loadError?: string;
   busy?: string;
 
   load: () => Promise<void>;
-  refresh: (mint: string) => Promise<{ curve: CurveState; pool?: PoolState; slot: bigint }>;
-  /** Create a token: two wallet transactions (frozen lookup table, then the launch). Returns the mint. */
-  /** Uploads the image + metadata to the indexer first (an image is required), then sends the two launch transactions. */
-  launch: (meta: { name: string; symbol: string; description?: string; image: string; header?: string }, owner: PublicKey, sendTx: (tx: VersionedTransaction) => Promise<string>) => Promise<PublicKey>;
-  buy: (mint: string, lamports: bigint) => Promise<void>;
-  sell: (mint: string, tokens: bigint) => Promise<void>;
+  refresh: (token: string) => Promise<{ curve: CurveState; pool?: PoolState; block: bigint }>;
+  /** Uploads the image + metadata to the indexer first (an image is required), then sends the launch transaction. Returns the token address. */
+  launch: (meta: { name: string; symbol: string; description?: string; image: string; header?: string }, signer: Signer) => Promise<EvmAddress>;
+  buy: (token: string, wei: bigint) => Promise<void>;
+  sell: (token: string, tokens: bigint) => Promise<void>;
   claim: (rec: ClaimRecord) => Promise<void>;
   /** Re-derive claim keys from the seed and sweep anything waiting at them. */
   recover: () => Promise<number>;
 }
 
+const k = (t: string) => t.toLowerCase();
+
 const storageKey = async (seed: Uint8Array) => {
-  const h = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array([...new TextEncoder().encode("scash-claims"), ...seed])));
-  return "scash.claims." + Array.from(h.subarray(0, 8), (b) => b.toString(16).padStart(2, "0")).join("");
+  const h = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array([...new TextEncoder().encode("bunker-claims"), ...seed])));
+  return "bunker.claims." + Array.from(h.subarray(0, 8), (b) => b.toString(16).padStart(2, "0")).join("");
 };
 
-function assetOf(l: LaunchRow): AssetMeta {
-  return { symbol: l.symbol, name: l.name, mint: new PublicKey(l.mint), decimals: l.decimals, tokenProgram: TOKEN_2022_PROGRAM_ID, denominations: [] };
+export function assetOf(l: LaunchRow): AssetMeta {
+  return { symbol: l.symbol, name: l.name, token: getAddress(l.token), decimals: l.decimals, denominations: [], image: l.image ?? undefined, launched: true };
 }
 
 export const useLaunchpad = create<LaunchpadState>((set, get) => {
-  const conn = () => useScash.getState().connection;
   const seed = () => {
-    const w = useScash.getState().wallet;
+    const w = useBunker.getState().wallet;
     if (!w) throw new Error("wallet locked");
     return w.spend.sk;
   };
 
   async function persist() {
-    const w = useScash.getState().wallet;
+    const w = useBunker.getState().wallet;
     if (!w) return;
     localStorage.setItem(await storageKey(w.spend.sk), JSON.stringify({ claims: get().claims, nextNonce: get().nextNonce }));
   }
   async function restore() {
-    const w = useScash.getState().wallet;
+    const w = useBunker.getState().wallet;
     if (!w) return;
     try {
       const raw = localStorage.getItem(await storageKey(w.spend.sk));
@@ -109,173 +111,151 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
     void persist();
   }
 
-  async function tables(mint: PublicKey): Promise<AddressLookupTableAccount[]> {
-    const rl = useScash.getState().relayer;
-    const out: AddressLookupTableAccount[] = [];
-    if (rl?.lookupTable) out.push(await fetchLookupTable(conn(), new PublicKey(rl.lookupTable)));
-    if (mint.equals(SOL)) return out; // a SOL claim only touches the vault's statics
-    try {
-      const c = get().curves[mint.toBase58()] ?? (await get().refresh(mint.toBase58())).curve;
-      const t = await fetchLookupTable(conn(), c.lookupTable);
-      if (lookupTableCovers(t.state.addresses, mint, PROGRAM_ID)) out.push(t);
-    } catch { /* the size check at send will tell */ }
-    return out;
+  async function gasReserve(): Promise<bigint> {
+    const price = await publicClient.getGasPrice();
+    return (CLAIM_GAS * price * 12n) / 10n;
   }
 
-  /** The claim: an ordinary vault shield signed and paid by the claim key alone. */
+  /** The claim: an ordinary pool shield signed and paid by the claim key alone. */
   async function shieldFromClaim(rec: ClaimRecord): Promise<"claimed" | "empty"> {
-    const scash = useScash.getState();
-    const { wallet, tree } = scash;
+    const bunker = useBunker.getState();
+    const { wallet, tree } = bunker;
     if (!wallet || !tree) throw new Error("wallet locked");
-    const mint = new PublicKey(rec.mint);
-    const key = claimKeypair(seed(), BigInt(rec.nonce));
-    const rents = get().rents ?? (await fetchClaimRents(conn()));
-    const c = conn();
-    const [chainTree, artifacts] = await Promise.all([
-      c.getAccountInfo(treePda(PROGRAM_ID)).then((a) => decodeTree(new Uint8Array(a!.data))),
-      artifactsForProof(),
-    ]);
-    const ixs = [];
+    const ck = claimKey(seed(), BigInt(rec.nonce));
+    const account = privateKeyToAccount(ck.privateKey);
+    const signer = createWalletClient({ account, chain, transport: http(RPC_URL) });
+    const artifacts = await artifactsForProof();
+    const gasPrice = await publicClient.getGasPrice();
+    let call;
     if (rec.kind === "buy") {
-      const ata = claimAta(key.publicKey, mint);
-      const bal = await c.getTokenAccountBalance(ata).then((r) => BigInt(r.value.amount)).catch(() => 0n);
+      const token = getAddress(rec.token);
+      const bal = await publicClient.readContract({ address: token, abi: IERC20MetadataAbi, functionName: "balanceOf", args: [account.address] });
       if (bal === 0n) return "empty";
-      const pool = (await get().refresh(rec.mint)).pool;
+      const pool = (await get().refresh(rec.token)).pool;
       if (!pool) throw new Error("token pool missing");
-      const moved = amountForMint(pool, sharesForDeposit(pool, bal));
       const built = await wallet.buildTransact({
-        asset: assetId(mint), mint, pool, tree, chainTree, artifacts, kind: "shield", amount: bal,
-        ...claimShieldAccounts(key.publicKey, mint),
+        asset: assetId(token), poolAddress: POOL_ADDRESS, token, pool, tree, artifacts, kind: "shield", amount: toUnits(bal, pool.unit),
+        relayer: account.address, relayerFee: 0n,
       });
-      ixs.push(built.instruction);
-      // the ATA can only be closed when nothing is left in it (the pool rate can leave a unit of dust)
-      if (moved === bal) ixs.push(closeTokenAccountIx(ata, key.publicKey, key.publicKey));
+      call = built.call;
     } else {
-      const lamports = BigInt(await c.getBalance(key.publicKey));
-      const keep = rents.claimRent + 2n * rents.nullifierRent + 10_000n; // rent-exempt floor, two nullifier PDAs, the signature
-      if (lamports <= keep + 1_000n) return "empty";
-      const pool = useScash.getState().pools.SOL;
-      if (!pool) throw new Error("SOL pool missing");
+      const wei = await publicClient.getBalance({ address: account.address });
+      const keep = (CLAIM_GAS * gasPrice * 12n) / 10n;
+      if (wei <= keep + NATIVE_UNIT) return "empty";
+      const pool = bunker.pools[k(NATIVE_TOKEN)];
+      if (!pool) throw new Error("BNB pool missing");
       const built = await wallet.buildTransact({
-        asset: assetId(SOL), mint: SOL, pool, tree, chainTree, artifacts, kind: "shield", amount: lamports - keep,
-        ...claimShieldAccounts(key.publicKey, SOL),
+        asset: assetId(NATIVE_TOKEN), poolAddress: POOL_ADDRESS, token: NATIVE_TOKEN, pool, tree, artifacts, kind: "shield", amount: toUnits(wei - keep, pool.unit),
+        relayer: account.address, relayerFee: 0n,
       });
-      ixs.push(built.instruction);
+      call = built.call;
     }
-    const { blockhash, lastValidBlockHeight } = await c.getLatestBlockhash();
-    const tx = buildV0(key.publicKey, ixs, blockhash, await tables(rec.kind === "buy" ? mint : SOL));
-    tx.sign([key]);
-    const sig = await c.sendTransaction(tx, { skipPreflight: false });
-    await awaitConfirmation(c, sig, { blockhash, lastValidBlockHeight });
-    upsert({ ...rec, status: "claimed", claimSignature: sig });
-    // the indexer needs a moment to see the leaf: keep syncing until its leaf
-    // count reaches the chain's, so the new note shows up in the holdings
-    await scash.refreshPools();
-    await scash.syncUntilCaughtUp();
+    const hash = await signer.writeContract({ ...call, account, chain, gas: CLAIM_GAS, gasPrice });
+    const rc = await publicClient.waitForTransactionReceipt({ hash, timeout: 180_000 });
+    if (rc.status !== "success") throw new Error(`claim ${hash.slice(0, 10)}… reverted`);
+    upsert({ ...rec, status: "claimed", claimTxHash: hash });
+    await bunker.refreshPools();
+    await bunker.syncUntilCaughtUp();
     return "claimed";
   }
 
   return {
     launches: [],
     curves: {},
+    blocks: {},
     tokenPools: {},
     claims: [],
     nextNonce: 0,
-    slots: {},
     loaded: false,
 
     async load() {
-      const [indexed, rents] = await Promise.all([indexer.launches(100), get().rents ? Promise.resolve(get().rents!) : fetchClaimRents(conn())]);
-      // a token launched from this browser is listed at once; the indexer's row replaces it as soon as it exists
-      const known = new Set(indexed.map((l) => l.mint));
-      const launches = [...get().launches.filter((l) => l.slot === 0 && !known.has(l.mint)), ...indexed];
-      set({ launches, rents, loaded: true });
-      useScash.getState().addLaunchAssets(launches.map(assetOf));
+      try {
+        const [indexed, params] = await Promise.all([
+          indexer.launches(100),
+          get().params ?? readParams(publicClient, LAUNCHPAD_ADDRESS).catch(() => undefined),
+        ]);
+        // a token launched from this browser is listed at once; the indexer's row replaces it as soon as it exists
+        const known = new Set(indexed.map((l) => k(l.token)));
+        const launches = [...get().launches.filter((l) => l.block === 0 && !known.has(k(l.token))), ...indexed];
+        set({ launches, params, loaded: true, loadError: undefined });
+        useBunker.getState().addLaunchAssets(launches.map(assetOf));
+      } catch (e) {
+        set({ loaded: true, loadError: `indexer unreachable: ${(e as Error).message}` });
+      }
       await restore();
     },
 
-    async refresh(mint) {
-      const m = new PublicKey(mint);
-      const { context, value: [ci, pi] } = await conn().getMultipleAccountsInfoAndContext([curvePda(m), poolPda(m, PROGRAM_ID)]);
-      if (!ci) throw new Error("curve not found");
-      const curve = decodeCurve(new Uint8Array(ci.data));
-      const pool = pi ? decodePool(new Uint8Array(pi.data)) : undefined;
-      const slot = BigInt(context.slot);
-      set((s) => ({ curves: { ...s.curves, [mint]: curve }, slots: { ...s.slots, [mint]: slot }, tokenPools: pool ? { ...s.tokenPools, [mint]: pool } : s.tokenPools }));
-      return { curve, pool, slot };
+    async refresh(token) {
+      const t = getAddress(token);
+      const [curve, pool, block] = await Promise.all([readCurve(publicClient, LAUNCHPAD_ADDRESS, t), readPool(publicClient, POOL_ADDRESS, t), publicClient.getBlockNumber()]);
+      if (!curve) throw new Error("curve not found");
+      const p = pool.exists ? pool : undefined;
+      set((s) => ({ curves: { ...s.curves, [k(token)]: curve }, blocks: { ...s.blocks, [k(token)]: block }, tokenPools: p ? { ...s.tokenPools, [k(token)]: p } : s.tokenPools }));
+      return { curve, pool: p, block };
     },
 
-    async launch(input, owner, sendTx) {
-      const c = conn();
-      const mint = Keypair.generate();
+    async launch(input, signer) {
       set({ busy: "launch" });
       try {
         if (!input.image) throw new Error("an image is required");
         const hosted = await indexer.uploadMeta({ name: input.name, symbol: input.symbol, description: input.description, image: input.image, header: input.header });
-        const meta = { name: input.name, symbol: input.symbol, uri: hosted.uri };
-        const alt = launchLookupTableIxs(owner, mint.publicKey, await c.getSlot("finalized"), PROGRAM_ID);
-        let bh = await c.getLatestBlockhash();
-        const t1 = buildV0(owner, alt.ixs, bh.blockhash, undefined, { cuLimit: 100_000 });
-        const s1 = await sendTx(t1);
-        await awaitConfirmation(c, s1, bh);
-        bh = await c.getLatestBlockhash();
-        const t2 = buildV0(owner, [launchIx(owner, mint.publicKey, meta, alt.table, PROGRAM_ID)], bh.blockhash, undefined, { cuLimit: 400_000 });
-        t2.sign([mint]);
-        const s2 = await sendTx(t2);
-        await awaitConfirmation(c, s2, bh);
-        useScash.getState().pushActivity({ id: crypto.randomUUID(), kind: "launch", asset: meta.symbol, amount: 0n, at: Date.now(), status: "confirmed", signature: s2 });
-        const { curve } = await get().refresh(mint.publicKey.toBase58());
-        // show it in the list now, from the curve we just read; `slot: 0` marks it as not yet indexed
+        const hash = await signer.writeContract(launchCall(LAUNCHPAD_ADDRESS, input.name, input.symbol, hosted.uri));
+        const rc = await publicClient.waitForTransactionReceipt({ hash, timeout: 180_000 });
+        if (rc.status !== "success") throw new Error("the launch transaction reverted");
+        const ev = parseEventLogs({ abi: LaunchpadAbi, logs: rc.logs, eventName: "Launch" })[0];
+        if (!ev) throw new Error("no Launch event in the receipt");
+        const token = getAddress(ev.args.token);
+        const params = get().params ?? (await readParams(publicClient, LAUNCHPAD_ADDRESS));
+        useBunker.getState().pushActivity({ id: crypto.randomUUID(), kind: "launch", asset: input.symbol, amount: 0n, decimals: 0, at: Date.now(), status: "confirmed", txHash: hash });
+        const { curve } = await get().refresh(token);
         const row: LaunchRow = {
-          mint: mint.publicKey.toBase58(), name: meta.name, symbol: meta.symbol, uri: meta.uri, decimals: 6,
-          virtual_sol: curve.virtualSol.toString(), virtual_token0: curve.virtualToken.toString(), curve_supply: curve.curveSupply.toString(), total_supply: curve.totalSupply.toString(),
-          graduation_lamports: curve.graduationLamports.toString(), real_sol: curve.realSol.toString(), real_token: curve.realToken.toString(), virtual_token: curve.virtualToken.toString(),
-          graduated: 0, buys: 0, sells: 0, sol_volume: "0", fees_to_treasury: "0", tokens_donated: "0", signature: s2, slot: 0, block_time: Math.floor(Date.now() / 1000),
-          amm_pool: null, amm_sol: null, amm_tokens: null, image: hosted.image, header: hosted.header,
+          token: k(token), creator: k(signer.address), name: input.name, symbol: input.symbol, uri: hosted.uri, decimals: params.decimals,
+          virtual_bnb: curve.virtualBnb.toString(), virtual_token0: curve.virtualToken.toString(), curve_supply: params.curveSupply.toString(), total_supply: params.totalSupply.toString(),
+          graduation_wei: params.graduationWei.toString(), real_bnb: curve.realBnb.toString(), real_token: curve.realToken.toString(), virtual_token: curve.virtualToken.toString(),
+          graduated: 0, buys: 0, sells: 0, bnb_volume: "0", fees_to_treasury: "0", tx_hash: hash, block: 0, block_time: Math.floor(Date.now() / 1000),
+          amm_pair: null, amm_bnb: null, amm_tokens: null, image: hosted.image, header: hosted.header,
         };
-        set((s) => ({ launches: [row, ...s.launches.filter((l) => l.mint !== row.mint)] }));
-        useScash.getState().addLaunchAssets([{ symbol: meta.symbol, name: meta.name, mint: mint.publicKey, decimals: 6, tokenProgram: TOKEN_2022_PROGRAM_ID, denominations: [] }]);
+        set((s) => ({ launches: [row, ...s.launches.filter((l) => k(l.token) !== k(token))] }));
+        useBunker.getState().addLaunchAssets([assetOf(row)]);
         setTimeout(() => void get().load(), 8000);
-        return mint.publicKey;
+        return token;
       } finally {
         set({ busy: undefined });
       }
     },
 
-    async buy(mintStr, lamports) {
-      const scash = useScash.getState();
-      const rl = scash.relayer;
+    async buy(tokenStr, wei) {
+      const bunker = useBunker.getState();
+      const rl = bunker.relayer;
       if (!rl) throw new Error("relayer unavailable");
-      if (!rl.launchProgram) throw new Error("this relayer does not forward launchpad trades");
-      const solPool = scash.pools.SOL;
-      if (!solPool) throw new Error("SOL pool missing");
-      const mint = new PublicKey(mintStr);
-      const { curve: stored, slot } = await get().refresh(mintStr);
-      // quote at the fee the program will charge now; protect min_out with the worst fee the next ~300 slots can bring
-      const curve = rolled(stored, slot);
-      const worst = { ...curve, tradeFeeBps: worstFeeBps(stored, slot) };
-      if (curve.graduated) throw new Error("this curve has graduated; it trades on Raydium now");
-      const rents = get().rents ?? (await fetchClaimRents(conn()));
-      const feePolicy = rl.fees.find((f) => f.mint === SOL.toBase58());
-      if (!feePolicy) throw new Error("relayer has no SOL policy");
-      const pct = (lamports * BigInt(feePolicy.bps)) / 10_000n;
+      if (!rl.launchpad) throw new Error("this relayer does not forward launchpad trades");
+      const bnbPool = bunker.pools[k(NATIVE_TOKEN)];
+      if (!bnbPool) throw new Error("BNB pool missing");
+      const token = getAddress(tokenStr);
+      const { curve: stored, block } = await get().refresh(tokenStr);
+      const curve = rolled(stored, block);
+      const worst = { ...curve, tradeFeeBps: worstFeeBps(stored, block) };
+      if (curve.graduated) throw new Error("this curve has graduated; it trades on PancakeSwap now");
+      const feePolicy = rl.fees.find((f) => k(f.token) === k(NATIVE_TOKEN));
+      if (!feePolicy) throw new Error("relayer has no BNB policy");
+      const units = toUnits(wei, bnbPool.unit);
+      const pct = (units * BigInt(feePolicy.bps)) / 10_000n;
       const fee = pct > BigInt(feePolicy.min) ? pct : BigInt(feePolicy.min);
-      const delivered = deliveredFor(solPool, lamports) - fee;
-      const q = quotePrivateBuy(worst, delivered, rents, CLAIM_BUDGET);
+      const delivered = deliveredFor(bnbPool, units) - fee * bnbPool.unit;
+      const q = quotePrivateBuy(worst, delivered, CLAIM_BUDGET, 0n);
       const minOut = q.out - (q.out * SLIPPAGE_BPS) / 10_000n;
       const nonce = get().nextNonce;
-      const key = claimKeypair(seed(), BigInt(nonce));
-      const relayerKey = new PublicKey(rl.relayer);
-      const rec: ClaimRecord = { nonce, mint: mintStr, kind: "buy", at: Date.now(), status: "pending" };
+      const ck = claimKey(seed(), BigInt(nonce));
+      const rec: ClaimRecord = { nonce, token: k(token), kind: "buy", at: Date.now(), status: "pending" };
       set({ nextNonce: nonce + 1, busy: "buy" });
       upsert(rec);
       try {
-        const sig = await scash.relayExit({ symbol: "SOL", name: "Solana", mint: SOL, decimals: 9, denominations: [] }, lamports, {
-          recipient: intakePda(mint), pool: solPool, fee, kind: "buy", label: get().launches.find((l) => l.mint === mintStr)?.symbol ?? "token",
-          exit: { target: LAUNCH_PROGRAM_ID, data: exitData(EXIT_BUY, key.publicKey, CLAIM_BUDGET, minOut), accounts: exitAccounts(EXIT_BUY, mint, key.publicKey, relayerKey) },
+        const txHash = await bunker.relayExit(BNB, wei, {
+          recipient: LAUNCHPAD_ADDRESS, fee, kind: "buy", label: get().launches.find((l) => k(l.token) === k(token))?.symbol ?? "token",
+          exit: { target: LAUNCHPAD_ADDRESS, data: exitData(EXIT_BUY, token, ck.address, minOut, CLAIM_BUDGET, 0n) },
         });
-        upsert({ ...rec, signature: sig, status: "claiming" });
-        await get().claim({ ...rec, signature: sig, status: "claiming" });
+        upsert({ ...rec, txHash, status: "claiming" });
+        await get().claim({ ...rec, txHash, status: "claiming" });
       } catch (e) {
         upsert({ ...rec, status: "failed", error: (e as Error).message });
         throw e;
@@ -284,39 +264,38 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
       }
     },
 
-    async sell(mintStr, tokens) {
-      const scash = useScash.getState();
-      const rl = scash.relayer;
+    async sell(tokenStr, tokens) {
+      const bunker = useBunker.getState();
+      const rl = bunker.relayer;
       if (!rl) throw new Error("relayer unavailable");
-      if (!rl.launchProgram) throw new Error("this relayer does not forward launchpad trades");
-      const mint = new PublicKey(mintStr);
-      const { curve: stored, pool, slot } = await get().refresh(mintStr);
-      const curve = rolled(stored, slot);
-      const worst = { ...curve, tradeFeeBps: worstFeeBps(stored, slot) };
+      if (!rl.launchpad) throw new Error("this relayer does not forward launchpad trades");
+      const token = getAddress(tokenStr);
+      const { curve: stored, pool, block } = await get().refresh(tokenStr);
+      const curve = rolled(stored, block);
+      const worst = { ...curve, tradeFeeBps: worstFeeBps(stored, block) };
       if (!pool) throw new Error("token pool missing");
-      if (curve.graduated) throw new Error("this curve has graduated; it trades on Raydium now");
-      const feePolicy = rl.fees.find((f) => f.mint === SOL.toBase58());
-      if (!feePolicy) throw new Error("relayer has no SOL policy");
-      // the relayer is tipped in SOL out of the proceeds: its SOL minimum, which already covers its costs
-      const tip = BigInt(feePolicy.min);
-      const delivered = deliveredFor(pool, tokens);
+      if (curve.graduated) throw new Error("this curve has graduated; it trades on PancakeSwap now");
+      const feePolicy = rl.fees.find((f) => k(f.token) === k(NATIVE_TOKEN));
+      if (!feePolicy) throw new Error("relayer has no BNB policy");
+      // the relayer is tipped in BNB out of the proceeds: its BNB minimum, which already covers its gas
+      const tip = BigInt(feePolicy.min) * NATIVE_UNIT;
+      const delivered = deliveredFor(pool, toUnits(tokens, pool.unit));
       const q = quotePrivateSell(worst, delivered, tip);
       const minOut = q.out - (q.out * SLIPPAGE_BPS) / 10_000n;
       const nonce = get().nextNonce;
-      const key = claimKeypair(seed(), BigInt(nonce));
-      const relayerKey = new PublicKey(rl.relayer);
-      const launchRow = get().launches.find((l) => l.mint === mintStr);
-      const rec: ClaimRecord = { nonce, mint: mintStr, kind: "sell", at: Date.now(), status: "pending" };
+      const ck = claimKey(seed(), BigInt(nonce));
+      const row = get().launches.find((l) => k(l.token) === k(token));
+      const rec: ClaimRecord = { nonce, token: k(token), kind: "sell", at: Date.now(), status: "pending" };
       set({ nextNonce: nonce + 1, busy: "sell" });
       upsert(rec);
       try {
-        const asset: AssetMeta = { symbol: launchRow?.symbol ?? "token", name: launchRow?.name ?? "token", mint, decimals: launchRow?.decimals ?? 6, tokenProgram: TOKEN_2022_PROGRAM_ID, denominations: [] };
-        const sig = await scash.relayExit(asset, tokens, {
-          recipient: intakeAta(mint), pool, fee: 0n, kind: "sell", label: asset.symbol,
-          exit: { target: LAUNCH_PROGRAM_ID, data: exitData(EXIT_SELL, key.publicKey, 0n, minOut, tip), accounts: exitAccounts(EXIT_SELL, mint, key.publicKey, relayerKey) },
+        const asset: AssetMeta = row ? assetOf(row) : { symbol: "token", name: "token", token, decimals: get().params?.decimals ?? 6, denominations: [] };
+        const txHash = await bunker.relayExit(asset, tokens, {
+          recipient: LAUNCHPAD_ADDRESS, fee: 0n, kind: "sell", label: asset.symbol,
+          exit: { target: LAUNCHPAD_ADDRESS, data: exitData(EXIT_SELL, token, ck.address, minOut, 0n, tip) },
         });
-        upsert({ ...rec, signature: sig, status: "claiming" });
-        await get().claim({ ...rec, signature: sig, status: "claiming" });
+        upsert({ ...rec, txHash, status: "claiming" });
+        await get().claim({ ...rec, txHash, status: "claiming" });
       } catch (e) {
         upsert({ ...rec, status: "failed", error: (e as Error).message });
         throw e;
@@ -337,25 +316,26 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
     },
 
     async recover() {
-      const c = conn();
       const s = seed();
-      const rents = get().rents ?? (await fetchClaimRents(c));
       const known = new Map(get().claims.map((r) => [r.nonce, r]));
       const limit = Math.max(get().nextNonce, 0) + 12; // lookahead past the last nonce this browser knows about
+      const tokens = get().launches.map((l) => getAddress(l.token));
+      const keep = await gasReserve();
       let swept = 0;
       for (let nonce = 0; nonce < limit; nonce++) {
-        const key = claimKeypair(s, BigInt(nonce)).publicKey;
-        const [lamports, tokenAccounts] = await Promise.all([c.getBalance(key), c.getTokenAccountsByOwner(key, { programId: TOKEN_2022_PROGRAM_ID })]);
+        const addr = claimKey(s, BigInt(nonce)).address;
+        const [wei, bals] = await Promise.all([
+          publicClient.getBalance({ address: addr }),
+          tokens.length
+            ? publicClient.multicall({ contracts: tokens.map((t) => ({ address: t, abi: IERC20MetadataAbi, functionName: "balanceOf" as const, args: [addr] as const })), allowFailure: true })
+            : Promise.resolve([]),
+        ]);
         const prior = known.get(nonce);
         let rec: ClaimRecord | undefined;
-        for (const ta of tokenAccounts.value) {
-          const amount = ta.account.data.readBigUInt64LE(64);
-          if (amount === 0n) continue;
-          rec = { nonce, mint: new PublicKey(ta.account.data.subarray(0, 32)).toBase58(), kind: "buy", at: prior?.at ?? Date.now(), status: "pending", signature: prior?.signature };
-        }
-        if (!rec && BigInt(lamports) > rents.claimRent + 2n * rents.nullifierRent + 11_000n) {
-          rec = { nonce, mint: prior?.mint ?? SOL.toBase58(), kind: "sell", at: prior?.at ?? Date.now(), status: "pending", signature: prior?.signature };
-        }
+        bals.forEach((b, i) => {
+          if (b.status === "success" && b.result > 0n) rec = { nonce, token: k(tokens[i]), kind: "buy", at: prior?.at ?? Date.now(), status: "pending", txHash: prior?.txHash };
+        });
+        if (!rec && wei > keep + NATIVE_UNIT) rec = { nonce, token: prior?.token ?? k(NATIVE_TOKEN), kind: "sell", at: prior?.at ?? Date.now(), status: "pending", txHash: prior?.txHash };
         if (!rec) continue;
         if (nonce >= get().nextNonce) set({ nextNonce: nonce + 1 });
         try {
@@ -369,9 +349,11 @@ export const useLaunchpad = create<LaunchpadState>((set, get) => {
   };
 });
 
-/** Spot price in lamports per whole token, from the curve's current reserves. */
-export function priceLamportsPerToken(c: CurveState, decimals: number): number {
-  const x = Number(c.virtualSol + c.realSol);
+/** Spot price in wei per whole token, from the curve's current reserves. */
+export function priceWeiPerToken(c: CurveState, decimals: number): number {
+  const x = Number(c.virtualBnb + c.realBnb);
   const y = Number(c.virtualToken);
   return (x / y) * 10 ** decimals;
 }
+
+export type { Hex };

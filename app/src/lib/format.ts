@@ -32,7 +32,7 @@ export function fmtPrice(x: number, sig = 3): string {
 
 /**
  * Width for a graduation bar: anything raised at all shows at least a sliver
- * (0.003 of 20 SOL is 0.015 %, invisible otherwise), the rest is linear.
+ * (0.003 of 20 BNB is 0.015 %, invisible otherwise), the rest is linear.
  */
 export function barWidth(progress: number, floor = 0.02): string {
   if (!(progress > 0)) return "0%";
