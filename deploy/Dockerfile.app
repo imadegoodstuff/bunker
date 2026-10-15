@@ -22,6 +22,8 @@ ARG NEXT_PUBLIC_RELAYER_URL
 ARG NEXT_PUBLIC_AGENTS_URL
 ARG NEXT_PUBLIC_POOL_ADDRESS
 ARG NEXT_PUBLIC_LAUNCHPAD_ADDRESS
+ARG NEXT_PUBLIC_SWAP_EXIT_ADDRESS
+ARG NEXT_PUBLIC_RELAYER_URLS
 ARG NEXT_PUBLIC_SITE_URL
 ARG GIT_SHA=unknown
 ENV NEXT_PUBLIC_CHAIN_ID=$NEXT_PUBLIC_CHAIN_ID \
@@ -31,15 +33,17 @@ ENV NEXT_PUBLIC_CHAIN_ID=$NEXT_PUBLIC_CHAIN_ID \
     NEXT_PUBLIC_AGENTS_URL=$NEXT_PUBLIC_AGENTS_URL \
     NEXT_PUBLIC_POOL_ADDRESS=$NEXT_PUBLIC_POOL_ADDRESS \
     NEXT_PUBLIC_LAUNCHPAD_ADDRESS=$NEXT_PUBLIC_LAUNCHPAD_ADDRESS \
+    NEXT_PUBLIC_SWAP_EXIT_ADDRESS=$NEXT_PUBLIC_SWAP_EXIT_ADDRESS \
+    NEXT_PUBLIC_RELAYER_URLS=$NEXT_PUBLIC_RELAYER_URLS \
     NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL \
     NEXT_PUBLIC_GIT_SHA=$GIT_SHA
 COPY sdk sdk
 COPY app app
 # proving artifacts (wasm + zkey) are served statically; copy whatever was built locally
-COPY circuits/build/transact2x2/transact2x2_js/transact2x2.wasm app/public/circuits/transact2x2.wasm
-COPY circuits/build/transact2x2/transact2x2_dev.zkey app/public/circuits/transact2x2.zkey
-COPY circuits/build/transact4x2/transact4x2_js/transact4x2.wasm app/public/circuits/transact4x2.wasm
-COPY circuits/build/transact4x2/transact4x2_dev.zkey app/public/circuits/transact4x2.zkey
+COPY circuits/build/transact2x3/transact2x3_js/transact2x3.wasm app/public/circuits/transact2x3.wasm
+COPY circuits/build/transact2x3/transact2x3_dev.zkey app/public/circuits/transact2x3.zkey
+COPY circuits/build/transact4x3/transact4x3_js/transact4x3.wasm app/public/circuits/transact4x3.wasm
+COPY circuits/build/transact4x3/transact4x3_dev.zkey app/public/circuits/transact4x3.zkey
 RUN npm run -w sdk build && npm run -w app build
 
 FROM node:22-bookworm-slim AS runner

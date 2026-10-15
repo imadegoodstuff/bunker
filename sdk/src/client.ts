@@ -48,6 +48,8 @@ export interface ConnectOptions {
   artifacts?: Partial<Record<CircuitName, CircuitArtifacts>>;
   /** Progress callback while artifacts download. */
   onArtifactProgress?: (p: { circuit: CircuitName; loaded: number; total: number }) => void;
+  /** Supply artifacts on demand instead (an app that prefetches and caches them itself). */
+  artifactLoader?: (circuit: CircuitName) => Promise<CircuitArtifacts>;
 }
 
 export type TxStage = "proving" | "relaying" | "confirming" | "draining" | "done";
@@ -91,6 +93,7 @@ export class BunkerClient {
   private readonly artifacts: Partial<Record<CircuitName, CircuitArtifacts>>;
   private readonly artifactLoads: Partial<Record<CircuitName, Promise<CircuitArtifacts>>> = {};
   private readonly onArtifactProgress?: ConnectOptions["onArtifactProgress"];
+  private readonly artifactLoader?: ConnectOptions["artifactLoader"];
 
   private constructor(network: NetworkConfig, seed: Uint8Array | undefined, wallet: ShieldedWallet, tree: MerkleTree, o: ConnectOptions) {
     this.network = network;
@@ -105,6 +108,7 @@ export class BunkerClient {
     this.seed = seed;
     this.artifacts = { ...(o.artifacts ?? {}) };
     this.onArtifactProgress = o.onArtifactProgress;
+    this.artifactLoader = o.artifactLoader;
     this.launchpad = new Launchpad(this);
   }
 
@@ -363,6 +367,7 @@ export class BunkerClient {
     if (have) return have;
     const running = this.artifactLoads[circuit];
     if (running) return running;
+    if (this.artifactLoader) return this.artifactLoader(circuit);
     const base = this.network.artifactsUrl.replace(/\/$/, "");
     const p = (async () => {
       const [wasm, zkey] = await Promise.all([

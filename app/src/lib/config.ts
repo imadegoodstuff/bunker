@@ -1,5 +1,5 @@
 import { getAddress } from "viem";
-import { NATIVE_TOKEN, type EvmAddress } from "@bunker/sdk";
+import { NATIVE_TOKEN, PROTOCOL_VERSION, bsc as bscPreset, type EvmAddress, type NetworkConfig } from "@bunker/sdk";
 
 export const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://bunkeronbnb.com";
 export const GITHUB = "https://github.com/imadegoodstuff/bunker";
@@ -21,7 +21,31 @@ function addr(s: string | undefined): EvmAddress {
 /** Deployed contracts. Unset in a build means the app points at nothing and says so. */
 export const POOL_ADDRESS = addr(process.env.NEXT_PUBLIC_POOL_ADDRESS);
 export const LAUNCHPAD_ADDRESS = addr(process.env.NEXT_PUBLIC_LAUNCHPAD_ADDRESS);
+/** The private-swap exit hook (PancakeSwap V2); unset means the swap tab is hidden. */
+export const SWAP_EXIT_ADDRESS: EvmAddress | null = process.env.NEXT_PUBLIC_SWAP_EXIT_ADDRESS ? getAddress(process.env.NEXT_PUBLIC_SWAP_EXIT_ADDRESS) : MAINNET ? bscPreset.swapExit : null;
+export const WBNB_ADDRESS: EvmAddress = process.env.NEXT_PUBLIC_WBNB_ADDRESS ? getAddress(process.env.NEXT_PUBLIC_WBNB_ADDRESS) : bscPreset.wbnb;
 export const CONFIGURED = POOL_ADDRESS !== ZERO && LAUNCHPAD_ADDRESS !== ZERO;
+/** Every relayer the vault may use; the cheapest healthy one wins. Comma-separated in the env; the primary is always included. */
+export const RELAYER_URLS: string[] = Array.from(new Set([RELAYER_URL, ...(process.env.NEXT_PUBLIC_RELAYER_URLS ?? "").split(",").map((s) => s.trim()).filter(Boolean)]));
+
+/** The SDK network this build points at, from the same env the rest of the app reads. */
+export const NETWORK: NetworkConfig = {
+  name: CHAIN_NAME,
+  chainId: CHAIN_ID,
+  rpcUrl: RPC_URL,
+  protocolVersion: PROTOCOL_VERSION,
+  pool: POOL_ADDRESS,
+  launchpad: LAUNCHPAD_ADDRESS,
+  swapExit: SWAP_EXIT_ADDRESS,
+  wbnb: WBNB_ADDRESS,
+  startBlock: 0,
+  indexerUrl: INDEXER_URL,
+  relayerUrl: RELAYER_URL,
+  relayerUrls: RELAYER_URLS,
+  agentsUrl: AGENTS_URL,
+  artifactsUrl: ARTIFACT_BASE,
+  explorerUrl: CHAIN_ID === 97 ? "https://testnet.bscscan.com" : "https://bscscan.com",
+};
 
 /** The $BUNKER token on BNB Smart Chain. */
 export const BUNKER_TOKEN: EvmAddress = "0x2Ec1e08C2C6343671728EF7C6E7FDe0bD6F07777";
@@ -65,8 +89,8 @@ if (process.env.NEXT_PUBLIC_EXTRA_ASSETS) {
 }
 
 export const ARTIFACTS = {
-  transact2x2: { wasm: `${ARTIFACT_BASE}/transact2x2.wasm`, zkey: `${ARTIFACT_BASE}/transact2x2.zkey` },
-  transact4x2: { wasm: `${ARTIFACT_BASE}/transact4x2.wasm`, zkey: `${ARTIFACT_BASE}/transact4x2.zkey` },
+  transact2x3: { wasm: `${ARTIFACT_BASE}/transact2x3.wasm`, zkey: `${ARTIFACT_BASE}/transact2x3.zkey` },
+  transact4x3: { wasm: `${ARTIFACT_BASE}/transact4x3.wasm`, zkey: `${ARTIFACT_BASE}/transact4x3.zkey` },
 };
 
 const EXPLORER = CHAIN_ID === 97 ? "https://testnet.bscscan.com" : "https://bscscan.com";

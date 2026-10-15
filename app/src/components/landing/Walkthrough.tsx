@@ -4,8 +4,9 @@ import { useEffect, useState } from "react";
 const STEPS = [
   { k: "shield", title: "Shield", body: "Your wallet deposits BNB or any ERC-20 into the pool. The pool records a commitment: a hash of the amount, the asset and a key only you hold.", trace: ["wallet 0x7a3f… → pool", "+ 1 commitment", "tree root changes"] },
   { k: "wait", title: "Wait", body: "Other people shield too. Every new note widens the crowd your note can hide in. Timing is part of privacy: do not withdraw the moment you deposit.", trace: ["+ 412 commitments", "7 assets · 1 tree", "your note: indistinguishable"] },
-  { k: "spend", title: "Spend", body: "In the browser you prove you own some note in the tree without saying which. The relayer submits the proof and is paid from the note. The chain sees a nullifier and a new commitment.", trace: ["proof: 1.4 s on this device", "nullifier published", "recipient 0x91c0… receives"] },
-  { k: "trade", title: "Trade", body: "Point the withdrawal at the launchpad instead of an address. The curve fills it, pays a throwaway claim key, and that key shields the tokens straight back into your vault.", trace: ["exit → launchpad", "claim key 0x2b… (used once)", "tokens shielded"] },
+  { k: "spend", title: "Spend", body: "In the browser you prove you own some note in the tree without saying which. The relayer submits the proof and is paid with a shielded note of its own. The chain sees a nullifier and three new commitments.", trace: ["proof: 1.4 s on this device", "nullifier published", "payment · change · fee: all notes"] },
+  { k: "trade", title: "Trade", body: "Point the withdrawal at the launchpad or at PancakeSwap instead of an address. The venue is paid by the pool and pays the pool back, and the proceeds are a fresh note of yours before the block closes.", trace: ["exit → launchpad / SwapExit", "venue → pool (same tx)", "tokens shielded, nothing to claim"] },
+  { k: "settle", title: "Settle", body: "New notes wait in a short public queue and a keeper folds them into the tree in batches, within seconds. Your note is visible at once and spendable as soon as its batch is in.", trace: ["+ 3 commitments queued", "drain(): 1 root for 64 notes", "spendable"] },
 ];
 
 export function Walkthrough() {

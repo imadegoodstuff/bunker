@@ -29,6 +29,12 @@ primary_region = "sin"
   DYNAMIC_ASSETS = "1"
   DYNAMIC_MARGIN_BPS = "5000"
   DYNAMIC_FEE_BPS = "5"
+  # protocol v2: fee notes are shielded; the sweeper proves them back to the EOA using these artifacts and the indexer
+  INDEXER_URL = "https://bunker-indexer.fly.dev"
+  ARTIFACTS_DIR = "/repo/circuits"
+  # drain keeper: fold queued leaves into the tree after this long or at this many leaves
+  DRAIN_AFTER_MS = "15000"
+  DRAIN_AT = "32"
 
 [http_service]
   internal_port = 8787
@@ -46,4 +52,4 @@ primary_region = "sin"
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "512mb"
+  memory = "1024mb"

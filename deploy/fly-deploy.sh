@@ -11,6 +11,7 @@ dep=contracts/deployments/56.json
 [ -f "$dep" ] || { echo "missing $dep: deploy the contracts first (npm run -w contracts deploy:bsc)"; exit 1; }
 pool=$(node -p "require('./$dep').pool")
 launchpad=$(node -p "require('./$dep').launchpad")
+swapexit=$(node -p "require('./$dep').swapExit || ''")
 start=$(node -p "require('./$dep').startBlock")
 sha=$(git rev-parse --short HEAD)
 
@@ -18,7 +19,7 @@ service() {
   name=$1
   flyctl deploy --config "deploy/fly.$name.toml" --dockerfile deploy/Dockerfile.service --remote-only \
     --build-arg SERVICE="$name" --build-arg GIT_SHA="$sha" \
-    --env POOL_ADDRESS="$pool" --env LAUNCHPAD_ADDRESS="$launchpad" --env START_BLOCK="$start"
+    --env POOL_ADDRESS="$pool" --env LAUNCHPAD_ADDRESS="$launchpad" --env SWAP_EXIT_ADDRESS="$swapexit" --env START_BLOCK="$start"
 }
 
 case "$what" in
@@ -27,6 +28,8 @@ case "$what" in
     flyctl deploy --config deploy/fly.app.toml --dockerfile deploy/Dockerfile.app --remote-only \
       --build-arg GIT_SHA="$sha" \
       --build-arg NEXT_PUBLIC_POOL_ADDRESS="$pool" --build-arg NEXT_PUBLIC_LAUNCHPAD_ADDRESS="$launchpad" \
+      --build-arg NEXT_PUBLIC_SWAP_EXIT_ADDRESS="$swapexit" \
+      ${NEXT_PUBLIC_RELAYER_URLS:+--build-arg NEXT_PUBLIC_RELAYER_URLS="$NEXT_PUBLIC_RELAYER_URLS"} \
       ${NEXT_PUBLIC_RPC_URL:+--build-arg NEXT_PUBLIC_RPC_URL="$NEXT_PUBLIC_RPC_URL"}
     ;;
   all) service indexer; service relayer; service agents; "$0" app ;;

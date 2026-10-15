@@ -6,17 +6,18 @@ import { useWallet } from "@/lib/wallet";
 import { CONFIGURED } from "@/lib/config";
 import { deviceSeed, forgetDeviceSeed, gasAccount, isNativeShell, newSeed } from "@/lib/device";
 
-type Mode = "device" | "sign" | "restore";
+type Mode = "device" | "sign" | "restore" | "view";
 
 export function Unlock() {
   const isConnected = useWallet((w) => !!w.address);
   const signMessage = useWallet((w) => w.signMessage);
   const walletReady = useWallet((w) => w.ready);
   const injected = useWallet((w) => w.available && !w.device);
-  const { phase, error, unlock, unlockFromSeed, openDevice } = useBunker();
+  const { phase, error, unlock, unlockFromSeed, unlockFromViewingKey, openDevice } = useBunker();
   const [mode, setMode] = useState<Mode>("sign");
   const [autoMode, setAutoMode] = useState(false);
   const [pass, setPass] = useState("");
+  const [viewKey, setViewKey] = useState("");
   const [sigOnly, setSigOnly] = useState(false);
   const [ack, setAck] = useState(false);
   const [backup, setBackup] = useState("");
@@ -55,6 +56,8 @@ export function Unlock() {
       <p className="text-mute leading-relaxed mb-8">
         {mode === "device"
           ? <>A vault on this device: a random key kept only here, with a built-in BNB account to pay for shields. One backup string restores both. Nothing to install, nothing to sign.</>
+          : mode === "view"
+          ? <>A viewing key opens a read-only mirror of a vault: every note, memo and spend, exactly as the owner sees them, and no way to sign. For a second device, an accountant, or proving what you hold.</>
           : <>The spending key is derived in this tab from a wallet signature stretched with a passphrase. The signature alone is not enough: any page that gets you to sign the same message would otherwise own your vault. Same wallet, same passphrase, same key, on any device.</>}
       </p>
 
@@ -63,6 +66,7 @@ export function Unlock() {
           <button className="tab" data-active={mode === "device"} onClick={() => setMode("device")}>This device</button>
           {native ? null : <button className="tab" data-active={mode === "sign"} onClick={() => setMode("sign")}>Wallet signature</button>}
           <button className="tab" data-active={mode === "restore"} onClick={() => setMode("restore")}>Seed backup</button>
+          <button className="tab" data-active={mode === "view"} onClick={() => setMode("view")}>Viewing key</button>
         </div>
 
         {mode === "device" ? (
@@ -79,7 +83,7 @@ export function Unlock() {
               <>
                 <ul className="text-sm text-mute space-y-2 leading-relaxed">
                   <li><span className="text-signal font-mono text-[11px] mr-2">01</span>A new spending key is generated here and remembered on this device.</li>
-                  <li><span className="text-signal font-mono text-[11px] mr-2">02</span>A public BNB account is derived from it. Send BNB there to shield; it also pays claim gas on the launchpad.</li>
+                  <li><span className="text-signal font-mono text-[11px] mr-2">02</span>A public BNB account is derived from it. Send BNB there to shield; everything after that (sends, trades, swaps) is relayed and needs no gas from you.</li>
                   <li><span className="text-signal font-mono text-[11px] mr-2">03</span>Write the backup string down. Lose the device and the string, lose the vault.</li>
                 </ul>
                 <button className="btn btn-signal" disabled={busy || !CONFIGURED} onClick={create}>{busy ? "opening" : "create a vault on this device"}</button>
@@ -142,6 +146,17 @@ export function Unlock() {
               </button>
               <button className="btn btn-ghost btn-sm" type="button" onClick={() => { setSigOnly(!sigOnly); setAck(false); }}>{sigOnly ? "use a passphrase instead" : "signature only (weaker)"}</button>
             </div>
+          </div>
+        ) : mode === "view" ? (
+          <div className="space-y-5">
+            <div>
+              <label className="label block mb-2">Viewing key</label>
+              <textarea className="field font-mono text-[12px]" rows={3} value={viewKey} onChange={(e) => setViewKey(e.target.value)} placeholder="bunkerview1…" spellCheck={false} />
+              <p className="mt-2 font-mono text-[11px] text-dim">Exported from an open vault under Backup → viewing key. It reveals the vault's history to whoever holds it; it cannot move a single note.</p>
+            </div>
+            <button className="btn btn-signal" disabled={busy || !viewKey.trim() || !CONFIGURED} onClick={() => unlockFromViewingKey(viewKey)}>
+              {busy ? (phase === "deriving" ? "deriving key" : "syncing notes") : "open read-only"}
+            </button>
           </div>
         ) : (
           <div className="space-y-5">

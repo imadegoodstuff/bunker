@@ -3,7 +3,7 @@ import { useBunker, type TxStage } from "@/lib/store";
 import { explorerTx } from "@/lib/config";
 
 const STEPS: { key: TxStage[]; label: string }[] = [
-  { key: ["building", "proving"], label: "prove" },
+  { key: ["building", "draining", "proving"], label: "prove" },
   { key: ["signing", "relaying"], label: "submit" },
   { key: ["confirming"], label: "confirm" },
 ];
@@ -32,7 +32,7 @@ export function TxOverlay() {
             );
           })}
         </div>
-        <p className={`text-sm leading-relaxed ${failed ? "text-bad" : "text-mute"}`}>{done ? "Confirmed on chain. Your balance updates as the indexer catches up." : tx.message ?? "…"}</p>
+        <p className={`text-sm leading-relaxed ${failed ? "text-bad" : "text-mute"}`}>{done ? (tx.txHash ? "Confirmed on chain. New notes show as settling until the next batch folds them into the tree; a keeper does that within seconds." : "Done.") : tx.message ?? "…"}</p>
         {tx.txHash ? (
           <a href={explorerTx(tx.txHash)} target="_blank" rel="noreferrer" className="mt-4 inline-block font-mono text-[11px] text-steel hover:text-fg break-all">{tx.txHash} ↗</a>
         ) : null}

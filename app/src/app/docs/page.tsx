@@ -1,12 +1,28 @@
 import type { Metadata } from "next";
-import { BUNKER_TOKEN, LAUNCHPAD_ADDRESS, POOL_ADDRESS, CONFIGURED, explorerAddr } from "@/lib/config";
+import { BUNKER_TOKEN, LAUNCHPAD_ADDRESS, POOL_ADDRESS, SWAP_EXIT_ADDRESS, CONFIGURED, explorerAddr } from "@/lib/config";
 
 export const metadata: Metadata = { title: "Docs" };
 
 const SECTIONS: { h: string; p: React.ReactNode }[] = [
   {
     h: "What the pool is",
-    p: <>A single shielded pool contract on BNB Smart Chain holding BNB and any ERC-20, each as its own sub-pool with share accounting, under one depth-26 Poseidon Merkle tree. Notes are Zcash-Sapling style: a commitment binds an asset, an amount and a diversified Baby Jubjub address; spending reveals a nullifier and a Groth16 proof over BN254 (<code>transact2x2</code> or <code>transact4x2</code>). The contract keeps the last 128 roots so a proof made a minute ago still verifies.</>,
+    p: <>A single shielded pool contract on BNB Smart Chain holding BNB and any ERC-20, each as its own sub-pool with share accounting, under one depth-26 Poseidon Merkle tree. Notes are Zcash-Sapling style: a commitment binds an asset, an amount and a diversified Baby Jubjub address; spending reveals a nullifier and a Groth16 proof over BN254 (<code>transact2x3</code> or <code>transact4x3</code>: two or four inputs, always three outputs). The contract keeps the last 128 roots so a proof made a minute ago still verifies.</>,
+  },
+  {
+    h: "Batched insertion",
+    p: <>New commitments are queued on-chain and folded into the tree in batches by <code>drain()</code>, which anyone may call and the relayer's keeper calls within seconds. A shield or a send therefore costs a fraction of the hashing it used to, and the queue is a public fact, not a secret: a note is visible the moment it lands and spendable the moment its batch is in. The app shows the difference as <em>settling</em>. Nullifiers are never deferred; a spend is final in its own block.</>,
+  },
+  {
+    h: "Private fees",
+    p: <>Every transaction has three outputs: the payment, the change, and a note to the relayer. The relayer's fee is therefore a shielded note like any other, encrypted to the relayer's own <code>bunker1…</code> address, so nothing public says what the fee was or who was paid. A withdrawal delivers exactly the amount typed. The relayer periodically unshields its fee notes to pay for gas.</>,
+  },
+  {
+    h: "Pay a plain address",
+    p: <>A wallet can register its <code>bunker1…</code> address under its public account (<code>register</code>, one transaction). From then on anyone can type the <code>0x…</code> address in the vault and the payment lands as a shielded note, unlinkable to the sender. The registry is public; which payments reach it is not.</>,
+  },
+  {
+    h: "Viewing keys",
+    p: <>A full viewing key (<code>bunkerview1…</code>) decrypts every note, memo and spend of a vault and signs nothing. Paste it into a second device for a read-only mirror, or hand it to whoever needs to audit you. The spending seed never leaves the device that holds it.</>,
   },
   {
     h: "Keys",
@@ -14,11 +30,15 @@ const SECTIONS: { h: string; p: React.ReactNode }[] = [
   },
   {
     h: "Relayer",
-    p: <>Sends and withdrawals go through a relayer so your public wallet never signs them. The relayer receives a finished proof and ciphertexts, checks that its fee is inside the transaction, waits a random delay, and submits. It cannot alter, redirect or front-run a note; it can only decline. Fees are quoted per asset at <code>/info</code> and ERC-20 fees are priced through PancakeSwap.</>,
+    p: <>Sends, withdrawals, trades and swaps go through a relayer so your public wallet never signs them. The relayer receives a finished proof and ciphertexts, decrypts the fee note addressed to it, checks it covers gas, waits a random delay, and submits. It cannot alter, redirect or front-run a note; it can only decline. Anyone can run one; the app picks the cheapest healthy relayer it knows. Fees are quoted per asset at <code>/info</code> and ERC-20 fees are priced through PancakeSwap or the launchpad curve.</>,
   },
   {
     h: "Launchpad",
-    p: <>Tokens launch on a constant-product curve with virtual reserves. A private buy is a pool withdrawal whose recipient is the launchpad and whose exit data names a one-off claim key; the curve fills it, funds the claim key with the tokens and a little BNB for gas, and the claim key shields them back. Sells are the mirror image. At the graduation threshold the curve closes, liquidity is added to PancakeSwap V2 and the LP tokens are burned.</>,
+    p: <>Tokens launch on a constant-product curve with virtual reserves. A private buy is one pool transaction: the pool pays the launchpad through its exit hook, the curve fills the order and sends the tokens straight back to the pool, which mints them as a fresh note of yours before the transaction ends. Sells are the mirror image. No claim key, no gas from you, nothing to recover. At the graduation threshold the curve closes, liquidity is added to PancakeSwap V2 and the LP tokens are burned.</>,
+  },
+  {
+    h: "Private swaps",
+    p: <>The same exit hook reaches PancakeSwap V2: <code>SwapExit</code> takes the withdrawn asset, trades it along a path you chose (BNB, USDT, any pair through WBNB), and returns the output to the pool as a note of yours, atomically. A shielded BNB balance becomes a shielded USDT balance without any account on-chain ever holding either.</>,
   },
   {
     h: "Fee policy",
@@ -26,7 +46,7 @@ const SECTIONS: { h: string; p: React.ReactNode }[] = [
   },
   {
     h: "Trust and limits",
-    p: <>A guardian key can pause new shields and lower the deposit cap; it cannot touch funds, block withdrawals or alter circuits. The indexer is a convenience: anyone can rebuild the tree from chain events. Amount and timing correlations are not hidden by cryptography; the interface nudges round denominations and patience. The code is new and unaudited.</>,
+    p: <>A guardian key can pause new shields and lower the deposit cap; it cannot touch funds, block withdrawals or alter circuits. The indexer is a convenience: anyone can rebuild the tree from chain events. Amount and timing correlations are not hidden by cryptography; the interface nudges round denominations and patience. The proving keys come from a deterministic development setup, not a multi-party ceremony; a ceremony is the next step before the pool should hold serious value. The code is new and unaudited.</>,
   },
   {
     h: "Android",
@@ -55,8 +75,10 @@ await bunker.shield("BNB", parseEther("0.01"), { signer: account });
 await bunker.send("BNB", parseEther("0.004"), "bunker1…");
 await bunker.unshield("BNB", parseEther("0.003"), "0x…");
 
-const q = await bunker.launchpad.quoteBuy(token, parseEther("0.05"));
-await bunker.launchpad.buy(token, parseEther("0.05"));`}</pre>
+await bunker.launchpad.buy(token, parseEther("0.05"));  // tokens land as a note, same tx
+await bunker.swap("BNB", parseEther("0.1"), usdt);      // private PancakeSwap swap
+await bunker.register(account);                          // let people pay your 0x privately
+const mirror = await BunkerClient.connect({ viewingKey: bunker.viewingKey() });`}</pre>
         <span className="block mt-3 font-mono text-[11px]">
           indexer <code>bunker-indexer.fly.dev</code> · relayer <code>bunker-relayer.fly.dev</code> · agents <code>bunker-agents.fly.dev</code> · proving keys <code>/circuits/</code>
         </span>
@@ -74,6 +96,7 @@ export default function Docs() {
         <div className="flex justify-between gap-4"><span className="text-mute">$BUNKER token</span><a className="text-signal hover:text-fg break-all" href={explorerAddr(BUNKER_TOKEN)} target="_blank" rel="noreferrer">{BUNKER_TOKEN}</a></div>
         <div className="flex justify-between gap-4"><span className="text-mute">pool</span>{CONFIGURED ? <a className="text-steel hover:text-fg break-all" href={explorerAddr(POOL_ADDRESS)} target="_blank" rel="noreferrer">{POOL_ADDRESS}</a> : <span className="text-warn">not configured</span>}</div>
         <div className="flex justify-between gap-4"><span className="text-mute">launchpad</span>{CONFIGURED ? <a className="text-steel hover:text-fg break-all" href={explorerAddr(LAUNCHPAD_ADDRESS)} target="_blank" rel="noreferrer">{LAUNCHPAD_ADDRESS}</a> : <span className="text-warn">not configured</span>}</div>
+        {SWAP_EXIT_ADDRESS ? <div className="flex justify-between gap-4"><span className="text-mute">swap exit</span><a className="text-steel hover:text-fg break-all" href={explorerAddr(SWAP_EXIT_ADDRESS)} target="_blank" rel="noreferrer">{SWAP_EXIT_ADDRESS}</a></div> : null}
       </div>
       <div className="divide-y rule">
         {SECTIONS.map((s, i) => (

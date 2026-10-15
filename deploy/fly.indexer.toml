@@ -11,7 +11,8 @@ primary_region = "sin"
   PORT = "8788"
   CHAIN_ID = "56"
   RPC_URL = "https://bsc-dataseed.bnbchain.org"
-  DB_PATH = "/data/bunker-indexer.sqlite"
+  # v2 pool: fresh database (the v1 file stays on the volume for reference)
+  DB_PATH = "/data/bunker-indexer-v2.sqlite"
   # public BSC endpoints cap eth_getLogs ranges well below 2000 blocks
   SCAN_CHUNK = "400"
   RPC_URLS = "https://bsc-dataseed1.defibit.io,https://bsc.drpc.org,https://bsc-dataseed1.ninicoin.io"

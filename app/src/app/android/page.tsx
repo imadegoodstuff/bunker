@@ -9,7 +9,7 @@ export const metadata: Metadata = {
 const STEPS: [string, React.ReactNode][] = [
   ["Install", <>Download the APK below and open it. Android asks once to allow installs from your browser.</>],
   ["Create the vault", <>The app generates a spending key on the phone and shows a backup string (<code>bunkerseed1…</code>). Write it down: it is the only way to open the vault anywhere else.</>],
-  ["Fund the built-in account", <>A public BNB account is derived from the same key. Send BNB (or any token) to it; that is what you shield from, and it pays claim gas on the launchpad.</>],
+  ["Fund the built-in account", <>A public BNB account is derived from the same key. Send BNB (or any token) to it; that is what you shield from. Sends, trades and swaps after that are relayed and need no gas from you.</>],
   ["Shield, send, trade", <>Everything after that is private: sends to <code>bunker1…</code> addresses, withdrawals to any address, launchpad buys and sells, all proven on the phone and handed to the relayer as a finished proof.</>],
 ];
 

@@ -4,10 +4,10 @@ import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { useWallet } from "@/lib/wallet";
 import { getAddress, isAddress } from "viem";
-import { NATIVE_TOKEN, rolled, quotePrivateBuy, quotePrivateSell, pancakeSwapUrl, spotPrice, NATIVE_UNIT, worstFeeBps } from "@bunker/sdk";
+import { rolled, pancakeSwapUrl, spotPrice } from "@bunker/sdk";
 import { indexer, type FeeEventRow, type LaunchRow, type TradeRow } from "@/lib/api";
-import { assetOf, CLAIM_BUDGET, deliveredFor, useLaunchpad, type ClaimRecord } from "@/lib/launchpad";
-import { shieldedAmount, useBunker } from "@/lib/store";
+import { assetOf, useLaunchpad, type BuyQuote, type SellQuote } from "@/lib/launchpad";
+import { queuedAmount, shieldedAmount, useBunker } from "@/lib/store";
 import { useSigner } from "@/lib/useSigner";
 import { BNB, explorerAddr, explorerTx } from "@/lib/config";
 import { fmtAmount, fmtPrice, fmtProgress, barWidth, parseAmount, short, timeAgo } from "@/lib/format";
@@ -50,37 +50,41 @@ export default function TokenPage() {
   const decimals = meta?.decimals ?? lp.params?.decimals ?? 6;
   const asset = meta ? assetOf(meta) : undefined;
   const bnbShielded = shieldedAmount(bunker, BNB);
+  const bnbSettling = queuedAmount(bunker, BNB);
   const tokShielded = asset ? shieldedAmount(bunker, asset) : 0n;
-  const bnbPool = bunker.pools[NATIVE_TOKEN.toLowerCase()];
-  const tokPool = asset ? bunker.pools[asset.token.toLowerCase()] : undefined;
-  const feeBnb = bunker.relayer?.fees.find((f) => f.token.toLowerCase() === NATIVE_TOKEN.toLowerCase());
-  const ready = bunker.phase === "ready";
+  const tokSettling = asset ? queuedAmount(bunker, asset) : 0n;
+  const ready = bunker.phase === "ready" && !bunker.watchOnly;
 
-  const quote = useMemo(() => {
-    if (!curve || !stored || curve.graduated || !feeBnb) return undefined;
-    const worst = { ...curve, tradeFeeBps: worstFeeBps(stored, block) };
-    try {
-      if (side === "buy") {
-        if (!bnbPool) return undefined;
-        const wei = parseAmount(amt, 18);
-        const units = wei / bnbPool.unit;
-        const pct = (units * BigInt(feeBnb.bps)) / 10_000n;
-        const fee = (pct > BigInt(feeBnb.min) ? pct : BigInt(feeBnb.min)) * bnbPool.unit;
-        const delivered = deliveredFor(bnbPool, units) - fee;
-        if (delivered <= CLAIM_BUDGET) return { error: "too small to cover fees" };
-        const q = quotePrivateBuy(worst, delivered, CLAIM_BUDGET, 0n);
-        return { out: q.out, fee: fee + CLAIM_BUDGET, curveFee: q.fee, inWei: wei, enough: wei <= bnbShielded };
-      } else {
-        if (!tokPool) return undefined;
-        const tokens = parseAmount(amt, decimals);
-        const tip = BigInt(feeBnb.min) * NATIVE_UNIT;
-        const delivered = deliveredFor(tokPool, tokens / tokPool.unit);
-        const q = quotePrivateSell(worst, delivered, tip);
-        if (q.out <= 0n) return { error: "proceeds would not cover the relayer" };
-        return { out: q.out, fee: tip, curveFee: q.fee, inWei: tokens, enough: tokens <= tokShielded };
-      }
-    } catch { return { error: "invalid amount" }; }
-  }, [curve, stored, block, feeBnb, side, amt, bnbPool, tokPool, decimals, bnbShielded, tokShielded]);
+  // the amount typed, in base units
+  const inAmount = useMemo(() => { try { return parseAmount(amt, side === "buy" ? 18 : decimals); } catch { return null; } }, [amt, side, decimals]);
+  type Quote = { out: bigint; curveFee: bigint; fee: bigint; feeSymbol: string; inWei: bigint; enough: boolean; settling: boolean; note?: string } | { error: string };
+  const [quote, setQuote] = useState<Quote>();
+
+  // quotes read the curve and the pools at the current block; debounce the typing
+  useEffect(() => {
+    if (!token || !curve || curve.graduated || !ready) { setQuote(undefined); return; }
+    if (inAmount === null) { setQuote({ error: "invalid amount" }); return; }
+    if (inAmount <= 0n) { setQuote(undefined); return; }
+    let alive = true;
+    const id = setTimeout(async () => {
+      try {
+        if (side === "buy") {
+          const q: BuyQuote = await lp.quoteBuy(token, inAmount);
+          const total = inAmount + q.relayerFee;
+          if (!alive) return;
+          if (q.overshoots) setQuote({ error: `the curve only has room for ${fmtAmount(q.maxIn, 18, 4)} BNB more` });
+          else setQuote({ out: q.out, curveFee: q.curveFee, fee: q.relayerFee, feeSymbol: "BNB", inWei: inAmount, enough: total <= bnbShielded, settling: total > bnbShielded && total <= bnbShielded + bnbSettling });
+        } else {
+          const q: SellQuote = await lp.quoteSell(token, inAmount);
+          const total = inAmount + q.relayerFeeTokens;
+          if (!alive) return;
+          if (q.out <= 0n) setQuote({ error: "proceeds would be nothing" });
+          else setQuote({ out: q.out, curveFee: q.curveFee, fee: q.relayerFeeTokens, feeSymbol: meta?.symbol ?? "tokens", inWei: inAmount, enough: total <= tokShielded, settling: total > tokShielded && total <= tokShielded + tokSettling });
+        }
+      } catch (e) { if (alive) setQuote({ error: (e as Error).message }); }
+    }, 350);
+    return () => { alive = false; clearTimeout(id); };
+  }, [token, side, inAmount, ready, block, bnbShielded, bnbSettling, tokShielded, tokSettling]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function trade() {
     if (!token || !quote || "error" in quote) return;
@@ -103,7 +107,6 @@ export default function TokenPage() {
 
   const progress = Number(curve.realBnb * 10_000n / (lp.params?.graduationWei ?? BigInt(meta.graduation_wei))) / 10_000;
   const price = spotPrice(curve, decimals);
-  const claims = lp.claims.filter((c) => c.token === token!.toLowerCase());
 
   return (
     <div className="max-w-6xl mx-auto rise">
@@ -145,8 +148,8 @@ export default function TokenPage() {
             <h3 className="label mb-3">Trades</h3>
             {!row?.trades.length ? <p className="font-mono text-[11px] text-dim">none yet</p> : (
               <ul className="divide-y rule">
-                {row.trades.slice(0, 40).map((t) => (
-                  <li key={`${t.tx_hash}:${t.block}:${t.claim_key}`} className="py-2 flex items-center gap-3 font-mono text-[11px]">
+                {row.trades.slice(0, 40).map((t, i) => (
+                  <li key={`${t.tx_hash}:${t.block}:${i}`} className="py-2 flex items-center gap-3 font-mono text-[11px]">
                     <span className={`uppercase tracking-[0.15em] w-10 ${t.side === "buy" ? "text-signal" : "text-bad"}`}>{t.side}</span>
                     <span className="num text-fg">{fmtAmount(BigInt(t.bnb), 18, 4)} BNB</span>
                     <span className="text-dim">↔</span>
@@ -167,8 +170,8 @@ export default function TokenPage() {
             {!ready ? (
               <div>
                 <h3 className="label mb-3">Trade privately</h3>
-                <p className="text-sm text-mute leading-relaxed mb-4">Buys are paid from your shielded BNB and the tokens land back in the vault. Nobody sees which wallet bought.</p>
-                <Link href="/app" className="btn btn-signal w-full">open the vault</Link>
+                <p className="text-sm text-mute leading-relaxed mb-4">Buys are paid from your shielded BNB and the tokens land back in the vault in the same transaction. Nobody sees which wallet bought.</p>
+                <Link href="/app" className="btn btn-signal w-full">{bunker.watchOnly ? "watch-only vault: open with the seed to trade" : "open the vault"}</Link>
               </div>
             ) : curve.graduated ? (
               <div>
@@ -194,16 +197,17 @@ export default function TokenPage() {
                 <div className="mt-4 space-y-1.5 font-mono text-[11px] border-t rule pt-3">
                   {quote && !("error" in quote) ? (
                     <>
-                      <Row l={side === "buy" ? "you receive ≈" : "you receive ≈"} v={side === "buy" ? `${fmtAmount(quote.out, decimals, 0)} ${meta.symbol}` : `${fmtAmount(quote.out, 18, 5)} BNB`} />
+                      <Row l="you receive ≈" v={side === "buy" ? `${fmtAmount(quote.out, decimals, 0)} ${meta.symbol}` : `${fmtAmount(quote.out, 18, 5)} BNB`} />
                       <Row l="curve fee" v={`${fmtAmount(quote.curveFee, 18, 5)} BNB`} />
-                      <Row l={side === "buy" ? "relayer + claim gas" : "relayer tip"} v={`${fmtAmount(quote.fee, 18, 5)} BNB`} />
+                      <Row l="relayer fee (private note)" v={side === "buy" ? `${fmtAmount(quote.fee, 18, 5)} BNB` : `${fmtAmount(quote.fee, decimals, 0)} ${quote.feeSymbol}`} />
                       <Row l="slippage" v="1 % max" />
                     </>
-                  ) : <span className="text-dim">{quote?.error ?? (feeBnb ? "—" : "relayer offline")}</span>}
+                  ) : <span className={quote?.error ? "text-bad" : "text-dim"}>{quote?.error ?? (bunker.relayer ? "—" : "relayer offline")}</span>}
                 </div>
-                <button className="btn btn-signal w-full h-12 mt-4" disabled={!quote || "error" in quote || !quote.enough || !!lp.busy} onClick={trade}>
-                  {lp.busy ? lp.busy : quote && !("error" in quote) && !quote.enough ? "not enough in vault" : side === "buy" ? `buy ${meta.symbol}` : `sell ${meta.symbol}`}
+                <button className="btn btn-signal w-full h-12 mt-4" disabled={!quote || "error" in quote || (!quote.enough && !quote.settling) || !!lp.busy} onClick={trade}>
+                  {lp.busy ? lp.busy : quote && !("error" in quote) && !quote.enough ? (quote.settling ? `${side} ${meta.symbol} (settles first)` : "not enough in vault") : side === "buy" ? `buy ${meta.symbol}` : `sell ${meta.symbol}`}
                 </button>
+                <p className="mt-2 font-mono text-[10px] text-dim">One relayed transaction: the pool pays the curve, the curve pays the pool back, and the result is a fresh note of yours. No claim key, no gas from you.</p>
                 {err ? <p className="mt-3 font-mono text-[11px] text-bad break-words">{err}</p> : null}
                 {side === "buy" ? (
                   <div className="mt-5 border-t rule pt-4">
@@ -219,12 +223,14 @@ export default function TokenPage() {
             )}
           </section>
 
-          {ready ? <Claims claims={claims} symbol={meta.symbol} /> : null}
-          {ready && asset ? (
+          {bunker.phase === "ready" && asset ? (
             <section className="slab p-5">
               <h3 className="label mb-2">Your position</h3>
-              <div className="display text-2xl num">{fmtAmount(tokShielded, decimals, 0)} <span className="text-mute text-base">{meta.symbol}</span></div>
-              <p className="mt-2 font-mono text-[10.5px] text-dim">≈ {fmtAmount(BigInt(Math.floor(Number(tokShielded) / 10 ** decimals * price * 1e9)) * 1_000_000_000n, 18, 5)} BNB at spot · shielded, unshield from the vault any time</p>
+              <div className="display text-2xl num">{fmtAmount(tokShielded + tokSettling, decimals, 0)} <span className="text-mute text-base">{meta.symbol}</span></div>
+              <p className="mt-2 font-mono text-[10.5px] text-dim">
+                ≈ {fmtAmount(BigInt(Math.floor(Number(tokShielded + tokSettling) / 10 ** decimals * price * 1e9)) * 1_000_000_000n, 18, 5)} BNB at spot · shielded, unshield from the vault any time
+                {tokSettling > 0n ? ` · ${fmtAmount(tokSettling, decimals, 0)} settling` : ""}
+              </p>
             </section>
           ) : null}
         </div>
@@ -239,34 +245,4 @@ function Stat({ l, v }: { l: string; v: string }) {
 }
 function Row({ l, v }: { l: string; v: string }) {
   return <div className="flex justify-between"><span className="text-mute">{l}</span><span className="text-fg num">{v}</span></div>;
-}
-
-function Claims({ claims, symbol }: { claims: ClaimRecord[]; symbol: string }) {
-  const lp = useLaunchpad();
-  const [busy, setBusy] = useState(false);
-  const pending = claims.filter((c) => c.status === "pending" || c.status === "failed");
-  return (
-    <section className="slab p-5">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="label">Claims</h3>
-        <button className="btn btn-ghost btn-sm" disabled={busy} onClick={async () => { setBusy(true); try { await lp.recover(); } finally { setBusy(false); } }}>{busy ? "sweeping" : "recover"}</button>
-      </div>
-      {claims.length === 0 ? <p className="font-mono text-[11px] text-dim">Each trade uses a one-off claim key that shields the result back automatically. If a tab closed mid-way, recover sweeps it.</p> : (
-        <ul className="divide-y rule">
-          {claims.slice(0, 12).map((c) => (
-            <li key={c.nonce} className="py-2 flex items-center gap-3 font-mono text-[11px]">
-              <span className={`w-1.5 h-1.5 ${c.status === "claimed" ? "bg-ok" : c.status === "failed" ? "bg-bad" : c.status === "empty" ? "bg-dim" : "bg-warn blink"}`} />
-              <span className="uppercase tracking-[0.15em] text-mute">{c.kind}</span>
-              <span className="text-dim">#{c.nonce}</span>
-              <span className="text-fg">{c.status}</span>
-              <span className="ml-auto text-dim">{timeAgo(c.at)}</span>
-              {c.claimTxHash ? <a href={explorerTx(c.claimTxHash)} target="_blank" rel="noreferrer" className="text-steel hover:text-fg">↗</a> : null}
-              {(c.status === "failed" || c.status === "pending") ? <button className="btn btn-ghost btn-sm" onClick={() => lp.claim(c).catch(() => undefined)}>retry</button> : null}
-            </li>
-          ))}
-        </ul>
-      )}
-      {pending.length ? <p className="mt-2 font-mono text-[10px] text-warn">{pending.length} {symbol} claim(s) waiting; retry or recover.</p> : null}
-    </section>
-  );
 }

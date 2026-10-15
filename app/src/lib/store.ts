@@ -1,36 +1,28 @@
 "use client";
-// Client-side shielded wallet state. Nothing here ever leaves the browser
-// except proofs, ciphertexts and the contract call handed to the relayer.
+// Client-side shielded wallet state, a thin layer over the SDK's BunkerClient.
+// Nothing here ever leaves the browser except proofs, ciphertexts and the
+// contract call handed to the relayer.
 import { create } from "zustand";
-import { getAddress, type Hex } from "viem";
+import { getAddress, type Hex, type WalletClient } from "viem";
 import {
-  ShieldedWallet, MerkleTree, assetId, seedFromSignature, encodeAddress, decodeAddress, readPool, readLastRoot, readNextIndex,
-  toUnits, amountForMint, amountForBurn, sharesForDeposit, type PoolState, type SpendableNote, SPENDING_KEY_MESSAGE, seedToBackup, seedFromBackup,
-  isStaleRootRejection, contractErrorFromData, STALE_ROOT_ERRORS, transactCallToJson, NATIVE_TOKEN, ShieldedPoolAbi, IERC20MetadataAbi, type EvmAddress,
+  BunkerClient, assetId, seedFromSignature, amountForBurn, amountForMint, sharesForDeposit, toUnits, readNextIndex, readInsertedIndex,
+  contractErrorFromData, NATIVE_TOKEN, ShieldedPoolAbi, IERC20MetadataAbi, SPENDING_KEY_MESSAGE, decodeAddress,
+  type PoolState, type SpendableNote, type EvmAddress, type TxEvent,
 } from "@bunker/sdk";
-import { ApiError, indexer, relayer, type AssetQuote, type RelayerInfo } from "./api";
-import { ASSETS, BNB, KNOWN_TOKENS, MAINNET, POOL_ADDRESS, type AssetMeta } from "./config";
+import { ApiError, relayer, type AssetQuote, type RelayerInfo } from "./api";
+import { ASSETS, BNB, KNOWN_TOKENS, NETWORK, POOL_ADDRESS, SWAP_EXIT_ADDRESS, type AssetMeta } from "./config";
 import { publicClient } from "./chain";
 import { customTokens, describeToken, walletTokens } from "./walletAssets";
-import { artifactsForProof, prefetchArtifacts, type Progress } from "./artifacts";
+import { artifactFor, prefetchArtifacts, type Progress } from "./artifacts";
 import { deviceProvider, forgetDeviceSeed, gasAccount, rememberDeviceSeed } from "./device";
 import { useWallet } from "./wallet";
 
-/** Turns proving-key download progress into the tx modal's message, so a first-time proof is not a silent wait. */
-function reportArtifacts(set: (p: Partial<State>) => void) {
-  return (p: Progress) => {
-    if (!p.total) return;
-    const mb = (n: number) => (n / 1_048_576).toFixed(1);
-    set({ tx: { stage: "proving", message: `Fetching the proving key (one-time, ${mb(p.loaded)} / ${mb(p.total)} MB)` } });
-  };
-}
-
 export type Phase = "idle" | "deriving" | "syncing" | "ready" | "error";
-export type TxStage = "idle" | "building" | "proving" | "signing" | "relaying" | "confirming" | "done" | "failed";
+export type TxStage = "idle" | "building" | "proving" | "draining" | "signing" | "relaying" | "confirming" | "done" | "failed";
 
 export interface ActivityItem {
   id: string;
-  kind: "shield" | "send" | "unshield" | "buy" | "sell" | "claim" | "launch";
+  kind: "shield" | "send" | "unshield" | "swap" | "buy" | "sell" | "launch" | "settle" | "register";
   asset: string;
   /** base units of the asset */
   amount: bigint;
@@ -47,18 +39,29 @@ export interface Signer {
   writeContract: (req: { address: EvmAddress; abi: readonly unknown[]; functionName: string; args: readonly unknown[]; value?: bigint }) => Promise<Hex>;
 }
 
+/** The app's signer as what the SDK accepts: a wallet client with an account. */
+export function sdkSigner(s: Signer): WalletClient {
+  return { account: { address: s.address, type: "json-rpc" }, writeContract: (req: Parameters<Signer["writeContract"]>[0]) => s.writeContract(req) } as unknown as WalletClient;
+}
+
 interface State {
   phase: Phase;
   error?: string;
-  wallet?: ShieldedWallet;
-  tree?: MerkleTree;
+  client?: BunkerClient;
+  /** this wallet's stable `bunker1…` address (what you register); `rotateAddress` swaps in a fresh diversified one */
   address?: string;
+  /** opened from a viewing key: sees everything, spends nothing */
+  watchOnly: boolean;
   /** pool state per token address (lower-case) */
   pools: Record<string, PoolState>;
   /** Wall-clock proving time of the last proof made on this device, in ms. */
   lastProveMs?: number;
-  /** shielded balances in shares, per token address */
+  /** spendable shielded balances in shares, per token address */
   balances: Record<string, bigint>;
+  /** shares still queued for the next drain, per token address: yours, visible, not yet spendable */
+  queued: Record<string, bigint>;
+  /** leaves the chain has queued but not yet folded into the tree */
+  pending: number;
   /** Tokens found in the connected public wallet, keyed by token address. Any of them can be shielded; the first shield opens the pool. */
   walletAssets: Record<string, AssetMeta>;
   /** Public (unshielded) balances per token address, base units. */
@@ -73,12 +76,16 @@ interface State {
   syncedTo: number;
   totalLeaves: number;
   relayer?: RelayerInfo;
+  /** the shielded address the connected EOA has registered on-chain (null: none; undefined: not looked up) */
+  registered?: string | null;
   activity: ActivityItem[];
   tx: { stage: TxStage; message?: string; txHash?: string };
 
   /** `passphrase === null` means the user explicitly chose signature-only (SDK `allowEmpty`). */
   unlock: (signMessage: (m: string) => Promise<Hex>, passphrase: string | null) => Promise<void>;
   unlockFromSeed: (backup: string) => Promise<void>;
+  /** Open a watch-only vault from a `bunkerview1…` full viewing key. */
+  unlockFromViewingKey: (key: string) => Promise<void>;
   /**
    * Open a vault that lives on this device: the seed is remembered in local
    * storage and its derived gas account becomes the connected wallet. Used by
@@ -89,6 +96,8 @@ interface State {
   forgetDevice: () => void;
   /** Backup string for the current wallet. Anyone holding it can spend. */
   exportSeed: () => string | undefined;
+  /** Full viewing key: sees everything, spends nothing. */
+  exportViewingKey: () => string | undefined;
   lock: () => void;
   sync: () => Promise<void>;
   /** Sync repeatedly until the indexer has every leaf the chain has (or `maxMs` passes). Resolves to whether it caught up. */
@@ -102,16 +111,22 @@ interface State {
   /** Add an ERC-20 by address to the shieldable list. */
   addToken: (token: EvmAddress) => Promise<AssetMeta>;
   rotateAddress: () => void;
-  /** amounts in base units (wei for BNB) */
+  /** Fold the queued leaves into the tree: asks the relayer's keeper, and with a signer drains directly if nobody does. */
+  settle: (signer?: Signer) => Promise<void>;
+  /** Look up what the connected EOA has registered. */
+  checkRegistry: (owner: EvmAddress) => Promise<void>;
+  /** Publish this vault's address under the signer's EOA so anyone can pay the EOA privately. */
+  register: (signer: Signer) => Promise<void>;
+  unregister: (signer: Signer) => Promise<void>;
+  /** amounts in base units (wei for BNB); `to` is a `bunker1…` address or a registered `0x…` */
   shield: (asset: AssetMeta, amount: bigint, signer: Signer, to?: string) => Promise<void>;
   send: (asset: AssetMeta, amount: bigint, to: string, memo?: string) => Promise<void>;
   unshield: (asset: AssetMeta, amount: bigint, recipient: EvmAddress) => Promise<void>;
-  /**
-   * An unshield whose recipient is a contract (the launchpad): the pool pays
-   * `recipient` and then calls `exitTarget.onExit(exitData)`. Used for
-   * private buys and sells; `fee` (internal units) overrides the policy.
-   */
-  relayExit: (asset: AssetMeta, amount: bigint, o: { recipient: EvmAddress; fee: bigint; exit: { target: EvmAddress; data: Uint8Array }; kind: "buy" | "sell"; label: string }) => Promise<string | undefined>;
+  /** Private PancakeSwap swap: `amount` of `from` leaves the vault, the output lands back as a note of `to`. */
+  swap: (from: AssetMeta, amount: bigint, to: AssetMeta) => Promise<void>;
+  quoteSwap: (from: AssetMeta, amount: bigint, to: AssetMeta) => Promise<{ out: bigint; relayerFee: bigint }>;
+  /** Run a private trade the launchpad store built; `kind`/`label` name it in the activity list. */
+  runTrade: (kind: "buy" | "sell", label: string, amount: bigint, decimals: number, run: (onEvent: (e: TxEvent) => void) => Promise<Hex>) => Promise<Hex>;
   addLaunchAssets: (assets: AssetMeta[]) => void;
   pushActivity: (a: ActivityItem) => void;
   updateActivity: (id: string, patch: Partial<ActivityItem>) => void;
@@ -120,13 +135,8 @@ interface State {
 }
 
 const key = (t: string) => t.toLowerCase();
-const bjjAddress = (w: ShieldedWallet) => encodeAddress(w.bjj, w.address(), MAINNET ? "bunker" : "tbunker");
 
-function b64ToBytes(s: string) {
-  return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
-}
-
-/** Shielded balance of an asset in base units, from shares and the pool rate. */
+/** Spendable shielded balance of an asset in base units, from shares and the pool rate. */
 export function shieldedAmount(s: Pick<State, "balances" | "pools">, asset: AssetMeta): bigint {
   const pool = s.pools[key(asset.token)];
   const shares = s.balances[key(asset.token)] ?? 0n;
@@ -134,62 +144,129 @@ export function shieldedAmount(s: Pick<State, "balances" | "pools">, asset: Asse
   return amountForBurn(pool, shares) * pool.unit;
 }
 
+/** What is yours but still queued for the next drain, in base units. */
+export function queuedAmount(s: Pick<State, "queued" | "pools">, asset: AssetMeta): bigint {
+  const pool = s.pools[key(asset.token)];
+  const shares = s.queued[key(asset.token)] ?? 0n;
+  if (!pool) return 0n;
+  return amountForBurn(pool, shares) * pool.unit;
+}
+
+/** Relayer fee for a relayed spend of `amount`, from the published policy (what the SDK charges). */
+export function relayerFeeFor(s: Pick<State, "relayer" | "assetQuotes" | "pools">, asset: AssetMeta, amount: bigint): bigint | null {
+  const pool = s.pools[key(asset.token)];
+  if (!pool) return null;
+  const policy = s.relayer?.fees.find((f) => key(f.token) === key(asset.token));
+  const quote = s.assetQuotes[key(asset.token)];
+  const p = policy ?? (quote?.supported && quote.fee ? { min: quote.fee.min, bps: quote.fee.bps } : null);
+  if (!p) return null;
+  const units = amount / pool.unit;
+  const pct = (units * BigInt(p.bps)) / 10_000n;
+  return (pct > BigInt(p.min) ? pct : BigInt(p.min)) * pool.unit;
+}
+
 export const useBunker = create<State>((set, get) => {
-  let syncing: Promise<void> | null = null;
-  let queued: Promise<void> | null = null;
+  let queuedSync: Promise<void> | null = null;
+  let proveStart = 0;
+
+  /** Turns SDK progress into the tx modal's message, so a first-time proof is not a silent wait. */
+  const reportArtifacts = (p: Progress) => {
+    if (!p.total) return;
+    const mb = (n: number) => (n / 1_048_576).toFixed(1);
+    set({ tx: { stage: "proving", message: `Fetching the proving key (one-time, ${mb(p.loaded)} / ${mb(p.total)} MB)` } });
+  };
+
+  /** SDK tx events into the overlay's stages. */
+  const onEvent = (e: TxEvent) => {
+    if (e.stage === "proving") {
+      proveStart = performance.now();
+      set({ tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } });
+    } else if (e.stage === "relaying") {
+      if (proveStart) set({ lastProveMs: performance.now() - proveStart });
+      proveStart = 0;
+      set({ tx: { stage: "relaying", message: "Handing the proof to the relayer" } });
+    } else if (e.stage === "confirming") {
+      if (proveStart) { set({ lastProveMs: performance.now() - proveStart }); proveStart = 0; }
+      const wait = e.releaseAt ? Math.max(0, e.releaseAt - Date.now()) : 0;
+      set({ tx: { stage: "confirming", message: wait ? `Queued. Relayer releases in ~${Math.ceil(wait / 1000)}s for timing privacy` : e.message ? cap(e.message) : "Waiting for confirmation", txHash: e.txHash } });
+    } else if (e.stage === "draining") {
+      set({ tx: { stage: "draining", message: "Folding queued notes into the tree first (one keeper transaction)" } });
+    } else if (e.stage === "done") {
+      set({ tx: { stage: "done", txHash: e.txHash } });
+    }
+  };
+
+  async function readBalances() {
+    const c = get().client;
+    if (!c) return;
+    const balances: Record<string, bigint> = {};
+    const queued: Record<string, bigint> = {};
+    for (const a of get().assets()) {
+      const id = assetId(key(a.token));
+      balances[key(a.token)] = c.wallet.balance(id);
+      queued[key(a.token)] = c.wallet.queuedBalance(id);
+    }
+    set({ balances, queued, notes: [...c.wallet.notes.values()], syncedTo: c.leaves.length });
+  }
 
   async function syncPass() {
-    const { wallet, tree } = get();
-    if (!wallet || !tree) return;
-    let from = get().syncedTo;
-    const ids = new Map<string, bigint>();
-    const idFor = (token: string) => {
-      const k = key(token);
-      let id = ids.get(k);
-      if (id === undefined) { id = assetId(k); ids.set(k, id); }
-      return id;
-    };
-    for (;;) {
-      const page = await indexer.commitments(from, 1000);
-      for (const row of page.items) {
-        const cm = BigInt("0x" + row.commitment);
-        if (row.index === tree.size) await tree.insert(cm);
-        await wallet.scan({ index: row.index, commitment: cm, ciphertext: b64ToBytes(row.ciphertext) }, idFor(row.token));
-      }
-      from = page.next;
-      set({ syncedTo: from, totalLeaves: page.total });
-      if (page.items.length < 1000) break;
-    }
-    const nfs = await indexer.nullifiers(0);
-    wallet.markSpent(nfs.map((n) => BigInt("0x" + n.nullifier)));
-    const balances: Record<string, bigint> = {};
-    for (const a of get().assets()) balances[key(a.token)] = wallet.balance(idFor(a.token));
-    set({ balances, notes: [...wallet.notes.values()] });
-
-    // sanity: our local root must be one the chain knows
+    const c = get().client;
+    if (!c) return;
     try {
-      const [next, chainRoot] = await Promise.all([readNextIndex(publicClient, POOL_ADDRESS), readLastRoot(publicClient, POOL_ADDRESS)]);
-      const local = await tree.root();
-      if (next === tree.size && chainRoot !== local) set({ error: "Local tree root does not match the chain; the indexer may be lagging or corrupt." });
-      else if (get().error?.startsWith("Local tree root")) set({ error: undefined });
+      await c.sync();
+      if (get().error?.startsWith("Local tree root")) set({ error: undefined });
+    } catch (e) {
+      const m = (e as Error).message;
+      if (/root does not match/i.test(m)) set({ error: "Local tree root does not match the chain; the indexer may be lagging or corrupt." });
+      else throw e;
+    }
+    await readBalances();
+    try {
+      const [next, inserted] = await Promise.all([readNextIndex(publicClient, POOL_ADDRESS), readInsertedIndex(publicClient, POOL_ADDRESS)]);
+      set({ totalLeaves: next, pending: next - inserted });
     } catch { /* non-fatal */ }
   }
 
-  async function openWithSeed(seed: Uint8Array) {
-    const wallet = await ShieldedWallet.fromSeed(seed);
-    const tree = new MerkleTree(26);
-    await tree.whenReady();
-    set({ wallet, tree, address: bjjAddress(wallet), phase: "syncing" });
+  async function open(o: { seed?: Uint8Array; viewingKey?: string }) {
+    const client = await BunkerClient.connect({ network: NETWORK, ...o, artifactLoader: (circuit) => artifactFor(circuit, reportArtifacts) });
+    set({ client, address: client.address(), watchOnly: client.watchOnly, phase: "syncing" });
     relayer.info().then((r) => set({ relayer: r })).catch(() => undefined);
     await get().refreshPools();
     await get().sync();
     set({ phase: "ready" });
   }
 
+  async function opening(f: () => Promise<void>) {
+    set({ phase: "deriving", error: undefined });
+    prefetchArtifacts();
+    try {
+      await f();
+    } catch (e) {
+      set({ phase: "error", error: (e as Error).message });
+    }
+  }
+
+  function activity(kind: ActivityItem["kind"], asset: string, amount: bigint, decimals: number): string {
+    const id = crypto.randomUUID();
+    set((s) => ({ activity: [{ id, kind, asset, amount, decimals, at: Date.now(), status: "pending" }, ...s.activity] }));
+    return id;
+  }
+  function finish(id: string, txHash: string | undefined) {
+    set((s) => ({ tx: { stage: "done", txHash }, activity: s.activity.map((a) => (a.id === id ? { ...a, status: "confirmed", txHash } : a)) }));
+  }
+  function fail(id: string, e: unknown): never {
+    const msg = friendlyError(e);
+    set((s) => ({ tx: { stage: "failed", message: msg }, activity: s.activity.map((a) => (a.id === id ? { ...a, status: "failed", error: msg } : a)) }));
+    throw new Error(msg);
+  }
+
   return {
   phase: "idle",
+  watchOnly: false,
   pools: {},
   balances: {},
+  queued: {},
+  pending: 0,
   walletAssets: {},
   walletBalances: {},
   assetQuotes: {},
@@ -200,41 +277,31 @@ export const useBunker = create<State>((set, get) => {
   activity: [],
   tx: { stage: "idle" },
 
-  async unlock(signMessage, passphrase) {
-    set({ phase: "deriving", error: undefined });
-    prefetchArtifacts();
-    try {
+  unlock(signMessage, passphrase) {
+    return opening(async () => {
       const sigHex = await signMessage(SPENDING_KEY_MESSAGE);
       const sig = Uint8Array.from(Buffer.from(sigHex.slice(2), "hex"));
       const seed = passphrase === null ? await seedFromSignature(sig, "", { allowEmpty: true }) : await seedFromSignature(sig, passphrase);
-      await openWithSeed(seed);
-    } catch (e) {
-      set({ phase: "error", error: (e as Error).message });
-    }
+      await open({ seed });
+    });
   },
 
-  async unlockFromSeed(backup) {
-    set({ phase: "deriving", error: undefined });
-    prefetchArtifacts();
-    try {
-      await openWithSeed(seedFromBackup(backup));
-    } catch (e) {
-      set({ phase: "error", error: (e as Error).message });
-    }
+  unlockFromSeed(backup) {
+    return opening(() => open({ seed: BunkerClient.seedFromBackup(backup.trim()) }));
   },
 
-  async openDevice(seed) {
-    set({ phase: "deriving", error: undefined });
-    prefetchArtifacts();
-    try {
+  unlockFromViewingKey(viewingKey) {
+    return opening(() => open({ viewingKey: viewingKey.trim() }));
+  },
+
+  openDevice(seed) {
+    return opening(async () => {
       const account = gasAccount(seed);
       useWallet.getState().useDevice(deviceProvider(account), account.address);
       rememberDeviceSeed(seed);
-      await openWithSeed(seed);
+      await open({ seed });
       void get().scanWallet(account.address);
-    } catch (e) {
-      set({ phase: "error", error: (e as Error).message });
-    }
+    });
   },
 
   forgetDevice() {
@@ -244,12 +311,17 @@ export const useBunker = create<State>((set, get) => {
   },
 
   exportSeed() {
-    const w = get().wallet;
-    return w ? seedToBackup(w.spend.sk) : undefined;
+    const c = get().client;
+    if (!c || c.watchOnly) return undefined;
+    return c.backup();
+  },
+
+  exportViewingKey() {
+    return get().client?.viewingKey();
   },
 
   lock() {
-    set({ phase: "idle", wallet: undefined, tree: undefined, address: undefined, notes: [], balances: {}, syncedTo: 0, activity: [], error: undefined });
+    set({ phase: "idle", client: undefined, address: undefined, watchOnly: false, notes: [], balances: {}, queued: {}, pending: 0, syncedTo: 0, activity: [], registered: undefined, error: undefined });
   },
 
   addLaunchAssets(assets) {
@@ -259,7 +331,7 @@ export const useBunker = create<State>((set, get) => {
     const next = { ...cur };
     for (const a of fresh) next[key(a.token)] = { ...a, launched: true };
     set({ launchAssets: next });
-    if (get().wallet && get().syncedTo > 0) void get().refreshPools().then(() => get().sync());
+    if (get().client && get().syncedTo > 0) void get().refreshPools().then(() => readBalances());
   },
   pushActivity(a) { set((s) => ({ activity: [a, ...s.activity] })); },
   updateActivity(id, patch) { set((s) => ({ activity: s.activity.map((a) => (a.id === id ? { ...a, ...patch } : a)) })); },
@@ -298,10 +370,10 @@ export const useBunker = create<State>((set, get) => {
       }
       const walletBalances: Record<string, bigint> = { [key(NATIVE_TOKEN)]: bnb };
       for (const t of tokens) walletBalances[key(t.asset.token)] = t.amount;
-      const added = Object.keys(walletAssets).some((k) => !get().walletAssets[k]);
       set({ walletAssets, walletBalances, walletScannedAt: Date.now(), walletScanError: undefined });
       await get().refreshPools();
-      if (added && get().wallet && get().syncedTo > 0) void get().sync();
+      if (get().client && get().syncedTo > 0) await readBalances();
+      void get().checkRegistry(owner);
     } catch (e) {
       set({ walletScanError: `could not read your wallet: ${(e as Error).message}` });
       throw e;
@@ -345,12 +417,12 @@ export const useBunker = create<State>((set, get) => {
   },
 
   async sync() {
-    if (syncing) {
-      if (!queued) queued = syncing.catch(() => undefined).then(() => { queued = null; return get().sync(); });
-      return queued;
-    }
-    syncing = syncPass().finally(() => { syncing = null; });
-    return syncing;
+    // the SDK shares one pass between concurrent callers; queue one more so a call made mid-pass sees the newest leaves
+    const c = get().client;
+    if (!c) return;
+    if (queuedSync) return queuedSync;
+    queuedSync = syncPass().finally(() => { queuedSync = null; });
+    return queuedSync;
   },
 
   async syncUntilCaughtUp(maxMs = 90_000) {
@@ -366,32 +438,77 @@ export const useBunker = create<State>((set, get) => {
   },
 
   rotateAddress() {
-    const w = get().wallet;
-    if (w) set({ address: bjjAddress(w) });
+    const c = get().client;
+    if (c) set({ address: c.freshAddress() });
   },
 
   resetTx() {
     set({ tx: { stage: "idle" } });
   },
 
+  async settle(signer) {
+    const c = get().client;
+    if (!c) throw new Error("wallet locked");
+    const id = activity("settle", "queue", 0n, 0);
+    set({ tx: { stage: "draining", message: "Asking the keeper to fold the queued notes into the tree" } });
+    try {
+      await c.ensureInserted(undefined, { signer: signer ? sdkSigner(signer) : undefined, waitMs: 25_000, onEvent });
+      await get().sync();
+      finish(id, undefined);
+    } catch (e) {
+      fail(id, e);
+    }
+  },
+
+  async checkRegistry(owner) {
+    const c = get().client;
+    if (!c) return;
+    try { set({ registered: await c.resolve(owner) }); } catch { /* leave as is */ }
+  },
+
+  async register(signer) {
+    const c = get().client;
+    if (!c) throw new Error("wallet locked");
+    const id = activity("register", "address", 0n, 0);
+    set({ tx: { stage: "signing", message: "Approve in your wallet: this publishes your vault address under your account" } });
+    try {
+      const h = await c.register(sdkSigner(signer));
+      finish(id, h);
+      await get().checkRegistry(signer.address);
+    } catch (e) {
+      fail(id, e);
+    }
+  },
+
+  async unregister(signer) {
+    const c = get().client;
+    if (!c) throw new Error("wallet locked");
+    const id = activity("register", "cleared", 0n, 0);
+    set({ tx: { stage: "signing", message: "Approve in your wallet: this clears your registry entry" } });
+    try {
+      const h = await c.unregister(sdkSigner(signer));
+      finish(id, h);
+      await get().checkRegistry(signer.address);
+    } catch (e) {
+      fail(id, e);
+    }
+  },
+
   async shield(asset, amount, signer, to) {
-    const { wallet, tree, relayer: rl } = get();
-    if (!wallet || !tree) throw new Error("wallet locked");
+    const c = get().client;
+    if (!c) throw new Error("wallet locked");
+    if (c.watchOnly) throw new Error("this vault is watch-only");
     const native = asset.token === NATIVE_TOKEN;
-    const id = crypto.randomUUID();
-    const act: ActivityItem = { id, kind: "shield", asset: asset.symbol, amount, decimals: asset.decimals, at: Date.now(), status: "pending" };
-    set((s) => ({ activity: [act, ...s.activity], tx: { stage: "building", message: "Preparing" } }));
+    const id = activity("shield", asset.symbol, amount, asset.decimals);
+    set({ tx: { stage: "building", message: "Preparing" } });
     try {
       // Pools are permissionless: the first shield of a token opens its pool (one extra transaction).
       let pool = get().pools[key(asset.token)];
       if (!pool) {
         if (native) throw new Error("BNB pool not found on chain");
         set({ tx: { stage: "signing", message: `Approve in your wallet: this opens the ${asset.symbol} pool (one-time)` } });
-        const unitExp = Math.max(0, asset.decimals - 9);
-        const openHash = await signer.writeContract({ address: POOL_ADDRESS, abi: ShieldedPoolAbi, functionName: "createPool", args: [asset.token, unitExp, (1n << 256n) - 1n] });
-        set({ tx: { stage: "confirming", message: "Opening the pool", txHash: openHash } });
-        await waitOk(openHash);
-        if (rl?.dynamicAssets) await relayer.asset(asset.token).catch(() => undefined);
+        await c.openPool(asset.token, sdkSigner(signer));
+        if (get().relayer?.dynamicAssets) await relayer.asset(asset.token).catch(() => undefined);
         await get().refreshPools();
         pool = get().pools[key(asset.token)];
         if (!pool) throw new Error("pool did not appear after opening it");
@@ -410,47 +527,130 @@ export const useBunker = create<State>((set, get) => {
         }
       }
       set({ tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } });
-      const relayerKey = rl ? getAddress(rl.relayer) : signer.address;
-      const artifacts = await artifactsForProof(reportArtifacts(set));
-      set({ tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } });
       const t0 = performance.now();
-      const built = await wallet.buildTransact({
-        asset: assetId(asset.token), poolAddress: POOL_ADDRESS, token: asset.token, pool, tree, artifacts,
-        kind: "shield", amount: units, to: to ? decodeAddress(wallet.bjj, to).address : undefined,
-        relayer: relayerKey, relayerFee: 0n,
-      });
+      const built = await c.buildShield(asset.token, amount, { to: to || undefined });
       set({ lastProveMs: performance.now() - t0, tx: { stage: "signing", message: "Approve the transaction in your wallet" } });
-      const hash = await signer.writeContract({ ...built.call });
+      let hash: Hex;
+      try {
+        hash = await signer.writeContract({ ...built.call });
+      } catch (e) {
+        c.wallet.release(built.consumed);
+        throw e;
+      }
       set({ tx: { stage: "confirming", message: "Waiting for confirmation", txHash: hash } });
       await waitOk(hash);
-      set((s) => ({ tx: { stage: "done", txHash: hash }, activity: s.activity.map((a) => (a.id === id ? { ...a, status: "confirmed", txHash: hash } : a)) }));
+      finish(id, hash);
       await get().refreshPools();
       void get().syncUntilCaughtUp();
     } catch (e) {
-      const msg = friendlyError(e);
-      set((s) => ({ tx: { stage: "failed", message: msg }, activity: s.activity.map((a) => (a.id === id ? { ...a, status: "failed", error: msg } : a)) }));
-      throw new Error(msg);
+      fail(id, e);
     }
   },
 
   async send(asset, amount, to, memo) {
-    await relayedTransact(get, set, asset, amount, "send", { to, memo });
+    const c = get().client;
+    if (!c) throw new Error("wallet locked");
+    if (c.watchOnly) throw new Error("this vault is watch-only");
+    const id = activity("send", asset.symbol, amount, asset.decimals);
+    set({ tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } });
+    try {
+      const h = await c.send(asset.token, amount, to, { memo: memo || undefined, onEvent });
+      finish(id, h);
+      await after();
+    } catch (e) {
+      fail(id, e);
+    }
   },
 
   async unshield(asset, amount, recipient) {
-    await relayedTransact(get, set, asset, amount, "unshield", { recipient });
+    const c = get().client;
+    if (!c) throw new Error("wallet locked");
+    if (c.watchOnly) throw new Error("this vault is watch-only");
+    const id = activity("unshield", asset.symbol, amount, asset.decimals);
+    set({ tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } });
+    try {
+      const h = await c.unshield(asset.token, amount, recipient, { onEvent });
+      finish(id, h);
+      await after();
+    } catch (e) {
+      fail(id, e);
+    }
   },
 
-  async relayExit(asset, amount, o) {
-    return relayedTransact(get, set, asset, amount, "unshield", { recipient: o.recipient, fee: o.fee, exit: o.exit, activityKind: o.kind, label: o.label });
+  async quoteSwap(from, amount, to) {
+    const c = get().client;
+    if (!c) throw new Error("wallet locked");
+    if (!SWAP_EXIT_ADDRESS) throw new Error("private swaps are not deployed on this network");
+    const q = await c.quoteSwap(tok(from), amount, tok(to));
+    return { out: q.out, relayerFee: q.relayerFee };
+  },
+
+  async swap(from, amount, to) {
+    const c = get().client;
+    if (!c) throw new Error("wallet locked");
+    if (c.watchOnly) throw new Error("this vault is watch-only");
+    const id = activity("swap", `${from.symbol} → ${to.symbol}`, amount, from.decimals);
+    set({ tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } });
+    try {
+      // the output needs a pool to land in; the first swap into a token opens it through the relayer
+      if (!get().pools[key(to.token)]) {
+        set({ tx: { stage: "building", message: `Opening the ${to.symbol} pool (one-time)` } });
+        await openPoolViaRelayer(to.token);
+        await get().refreshPools();
+      }
+      const h = await c.swap(tok(from), amount, tok(to), { onEvent });
+      finish(id, h);
+      await after();
+    } catch (e) {
+      fail(id, e);
+    }
+  },
+
+  async runTrade(kind, label, amount, decimals, run) {
+    const c = get().client;
+    if (!c) throw new Error("wallet locked");
+    if (c.watchOnly) throw new Error("this vault is watch-only");
+    const id = activity(kind, label, amount, decimals);
+    set({ tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } });
+    try {
+      const h = await run(onEvent);
+      finish(id, h);
+      await after();
+      return h;
+    } catch (e) {
+      fail(id, e);
+    }
   },
   };
+
+  async function after() {
+    await get().refreshPools();
+    await get().sync();
+    void get().syncUntilCaughtUp();
+  }
 });
+
+const tok = (a: AssetMeta) => (a.token === NATIVE_TOKEN ? ("BNB" as const) : a.token);
+
+/** Ask the relayer to open an ERC-20's pool (its keeper pays); falls back to telling the user to shield once. */
+async function openPoolViaRelayer(token: EvmAddress) {
+  const r = await fetch(`${NETWORK.relayerUrl}/pool`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) });
+  if (!r.ok) throw new Error("no shielded pool for the output token yet; shield a little of it once to open one");
+  const t0 = Date.now();
+  for (;;) {
+    await new Promise((res) => setTimeout(res, 2500));
+    const p = await publicClient.readContract({ address: POOL_ADDRESS, abi: ShieldedPoolAbi, functionName: "pools", args: [token] });
+    if (p.exists) return;
+    if (Date.now() - t0 > 120_000) throw new Error("the pool did not open in time; try again in a minute");
+  }
+}
 
 async function waitOk(hash: Hex) {
   const rc = await publicClient.waitForTransactionReceipt({ hash, timeout: 180_000 });
   if (rc.status !== "success") throw new Error(`transaction ${hash.slice(0, 10)}… reverted`);
 }
+
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** One line a person can act on, from a viem error, an ApiError or a plain Error. */
 export function friendlyError(e: unknown): string {
@@ -461,130 +661,15 @@ export function friendlyError(e: unknown): string {
   const name = data ? contractErrorFromData(data as Hex) : undefined;
   if (name === "NullifierSpent") return "these notes were already spent on-chain; your balance will update after a rescan";
   if (name) return `the contract refused the transaction: ${name}`;
+  if (e instanceof ApiError && typeof e.body === "object" && e.body && "error" in e.body) return String((e.body as { error: unknown }).error).slice(0, 220);
   return raw.length > 220 ? raw.slice(0, 220) + "…" : raw;
 }
 
-export function isStaleRootError(e: unknown): boolean {
-  if (!(e instanceof ApiError) || e.status !== 422) return false;
-  if (isStaleRootRejection(e.body)) return true;
-  const ce = (e.body as { contractError?: string } | undefined)?.contractError;
-  return !!ce && (STALE_ROOT_ERRORS as readonly string[]).includes(ce);
-}
-
-async function relayedTransact(
-  get: () => State,
-  set: (p: Partial<State> | ((s: State) => Partial<State>)) => void,
-  asset: AssetMeta,
-  amount: bigint,
-  kind: "send" | "unshield",
-  o: { to?: string; memo?: string; recipient?: EvmAddress; fee?: bigint; exit?: { target: EvmAddress; data: Uint8Array }; activityKind?: ActivityItem["kind"]; label?: string }
-): Promise<string | undefined> {
-  const { wallet, tree, pools, relayer: rl, assetQuotes } = get();
-  if (!wallet || !tree) throw new Error("wallet locked");
-  if (!rl) throw new Error("relayer unavailable");
-  const pool = pools[key(asset.token)];
-  if (!pool) throw new Error("pool not found on chain");
-  const units = toUnits(amount, pool.unit);
-  if (units <= 0n) throw new Error("amount too small");
-  const relayerKey = getAddress(rl.relayer);
-  let fee = o.fee;
-  if (fee === undefined) {
-    const feePolicy = rl.fees.find((f) => key(f.token) === key(asset.token));
-    const quote = assetQuotes[key(asset.token)];
-    if (feePolicy) {
-      const pct = (units * BigInt(feePolicy.bps)) / 10_000n;
-      fee = pct > BigInt(feePolicy.min) ? pct : BigInt(feePolicy.min);
-    } else if (quote?.supported && quote.fee) {
-      const pct = (units * BigInt(quote.fee.bps)) / 10_000n;
-      fee = pct > BigInt(quote.fee.min) ? pct : BigInt(quote.fee.min);
-    } else {
-      throw new Error(quote?.reason ?? "relayer does not support this asset");
-    }
-  }
-  const id = crypto.randomUUID();
-  const act: ActivityItem = { id, kind: o.activityKind ?? kind, asset: o.label ?? asset.symbol, amount, decimals: asset.decimals, at: Date.now(), status: "pending" };
-  set((s) => ({ activity: [act, ...s.activity], tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } }));
-  let consumed: bigint[] = [];
-  let accepted = false;
-  try {
-    const build = async () => {
-      const artifacts = await artifactsForProof(reportArtifacts(set));
-      set({ tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } });
-      const t0 = performance.now();
-      const built = await wallet.buildTransact({
-        asset: assetId(asset.token), poolAddress: POOL_ADDRESS, token: asset.token, pool, tree, artifacts,
-        kind, amount: units,
-        to: o.to ? decodeAddress(wallet.bjj, o.to).address : undefined,
-        recipient: o.recipient,
-        relayer: relayerKey, relayerFee: fee!,
-        memo: o.memo ? new TextEncoder().encode(o.memo) : undefined,
-        exitTarget: o.exit?.target, exitData: o.exit?.data,
-      });
-      consumed = built.consumed;
-      set({ lastProveMs: performance.now() - t0, tx: { stage: "relaying", message: "Handing the proof to the relayer" } });
-      return relayer.relay(transactCallToJson(built.call));
-    };
-    let job: Awaited<ReturnType<typeof build>>;
-    try {
-      job = await build();
-    } catch (e) {
-      // The proof names a root in the 128-root ring. Under load that slot can be
-      // overwritten before the relayer simulates: UnknownRoot or InvalidProof.
-      // Both mean "the tree moved": re-sync, re-prove once, then give up.
-      if (!isStaleRootError(e)) throw e;
-      wallet.release(consumed);
-      consumed = [];
-      set({ tx: { stage: "proving", message: "The tree moved while proving; syncing and proving again" } });
-      await get().sync();
-      job = await build();
-    }
-    accepted = true;
-    const wait = Math.max(0, job.releaseAt - Date.now());
-    set({ tx: { stage: "confirming", message: `Queued. Relayer releases in ~${Math.ceil(wait / 1000)}s for timing privacy` } });
-    let pollErrors = 0;
-    let txHash: string | undefined;
-    for (;;) {
-      await new Promise((r) => setTimeout(r, 2500));
-      let st: Awaited<ReturnType<typeof relayer.job>>;
-      try {
-        st = await relayer.job(job.id);
-        pollErrors = 0;
-      } catch (e) {
-        if (++pollErrors < 48) continue;
-        throw new Error(`lost contact with the relayer: ${(e as Error).message}`);
-      }
-      if (st.status === "confirmed") {
-        txHash = st.txHash;
-        set((s) => ({ tx: { stage: "done", txHash: st.txHash }, activity: s.activity.map((a) => (a.id === id ? { ...a, status: "confirmed", txHash: st.txHash } : a)) }));
-        break;
-      }
-      if (st.status === "failed") {
-        if (st.txHash) {
-          const rc = await publicClient.getTransactionReceipt({ hash: st.txHash as Hex }).catch(() => null);
-          if (rc?.status === "success") {
-            txHash = st.txHash;
-            set((s) => ({ tx: { stage: "done", txHash: st.txHash }, activity: s.activity.map((a) => (a.id === id ? { ...a, status: "confirmed", txHash: st.txHash } : a)) }));
-            break;
-          }
-        }
-        throw new Error(st.error ?? "the relayer could not land the transaction");
-      }
-    }
-    await get().refreshPools();
-    await get().sync();
-    void get().syncUntilCaughtUp();
-    return txHash;
-  } catch (e) {
-    if (accepted) {
-      await get().sync().catch(() => undefined);
-      wallet.release(consumed.filter((cm) => !wallet.isSpent(cm)));
-    } else {
-      wallet.release(consumed);
-    }
-    const msg = friendlyError(e);
-    set((s) => ({ tx: { stage: "failed", message: msg }, activity: s.activity.map((a) => (a.id === id ? { ...a, status: "failed", error: msg } : a)) }));
-    throw new Error(msg);
-  }
+/** True for a `bunker1…` address this wallet can decode (not a registered `0x…`, which is resolved on-chain). */
+export function isShieldedAddress(s: Pick<State, "client">, to: string): boolean {
+  const c = s.client;
+  if (!c) return false;
+  try { decodeAddress(c.wallet.bjj, to); return true; } catch { return false; }
 }
 
 export { BNB };

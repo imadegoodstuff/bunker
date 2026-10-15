@@ -17,7 +17,7 @@ export class ApiError extends Error {
   }
 }
 
-export interface CommitmentRow { index: number; commitment: string; token: string; ciphertext: string; txHash: string; block: number; blockTime: number | null }
+export interface CommitmentRow { index: number; commitment: string; token: string; ciphertext: string; txHash: string; block: number; blockTime: number | null; kind?: "note" | "open"; shares?: string; ownerHash?: string }
 export interface CommitmentsPage { from: number; next: number; total: number; items: CommitmentRow[] }
 
 export interface LaunchRow {
@@ -33,10 +33,10 @@ export interface LaunchRow {
   header?: string | null;
 }
 export interface FeeEventRow { tx_hash: string; token: string; kind: "vote" | "roll"; agent: number | null; fee_bps: number; epoch: number | null; block: number; block_time: number | null }
-export interface TradeRow { tx_hash: string; side: "buy" | "sell"; bnb: string; fee: string; tokens: string; claim_key: string; block: number; block_time: number | null }
+export interface TradeRow { tx_hash: string; side: "buy" | "sell"; bnb: string; fee: string; tokens: string; block: number; block_time: number | null }
 
 export const indexer = {
-  health: () => j<{ ok: boolean; commitments: number; pool: string; scan: { lastBlock: number; head: number | null } }>(`${INDEXER_URL}/health`),
+  health: () => j<{ ok: boolean; commitments: number; insertedIndex?: number; protocolVersion?: number; pool: string; scan: { lastBlock: number; head: number | null } }>(`${INDEXER_URL}/health`),
   launches: (limit = 50) => j<LaunchRow[]>(`${INDEXER_URL}/launches?limit=${limit}`),
   launch: (token: string) => j<LaunchRow & { trades: TradeRow[]; feeEvents: FeeEventRow[] }>(`${INDEXER_URL}/launches/${token}`),
   /** Upload a token's icon (data URL, ≤ 4.5 MB) and optional 3:1 header with its name/symbol/description; returns the metadata URI the token points at. */
@@ -55,8 +55,17 @@ export interface RelayerInfo {
   relayer: string;
   chainId: number;
   pool: string;
+  protocolVersion?: number;
+  /** the relayer's own `bunker1…` address: where the private fee note of every relayed transact goes */
+  shieldedAddress?: string;
   /** exit target the relayer forwards to (the launchpad), or null if it refuses exits */
   launchpad: string | null;
+  /** the private-swap hook the relayer forwards to, or null */
+  swapExit?: string | null;
+  /** leaves queued on-chain, not yet in the tree */
+  pending?: number;
+  /** whether this relayer runs the drain keeper */
+  drains?: boolean;
   /** min in the pool's internal units */
   fees: { token: string; min: string; bps: number; costWei?: string }[];
   delay: { minMs: number; maxMs: number };
@@ -84,6 +93,8 @@ export const relayer = {
   asset: (token: string) => j<AssetQuote>(`${RELAYER_URL}/asset/${token}`),
   relay: (call: TransactCallJson) => j<{ id: string; releaseAt: number; gas?: string; duplicate?: boolean }>(`${RELAYER_URL}/relay`, { method: "POST", body: JSON.stringify(call) }),
   job: (id: string) => j<{ id: string; status: "queued" | "submitting" | "confirmed" | "failed"; txHash?: string; error?: string; releaseAt: number }>(`${RELAYER_URL}/job/${id}`),
+  /** Ask the keeper to fold the queued leaves into the tree now. */
+  drain: () => j<{ pending: number; job?: string; txHash?: string }>(`${RELAYER_URL}/drain`, { method: "POST", body: "{}" }),
 };
 
 export interface AgentLogEntry {

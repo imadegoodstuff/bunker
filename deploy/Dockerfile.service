@@ -33,6 +33,11 @@ COPY --from=build --chown=app:app /repo/indexer/package.json indexer/package.jso
 COPY --from=build --chown=app:app /repo/indexer/dist indexer/dist
 COPY --from=build --chown=app:app /repo/agents/package.json agents/package.json
 COPY --from=build --chown=app:app /repo/agents/dist agents/dist
+# proving artifacts for the relayer's sweeper (it proves unshields of its own fee notes); ARTIFACTS_DIR=/repo/circuits
+COPY --chown=app:app circuits/build/transact2x3/transact2x3_js/transact2x3.wasm circuits/transact2x3.wasm
+COPY --chown=app:app circuits/build/transact2x3/transact2x3_dev.zkey circuits/transact2x3.zkey
+COPY --chown=app:app circuits/build/transact4x3/transact4x3_js/transact4x3.wasm circuits/transact4x3.wasm
+COPY --chown=app:app circuits/build/transact4x3/transact4x3_dev.zkey circuits/transact4x3.zkey
 USER app
 EXPOSE 8787 8788 8789
 CMD ["sh", "-c", "exec node --experimental-sqlite ${SERVICE}/dist/index.js"]

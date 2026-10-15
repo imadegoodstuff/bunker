@@ -7,9 +7,9 @@ import { GITHUB } from "@/lib/config";
 
 const PILLARS = [
   { n: "01", t: "One pool, every asset", d: "BNB and any ERC-20 share one Merkle tree. A withdrawal hides among everything ever shielded, not only among the same token." },
-  { n: "02", t: "Proofs on your device", d: "Groth16 proofs are generated in the browser. The relayer sees a proof and a ciphertext; it cannot learn what you own or where it came from." },
-  { n: "03", t: "A launchpad inside the pool", d: "Buy and sell on bonding curves from shielded funds. Tokens return to the vault through a throwaway claim key that links one trade and nothing else." },
-  { n: "04", t: "Fees set by four agents", d: "Trading fees move toward the median of fresh votes from four independent model-driven keys, one step per epoch, bounded 0–5 %. Nobody can set it directly." },
+  { n: "02", t: "Proofs on your device, fees in notes", d: "Groth16 proofs are generated in the browser. Every transaction has three shielded outputs, payment, change and the relayer's fee, so even what you paid to be relayed is private." },
+  { n: "03", t: "Trade and swap without leaving", d: "Buy on a bonding curve or swap on PancakeSwap from shielded funds. The pool pays the venue and the venue pays the pool back, in one transaction; the result is a fresh note of yours." },
+  { n: "04", t: "Pay a plain address, privately", d: "Register your vault under your 0x account once. Anyone can then pay the address they already know, and the money lands shielded, unlinkable to them." },
 ];
 
 export default function Landing() {

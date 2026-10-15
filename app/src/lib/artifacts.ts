@@ -1,10 +1,9 @@
 // Proving artifacts (wasm + zkey) held in memory so a proof never waits on
-// the network. The 2x2 key is ~21 MB, the 4x2 key ~36 MB: handed to snarkjs
-// as URLs they were fetched and parsed on every proof, which is what made a
-// launchpad trade (unshield + claim: two proofs) take as long as its two
-// downloads. Now the 2x2 pair is fetched once in the background when the app
-// mounts, the 4x2 pair as soon as 2x2 has landed, and both are cached by the
-// browser (immutable headers) for the next visit.
+// the network. The 2x3 key is ~30 MB, the 4x3 key ~50 MB: handed to snarkjs
+// as URLs they were fetched and parsed on every proof. The 2x3 pair is fetched
+// once in the background when the vault opens, the 4x3 pair as soon as 2x3 has
+// landed, and both are cached by the browser (immutable headers) for the next
+// visit. The SDK client asks this module for them through `artifactLoader`.
 import type { CircuitArtifacts, CircuitName } from "@bunker/sdk";
 import { ARTIFACTS } from "./config";
 
@@ -63,31 +62,30 @@ export function loadArtifacts(circuit: CircuitName): Promise<Bytes> {
   return p;
 }
 
-/** Fetch 2x2 now and 4x2 once it is in; safe to call any number of times. */
+/** Fetch 2x3 now and 4x3 once it is in; safe to call any number of times. */
 export function prefetchArtifacts(): void {
   if (typeof window === "undefined") return;
-  loadArtifacts("transact2x2").then(() => loadArtifacts("transact4x2")).catch(() => undefined);
+  loadArtifacts("transact2x3").then(() => loadArtifacts("transact4x3")).catch(() => undefined);
 }
 
 /**
- * What to hand `buildTransact`: bytes for every circuit already in memory,
- * the URL for the rest (snarkjs streams those itself). Awaits the 2x2 pair,
- * which every shield, claim and almost every trade uses; a 4-input spend
- * falls back to the URL if its key has not landed yet.
+ * What the SDK client gets when it needs a circuit: bytes when they are in
+ * memory, otherwise the 2x3 pair is awaited (every shield and almost every
+ * spend uses it) and a 4x3 proof falls back to the URL, which snarkjs streams.
  */
-export async function artifactsForProof(report?: (p: Progress) => void): Promise<Record<CircuitName, CircuitArtifacts>> {
+export async function artifactFor(circuit: CircuitName, report?: (p: Progress) => void): Promise<CircuitArtifacts> {
+  if (loaded[circuit]) return loaded[circuit]!;
+  if (circuit === "transact4x3" && !inflight.transact4x3) return ARTIFACTS.transact4x3;
   const off = report ? onArtifactProgress(report) : () => undefined;
   try {
-    await loadArtifacts("transact2x2");
+    return await loadArtifacts(circuit);
+  } catch {
+    return ARTIFACTS[circuit];
   } finally {
     off();
   }
-  return {
-    transact2x2: loaded.transact2x2 ?? ARTIFACTS.transact2x2,
-    transact4x2: loaded.transact4x2 ?? ARTIFACTS.transact4x2,
-  };
 }
 
-export function artifactsReady(circuit: CircuitName = "transact2x2"): boolean {
+export function artifactsReady(circuit: CircuitName = "transact2x3"): boolean {
   return !!loaded[circuit];
 }
