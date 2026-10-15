@@ -1,9 +1,9 @@
 {
-  "name": "@scash/circuits",
+  "name": "@bunker/circuits",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "scash transact circuits (circom, Groth16 over BN254)",
+  "description": "BUNKER transact circuits (circom, Groth16 over BN254)",
   "scripts": {
     "build": "node scripts/build.mjs",
     "setup:dev": "node scripts/setup-dev.mjs",

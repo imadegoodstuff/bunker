@@ -1,16 +1,20 @@
-app = "scash"
+app = "bunker-app"
 primary_region = "sin"
 
 [build]
   dockerfile = "Dockerfile.app"
 
 [build.args]
-  NEXT_PUBLIC_CLUSTER = "devnet"
-  NEXT_PUBLIC_RPC_URL = "https://api.devnet.solana.com"
-  NEXT_PUBLIC_INDEXER_URL = "https://scash-indexer.fly.dev"
-  NEXT_PUBLIC_RELAYER_URL = "https://scash-relayer.fly.dev"
-  NEXT_PUBLIC_PROGRAM_ID = "A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ"
-  NEXT_PUBLIC_SITE_URL = "https://scash.fly.dev"
+  NEXT_PUBLIC_CHAIN_ID = "56"
+  # Public RPC; a keyed endpoint can be passed with --build-arg NEXT_PUBLIC_RPC_URL=…
+  # (it ends up in the browser bundle, so restrict the key by origin at the provider).
+  NEXT_PUBLIC_RPC_URL = "https://bsc-dataseed.bnbchain.org"
+  NEXT_PUBLIC_INDEXER_URL = "https://bunker-indexer.fly.dev"
+  NEXT_PUBLIC_RELAYER_URL = "https://bunker-relayer.fly.dev"
+  NEXT_PUBLIC_AGENTS_URL = "https://bunker-agents.fly.dev"
+  # Contract addresses come from contracts/deployments/56.json at deploy time:
+  #   --build-arg NEXT_PUBLIC_POOL_ADDRESS=0x… --build-arg NEXT_PUBLIC_LAUNCHPAD_ADDRESS=0x…
+  NEXT_PUBLIC_SITE_URL = "https://bunkeronbnb.com"
 
 [http_service]
   internal_port = 3000
@@ -31,5 +35,5 @@ primary_region = "sin"
   path = "/"
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "512mb"
+  size = "shared-cpu-2x"
+  memory = "1gb"

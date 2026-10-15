@@ -2,7 +2,7 @@
 const nextConfig = {
   output: "standalone",
   reactStrictMode: true,
-  transpilePackages: ["@scash/sdk"],
+  transpilePackages: ["@bunker/sdk"],
   webpack: (config, { isServer }) => {
     if (!isServer) {
       config.resolve.fallback = {

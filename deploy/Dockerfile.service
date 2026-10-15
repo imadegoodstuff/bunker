@@ -1,18 +1,21 @@
 # syntax=docker/dockerfile:1.7
-# Shared image for the relayer and the indexer: SERVICE=relayer|indexer
+# Shared image for the relayer, the indexer and the fee-policy agents: SERVICE=relayer|indexer|agents
 FROM node:22-bookworm-slim AS build
 WORKDIR /repo
 COPY package.json package-lock.json* ./
 COPY sdk/package.json sdk/
 COPY app/package.json app/
 COPY circuits/package.json circuits/
+COPY contracts/package.json contracts/
 COPY relayer/package.json relayer/
 COPY indexer/package.json indexer/
+COPY agents/package.json agents/
 RUN npm ci --no-audit --no-fund --ignore-scripts
 COPY sdk sdk
 COPY relayer relayer
 COPY indexer indexer
-RUN npm run -w sdk build && npm run -w relayer build && npm run -w indexer build
+COPY agents agents
+RUN npm run -w sdk build && npm run -w relayer build && npm run -w indexer build && npm run -w agents build
 
 FROM node:22-bookworm-slim AS runner
 ARG SERVICE
@@ -28,6 +31,8 @@ COPY --from=build --chown=app:app /repo/relayer/package.json relayer/package.jso
 COPY --from=build --chown=app:app /repo/relayer/dist relayer/dist
 COPY --from=build --chown=app:app /repo/indexer/package.json indexer/package.json
 COPY --from=build --chown=app:app /repo/indexer/dist indexer/dist
+COPY --from=build --chown=app:app /repo/agents/package.json agents/package.json
+COPY --from=build --chown=app:app /repo/agents/dist agents/dist
 USER app
-EXPOSE 8787 8788
+EXPOSE 8787 8788 8789
 CMD ["sh", "-c", "exec node --experimental-sqlite ${SERVICE}/dist/index.js"]

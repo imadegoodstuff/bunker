@@ -1,32 +1,7 @@
 [
   {
-    "id": "GHSA-vfj7-8cjw-p6xm",
-    "package": "braces",
-    "reason": "No fixed version exists. Reached only via react-native -> metro -> micromatch, which @solana/wallet-adapter-react pulls in for its mobile adapter. metro is a React Native bundler; nothing from that subtree is imported by the browser build or by the relayer/indexer. The DoS requires feeding attacker-controlled glob patterns to braces, which scash never does."
-  },
-  {
     "id": "GHSA-848j-6mx2-7j84",
     "package": "elliptic",
-    "reason": "Low severity; flagged for every published version. Reached via circomlibjs -> ethers (v5). scash uses circomlibjs for Poseidon/Baby Jubjub constants only and never calls into ethers' secp256k1 signing; all curve signing in scash goes through @noble."
-  },
-  {
-    "id": "GHSA-528h-pc64-c93x",
-    "package": "stream-json",
-    "reason": "Reached via @solana/web3.js -> jayson. jayson's streaming JSON-RPC parser is for its server/raw-stream transports; web3.js only uses the HTTP client, which parses whole responses with JSON.parse. No fixed major is adopted by jayson yet."
-  },
-  {
-    "id": "GHSA-hqr4-qq8f-hg3x",
-    "package": "stream-json",
-    "reason": "See GHSA-528h-pc64-c93x: JSONC parser path in jayson that web3.js does not exercise."
-  },
-  {
-    "id": "GHSA-mjw6-4jj6-33hc",
-    "package": "stream-json",
-    "reason": "See GHSA-528h-pc64-c93x: Assembler path in jayson that web3.js does not exercise."
-  },
-  {
-    "id": "GHSA-w5hq-g745-h8pq",
-    "package": "uuid",
-    "reason": "Affects uuid v3/v5/v6 when a caller-supplied buffer is passed. jayson and rpc-websockets only call uuid.v4() without a buffer. No fixed version is adopted by jayson's range yet."
+    "reason": "Low severity; flagged for every published version. Reached via circomlibjs -> ethers (v5). BUNKER uses circomlibjs for Poseidon/Baby Jubjub constants only and never calls into ethers' secp256k1 signing; all curve signing goes through @noble."
   }
 ]

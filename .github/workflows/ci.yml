@@ -4,51 +4,33 @@ on:
   push:
     branches: [main]
   pull_request:
-
-env:
-  CARGO_TERM_COLOR: always
-  # Agave stable ships platform-tools with a rustc new enough for edition-2024 deps
-  SOLANA_VERSION: stable
+  workflow_dispatch:
+    inputs:
+      deploy_bsc:
+        description: "deploy the contracts of this commit to BNB Smart Chain mainnet (needs the bsc environment secrets)"
+        type: boolean
+        default: false
 
 jobs:
-  rust:
-    name: rust (check + test)
+  contracts:
+    name: contracts (compile + unit tests)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check || true
-      - name: clippy (warnings are errors; solana's entrypoint cfgs and deprecated re-exports are allowed)
-        run: cargo clippy --workspace --all-targets -- -D warnings -A unexpected_cfgs -A deprecated
-      - run: cargo test --workspace --exclude scash-vault
-      - name: vault unit tests (fixture tests need circuit artifacts)
-        run: cargo test -p scash-vault --lib
-
-  sbf:
-    name: build SBF programs
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-      - name: install solana
-        run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/${SOLANA_VERSION}/install)"
-          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
-      - run: cargo build-sbf --manifest-path programs/scash_vault/Cargo.toml
-      - run: cargo build-sbf --manifest-path programs/scash_harvester/Cargo.toml
-      - run: cargo build-sbf --manifest-path programs/scash_migrator/Cargo.toml
-      - name: program sizes
-        run: ls -la target/deploy/*.so
-      - name: program digests (match these against the chain with scripts/verify-program.mjs)
-        run: sha256sum target/deploy/*.so | tee target/deploy/SHA256SUMS
-      - uses: actions/upload-artifact@v4
+      - uses: actions/setup-node@v4
         with:
-          name: programs
-          path: target/deploy/*.so
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: compile (solc 0.8.28, viaIR) and export ABIs
+        run: npm run -w contracts build
+      - name: ABIs in the SDK match the compiled contracts
+        run: git diff --exit-code --stat sdk/src/abi || { echo "::error::ABI drift: run npm run -w contracts build and commit sdk/src/abi"; exit 1; }
+      - name: pool + launchpad unit tests (hardhat)
+        run: npm run -w contracts test
 
   ts:
-    name: sdk + circuits
+    name: sdk + services + circuits
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,12 +41,16 @@ jobs:
       - run: npm ci
       - run: npm run -w sdk build
       - run: npm run -w sdk test
-      - name: indexer scanner (deferred v1 transactions, contiguous paging)
+      - name: indexer scanner (block-range paging, failover, event ingest)
         run: npm run -w indexer test
-      - name: relayer queue (nullifier idempotency)
+      - name: agents tests
+        run: npm run -w agents test
+      - name: relayer (fee oracle, queue idempotency)
         run: npm run -w relayer test
       - name: compile circuits (constraint counts)
         run: npm run -w circuits build
+      - name: app type-check
+        run: npx tsc --noEmit -p app
 
   ceremony:
     name: phase-2 ceremony transcript
@@ -84,7 +70,7 @@ jobs:
         run: node circuits/scripts/ceremony.mjs check --fetch
 
   audit:
-    name: audit tooling (cargo-audit, circomspect, npm audit)
+    name: audit tooling (circomspect, npm audit, doc drift)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -92,10 +78,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-targets: false
-      - name: cargo-audit (known vulnerabilities in Rust deps)
-        run: |
-          cargo install cargo-audit --locked
-          cargo audit
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -114,8 +96,7 @@ jobs:
         run: node scripts/doc-drift-check.mjs
 
   e2e:
-    name: end-to-end on a local validator
-    needs: [sbf]
+    name: end-to-end on a Hardhat node
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -123,107 +104,58 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - uses: actions/download-artifact@v4
-        with:
-          name: programs
-          path: target/deploy
-      - name: install solana
-        run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/${SOLANA_VERSION}/install)"
-          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
       - run: npm ci
       - run: npm run -w sdk build
       - name: circuits + dev proving keys
         run: |
           npm run -w circuits build
           node circuits/scripts/setup-dev.mjs
-          node circuits/scripts/export-vk.mjs
-          # The dev setup is deterministic (pinned ptau + fixed entropy). If the
-          # regenerated VK differs from the committed one, the program built in
-          # the sbf job would reject every proof — fail loudly instead.
-          git diff --exit-code --stat programs/scash_vault/src/vk || { echo "::error::VK drift: run setup-dev + export-vk and commit programs/scash_vault/src/vk"; exit 1; }
+      - name: Solidity verifiers match the dev keys
+        run: |
+          npm run -w contracts verifiers
+          # The dev setup is deterministic (pinned ptau + fixed entropy). If the regenerated
+          # verifier differs from the committed one, the deployed contract would reject every proof.
+          git diff --exit-code --stat contracts/contracts/verifiers || { echo "::error::verifier drift: run setup-dev + contracts verifiers and commit"; exit 1; }
       - name: adversarial witness tests (every tampering must be unsatisfiable)
         run: npm run -w circuits test
-      - name: start validator with the freshly built programs
-        run: |
-          mkdir -p keypairs
-          solana-keygen new --no-bip39-passphrase --silent -o keypairs/deployer.json
-          solana-test-validator --reset --quiet \
-            --bpf-program A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ target/deploy/scash_vault.so \
-            --bpf-program 9TorUNxbdb4vwNXNB6R487Th94616xGtvsBHpaETcqGi target/deploy/scash_harvester.so \
-            --mint "$(solana-keygen pubkey keypairs/deployer.json)" &
-          for i in $(seq 1 60); do solana cluster-version -u http://127.0.0.1:8899 >/dev/null 2>&1 && break; sleep 1; done
-          solana cluster-version -u http://127.0.0.1:8899
-      - name: e2e (shield → private send → unshield → donate → replay rejected)
-        run: node scripts/e2e.mjs
-      - name: bench (proving latency, concurrent transacts on one tree, 128-root window)
-        run: set -o pipefail; node scripts/bench.mjs --n 140 --out bench.json | tee bench.log
-      - uses: actions/upload-artifact@v4
-        with:
-          name: bench-report
-          path: |
-            bench.json
-            bench.log
-      - name: fresh validator with OLD vault, NEW vault (same binary, second id) and the migrator
-        run: |
-          pkill -f solana-test-validator || true
-          sleep 2
-          solana-test-validator --reset --quiet \
-            --bpf-program A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ target/deploy/scash_vault.so \
-            --bpf-program ${NEW_VAULT_ID} target/deploy/scash_vault.so \
-            --bpf-program 24LLsX8qtFdSsmNarRgyPdSTvDdgTnCRa77S8rjdW4m3 target/deploy/scash_migrator.so \
-            --mint "$(solana-keygen pubkey keypairs/deployer.json)" &
-          for i in $(seq 1 60); do solana cluster-version -u http://127.0.0.1:8899 >/dev/null 2>&1 && break; sleep 1; done
-        env:
-          NEW_VAULT_ID: Ht494MDFWJ64tK6PvEctEEV5dUCCUHsgqSDPSt7Hat7k
-      - name: migration e2e (old vault → PDA → new vault, no public wallet on the path)
-        run: node scripts/migrate-e2e.mjs --new-vault Ht494MDFWJ64tK6PvEctEEV5dUCCUHsgqSDPSt7Hat7k
+      - run: npm run -w contracts build
+      - name: e2e (shield → private send → unshield → donate → replay rejected → launch → private buy/claim → votes/fee roll → private sell/claim → graduation → PancakeSwap migration)
+        run: node scripts/e2e.mjs --spawn
 
-  deploy-devnet:
-    name: deploy to devnet
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [rust, sbf, ts]
+  # Manual, gated on the `bsc` environment: deploys the contracts of this commit to BNB Smart Chain
+  # mainnet with the deployer key held as an environment secret and uploads deployments/56.json.
+  deploy-bsc:
+    name: deploy to BNB Smart Chain
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_bsc
+    needs: [contracts, ts, e2e]
     runs-on: ubuntu-latest
-    environment: devnet
+    environment: bsc
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: programs
-          path: target/deploy
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - name: install solana
-        run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/${SOLANA_VERSION}/install)"
-          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+      - run: npm ci
+      - run: npm run -w contracts build
       - name: deploy
         env:
-          DEPLOYER_KEYPAIR: ${{ secrets.DEVNET_DEPLOYER_KEYPAIR }}
-          VAULT_PROGRAM_KEYPAIR: ${{ secrets.VAULT_PROGRAM_KEYPAIR }}
-          HARVESTER_PROGRAM_KEYPAIR: ${{ secrets.HARVESTER_PROGRAM_KEYPAIR }}
-          MIGRATOR_PROGRAM_KEYPAIR: ${{ secrets.MIGRATOR_PROGRAM_KEYPAIR }}
+          DEPLOYER_KEY: ${{ secrets.BSC_DEPLOYER_KEY }}
+          BSC_RPC_URL: ${{ secrets.BSC_RPC_URL }}
+          TREASURY: ${{ vars.BSC_TREASURY }}
+          AGENTS: ${{ vars.BSC_AGENTS }}
+          GUARDIAN: ${{ vars.BSC_GUARDIAN }}
+          GRADUATION_BNB: ${{ vars.BSC_GRADUATION_BNB }}
         run: |
-          if [ -z "$DEPLOYER_KEYPAIR" ]; then echo "no deployer secret, skipping"; exit 0; fi
-          mkdir -p keypairs
-          echo "$DEPLOYER_KEYPAIR" > keypairs/deployer.json
-          echo "$VAULT_PROGRAM_KEYPAIR" > keypairs/scash_vault-keypair.json
-          echo "$HARVESTER_PROGRAM_KEYPAIR" > keypairs/scash_harvester-keypair.json
-          echo "$MIGRATOR_PROGRAM_KEYPAIR" > keypairs/scash_migrator-keypair.json
-          solana config set --url https://api.devnet.solana.com --keypair keypairs/deployer.json
-          solana balance || true
-          solana program deploy target/deploy/scash_vault.so --program-id keypairs/scash_vault-keypair.json --upgrade-authority keypairs/deployer.json
-          solana program deploy target/deploy/scash_harvester.so --program-id keypairs/scash_harvester-keypair.json --upgrade-authority keypairs/deployer.json
-          if [ -n "$MIGRATOR_PROGRAM_KEYPAIR" ]; then
-            solana program deploy target/deploy/scash_migrator.so --program-id keypairs/scash_migrator-keypair.json --upgrade-authority keypairs/deployer.json
-          fi
-      - name: verify deployed bytecode equals the built artifact
+          if [ -z "$DEPLOYER_KEY" ]; then echo "BSC_DEPLOYER_KEY is not set"; exit 1; fi
+          npm run -w contracts deploy:bsc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deployment-56
+          path: contracts/deployments/56.json
+      - name: verify on BscScan
+        if: ${{ secrets.BSCSCAN_API_KEY != '' }}
         env:
-          DEPLOYER_KEYPAIR: ${{ secrets.DEVNET_DEPLOYER_KEYPAIR }}
-        run: |
-          if [ -z "$DEPLOYER_KEYPAIR" ]; then echo "no deployer secret, skipping"; exit 0; fi
-          npm ci
-          node scripts/verify-program.mjs "$(solana-keygen pubkey keypairs/scash_vault-keypair.json)" target/deploy/scash_vault.so --rpc https://api.devnet.solana.com
-          node scripts/verify-program.mjs "$(solana-keygen pubkey keypairs/scash_harvester-keypair.json)" target/deploy/scash_harvester.so --rpc https://api.devnet.solana.com
+          BSCSCAN_API_KEY: ${{ secrets.BSCSCAN_API_KEY }}
+          BSC_RPC_URL: ${{ secrets.BSC_RPC_URL }}
+        run: node contracts/scripts/verify.cjs

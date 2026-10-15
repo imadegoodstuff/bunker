@@ -1,25 +1,33 @@
 import type { Metadata } from "next";
-import { Inter, Instrument_Serif, JetBrains_Mono } from "next/font/google";
+import { Space_Grotesk, IBM_Plex_Mono, Manrope } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/Providers";
+import { Shell } from "@/components/Shell";
+import { SITE_URL } from "@/lib/config";
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
-const serif = Instrument_Serif({ subsets: ["latin"], weight: "400", style: ["normal", "italic"], variable: "--font-serif", display: "swap" });
-const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono", display: "swap" });
+const display = Space_Grotesk({ subsets: ["latin"], weight: ["500", "600", "700"], variable: "--font-display", display: "swap" });
+const mono = IBM_Plex_Mono({ subsets: ["latin"], weight: ["400", "500"], variable: "--font-mono", display: "swap" });
+const sans = Manrope({ subsets: ["latin"], weight: ["400", "500", "600"], variable: "--font-sans", display: "swap" });
+
+const TITLE = "BUNKER — shielded pool and private launchpad on BNB Chain";
+const DESC = "A Zcash-Sapling shielded pool on BNB Smart Chain with a launchpad that runs inside it. Shield once; send, trade and launch with no trace back to your wallet. Zero-knowledge proofs made in your browser, open source.";
 
 export const metadata: Metadata = {
-  title: "scash",
-  description: "Shielded notes on Solana. Private by construction, verified on-chain.",
-  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "https://scash.fly.dev"),
-  openGraph: { title: "scash", description: "Shielded notes on Solana.", type: "website" },
+  title: { default: TITLE, template: "%s — BUNKER" },
+  description: DESC,
+  metadataBase: new URL(SITE_URL),
+  openGraph: { title: TITLE, description: DESC, type: "website", url: SITE_URL, siteName: "BUNKER" },
+  twitter: { card: "summary_large_image", title: TITLE, description: DESC },
   icons: { icon: "/icon.svg" },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${inter.variable} ${serif.variable} ${mono.variable}`}>
-      <body className="relative min-h-screen font-sans">
-        <Providers>{children}</Providers>
+    <html lang="en" className={`${display.variable} ${mono.variable} ${sans.variable}`}>
+      <body className="min-h-screen">
+        <Providers>
+          <Shell>{children}</Shell>
+        </Providers>
       </body>
     </html>
   );

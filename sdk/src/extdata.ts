@@ -1,42 +1,63 @@
-// ExtData encoding per SPEC.md section 7. Must match programs/scash_vault/src/state.rs.
+// ExtData: everything a transact binds to its proof besides the circuit's own
+// public inputs (SPEC §7). Hashed exactly as `ShieldedPool.extDataHash` does:
+// `uint256(sha256(abi.encode(ext))) % p`.
 import { sha256 } from "@noble/hashes/sha2.js";
-import { PublicKey } from "@solana/web3.js";
-import { mod, bytesToBigIntBE, bigIntToBytesLE, concatBytes } from "./field.js";
+import { encodeAbiParameters, decodeAbiParameters, type Hex } from "viem";
+import { mod, bytesToBigIntBE, fromHex, toHex } from "./field.js";
+
+export type EvmAddress = `0x${string}`;
 
 export interface ExtData {
-  recipient: PublicKey;
-  relayer: PublicKey;
-  relayerFee: bigint; // u64, asset base units
-  exitTarget: PublicKey; // default = SystemProgram id meaning "none"
+  recipient: EvmAddress;
+  relayer: EvmAddress;
+  /** internal pool units, taken from a negative publicAmount */
+  relayerFee: bigint;
+  /** address(0) = plain unshield */
+  exitTarget: EvmAddress;
   exitData: Uint8Array;
-  ciphertexts: Uint8Array[];
+  ciphertext0: Uint8Array;
+  ciphertext1: Uint8Array;
   outCiphertext: Uint8Array;
 }
 
-export const NO_EXIT = new PublicKey("11111111111111111111111111111111");
+export const ZERO_ADDRESS: EvmAddress = "0x0000000000000000000000000000000000000000";
+export const NO_EXIT = ZERO_ADDRESS;
 
-function u32le(n: number): Uint8Array {
-  const b = new Uint8Array(4);
-  new DataView(b.buffer).setUint32(0, n, true);
-  return b;
+export const EXT_DATA_ABI = [
+  {
+    type: "tuple",
+    components: [
+      { name: "recipient", type: "address" },
+      { name: "relayer", type: "address" },
+      { name: "relayerFee", type: "uint256" },
+      { name: "exitTarget", type: "address" },
+      { name: "exitData", type: "bytes" },
+      { name: "ciphertext0", type: "bytes" },
+      { name: "ciphertext1", type: "bytes" },
+      { name: "outCiphertext", type: "bytes" },
+    ],
+  },
+] as const;
+
+const hex = (b: Uint8Array): Hex => `0x${toHex(b)}`;
+
+/** The tuple as the contract's `ExtData calldata` argument expects it. */
+export function extDataArg(e: ExtData) {
+  return {
+    recipient: e.recipient,
+    relayer: e.relayer,
+    relayerFee: e.relayerFee,
+    exitTarget: e.exitTarget,
+    exitData: hex(e.exitData),
+    ciphertext0: hex(e.ciphertext0),
+    ciphertext1: hex(e.ciphertext1),
+    outCiphertext: hex(e.outCiphertext),
+  } as const;
 }
 
-function vec(b: Uint8Array): Uint8Array {
-  return concatBytes(u32le(b.length), b);
-}
-
-/** Borsh-compatible serialization (fixed order, u32 length prefixes). */
+/** `abi.encode(ext)` — the exact bytes the contract hashes. */
 export function serializeExtData(e: ExtData): Uint8Array {
-  return concatBytes(
-    e.recipient.toBytes(),
-    e.relayer.toBytes(),
-    bigIntToBytesLE(e.relayerFee, 8),
-    e.exitTarget.toBytes(),
-    vec(e.exitData),
-    u32le(e.ciphertexts.length),
-    ...e.ciphertexts.map(vec),
-    vec(e.outCiphertext)
-  );
+  return fromHex(encodeAbiParameters(EXT_DATA_ABI, [extDataArg(e)]));
 }
 
 export function extDataHash(e: ExtData): bigint {
@@ -44,23 +65,15 @@ export function extDataHash(e: ExtData): bigint {
 }
 
 export function deserializeExtData(b: Uint8Array): ExtData {
-  let o = 0;
-  const take = (n: number) => {
-    const s = b.slice(o, o + n);
-    o += n;
-    return s;
+  const [d] = decodeAbiParameters(EXT_DATA_ABI, hex(b));
+  return {
+    recipient: d.recipient,
+    relayer: d.relayer,
+    relayerFee: d.relayerFee,
+    exitTarget: d.exitTarget,
+    exitData: fromHex(d.exitData),
+    ciphertext0: fromHex(d.ciphertext0),
+    ciphertext1: fromHex(d.ciphertext1),
+    outCiphertext: fromHex(d.outCiphertext),
   };
-  const u32 = () => new DataView(take(4).buffer).getUint32(0, true);
-  const recipient = new PublicKey(take(32));
-  const relayer = new PublicKey(take(32));
-  const feeBytes = take(8);
-  let relayerFee = 0n;
-  for (let i = 7; i >= 0; i--) relayerFee = (relayerFee << 8n) | BigInt(feeBytes[i]);
-  const exitTarget = new PublicKey(take(32));
-  const exitData = take(u32());
-  const n = u32();
-  const ciphertexts: Uint8Array[] = [];
-  for (let i = 0; i < n; i++) ciphertexts.push(take(u32()));
-  const outCiphertext = take(u32());
-  return { recipient, relayer, relayerFee, exitTarget, exitData, ciphertexts, outCiphertext };
 }

@@ -1,4 +1,4 @@
-app = "scash-relayer"
+app = "bunker-relayer"
 primary_region = "sin"
 
 [build]
@@ -6,17 +6,29 @@ primary_region = "sin"
   [build.args]
     SERVICE = "relayer"
 
+# Secrets (set with `flyctl secrets set`, never in this file):
+#   RELAYER_KEY        hex private key of the relayer EOA (fund it with BNB; it pays gas and is repaid from notes)
+#   RPC_URL            keyed endpoint, overrides the public fallback below
+#   POOL_ADDRESS, LAUNCHPAD_ADDRESS   from contracts/deployments/56.json (set as secrets or edit [env])
 [env]
   PORT = "8787"
-  RPC_URL = "https://api.devnet.solana.com"
-  PROGRAM_ID = "A827Zi2VyPGQrPrQsZMr66hbxp7AaG2NdBYkV8Cj2yoJ"
+  CHAIN_ID = "56"
+  RPC_URL = "https://bsc-dataseed.bnbchain.org"
+  PANCAKE_ROUTER = "0x10ED43C718714eb63d5aA57B78B54704E256024E"
+  WBNB = "0xbb4CdB9CBd36B01bD1cBaEbF2De08d9173bc095c"
   MIN_DELAY_MS = "5000"
   MAX_DELAY_MS = "90000"
-  MIN_FEE_LAMPORTS = "1500000"
-  # Priority fee bounds in micro-lamports/CU; the attached price follows recent
-  # fees between them and the SOL fee floor is priced at CU_PRICE_MAX (SECURITY.md §14).
-  CU_PRICE = "0"
-  CU_PRICE_MAX = "20000"
+  # BNB fee floor in pool units (gwei): 0.0003 BNB; the effective floor is max(this, GAS_LIMIT × GAS_PRICE_CAP × margin)
+  MIN_FEE_UNITS = "300000"
+  GAS_PRICE_FLOOR_GWEI = "0.1"
+  # BSC has run at ~0.05 gwei since 2025; a 1 gwei cap keeps the fee floor near 0.002 BNB with 20x headroom
+  GAS_PRICE_CAP_GWEI = "1"
+  GAS_LIMIT = "1600000"
+  COST_MARGIN_BPS = "2000"
+  # price any ERC-20 with a pool through PancakeSwap (margin on top of the BNB cost)
+  DYNAMIC_ASSETS = "1"
+  DYNAMIC_MARGIN_BPS = "5000"
+  DYNAMIC_FEE_BPS = "5"
 
 [http_service]
   internal_port = 8787
@@ -30,8 +42,8 @@ primary_region = "sin"
   timeout = "5s"
   grace_period = "10s"
   method = "GET"
-  path = "/info"
+  path = "/health"
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "256mb"
+  memory = "512mb"

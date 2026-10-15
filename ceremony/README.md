@@ -1,7 +1,7 @@
-# scash phase-2 ceremony
+# BUNKER phase-2 ceremony
 
 The Groth16 proving keys for `transact2x2` and `transact4x2` need a
-circuit-specific trusted setup. scash runs a public, permissionless phase-2
+circuit-specific trusted setup. BUNKER runs a public, permissionless phase-2
 ceremony: as long as **one** participant was honest and destroyed their toxic
 waste, the final keys are sound. Everything about the ceremony is in this
 directory and checkable offline from the repo.
@@ -80,19 +80,20 @@ node circuits/scripts/ceremony.mjs check --fetch
 
 ## Closing the ceremony
 
-When the contribution window closes the coordinator announces a future Solana
-slot. Its blockhash (base58-decoded to 32 bytes) is the beacon:
+When the contribution window closes the coordinator announces a future BNB Smart
+Chain block number. Its block hash (32 bytes) is the beacon:
 
 ```bash
 node circuits/scripts/ceremony.mjs beacon --circuit transact2x2 \
-  --in transact2x2_00NN.zkey --out transact2x2_final.zkey --hash <blockhash hex> --slot <slot>
+  --in transact2x2_00NN.zkey --out transact2x2_final.zkey --hash <block hash hex> --slot <block number>
 ```
 
-`beacon` records the slot, hash, final zkey hash and verification-key SHA-256
-in the transcript and flips `status` to `finalized` once both circuits are
-done. The final VK is exported with `circuits/scripts/export-vk.mjs` into
-`programs/scash_vault/src/vk/`, the vault is built and deployed from that
-commit, and `app/public/circuits/*.zkey` are replaced by the final zkeys. The
+`beacon` records the block number (the `--slot` field of the transcript), hash,
+final zkey hash and verification-key SHA-256 in the transcript and flips
+`status` to `finalized` once both circuits are done. New verifier contracts
+are generated with `npm run -w contracts verifiers`, a new pool and launchpad
+are deployed from that commit (SECURITY.md §11), and
+`app/public/circuits/*.zkey` are replaced by the final zkeys. The
 dev beacon in `setup-dev.mjs` stays what it is: a public string, for tests.
 
 ## Reproducible circuit hashes

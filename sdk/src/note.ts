@@ -1,7 +1,6 @@
 // Notes, commitments and nullifiers per SPEC.md section 4.
 import { sha256 } from "@noble/hashes/sha2.js";
 import { blake2b } from "@noble/hashes/blake2.js";
-import { PublicKey } from "@solana/web3.js";
 import { poseidon, type Point } from "./crypto.js";
 import { MAX_U64, mod, bytesToBigIntBE, concatBytes, randomBytes } from "./field.js";
 
@@ -17,8 +16,8 @@ export interface Note {
   rcm: bigint;
 }
 
-const PERSON_RHO = new TextEncoder().encode("scash_rho_______");
-const PERSON_RCM = new TextEncoder().encode("scash_rcm_______");
+const PERSON_RHO = new TextEncoder().encode("bunker_rho______");
+const PERSON_RCM = new TextEncoder().encode("bunker_rcm______");
 
 /** Derive (rho, rcm) from a 32-byte seed. Both are reduced into the BN254 scalar field. */
 export function noteRandomness(rseed: Uint8Array): { rho: bigint; rcm: bigint } {
@@ -40,12 +39,25 @@ export interface SpendableNote extends Note {
   memo?: Uint8Array;
 }
 
-export function assetId(mint: PublicKey): bigint {
-  const h = sha256(concatBytes(new TextEncoder().encode("scash_asset"), mint.toBytes()));
+/** BNB is `address(0)`. */
+export const NATIVE_TOKEN = "0x0000000000000000000000000000000000000000" as const;
+
+/**
+ * `asset = SHA-256("bunker_asset" || token left-padded to 32 bytes) mod p`
+ * (ShieldedPool.assetId). The address is the 20-byte EVM address as 0x hex.
+ */
+export function assetId(token: string): bigint {
+  const h = sha256(concatBytes(new TextEncoder().encode("bunker_asset"), addressToBytes32(token)));
   return mod(bytesToBigIntBE(h));
 }
 
-export const NATIVE_MINT = new PublicKey("11111111111111111111111111111111");
+export function addressToBytes32(addr: string): Uint8Array {
+  const hex = addr.toLowerCase().replace(/^0x/, "");
+  if (!/^[0-9a-f]{40}$/.test(hex)) throw new Error(`not an EVM address: ${addr}`);
+  const out = new Uint8Array(32);
+  for (let i = 0; i < 20; i++) out[12 + i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
 
 export function newNote(asset: bigint, value: bigint, gd: Point, pkd: Point, memoRandom = true): Note {
   if (value < 0n || value > MAX_U64) throw new Error("value out of range");

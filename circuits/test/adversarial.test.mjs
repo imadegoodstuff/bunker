@@ -16,9 +16,8 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { groth16 } from "snarkjs";
-import { PublicKey } from "@solana/web3.js";
 import {
-  BabyJub, MerkleTree, ShieldedWallet, assetId, extDataHash, NO_EXIT,
+  BabyJub, MerkleTree, ShieldedWallet, assetId, extDataHash, NO_EXIT, NATIVE_TOKEN, ZERO_ADDRESS,
   groupHash, noteCommitment, freshRandomness, encryptNote, buildWitnessInput, P,
 } from "../../sdk/dist/index.js";
 
@@ -47,7 +46,7 @@ before(async () => {
   bjj = await BabyJub.load();
   const wallet = await ShieldedWallet.fromSeed(new Uint8Array(32).fill(1));
   const stranger = await ShieldedWallet.fromSeed(new Uint8Array(32).fill(2));
-  const asset = assetId(new PublicKey("11111111111111111111111111111111"));
+  const asset = assetId(NATIVE_TOKEN);
   const tree = new MerkleTree(26);
   await tree.whenReady();
 
@@ -67,8 +66,8 @@ before(async () => {
   const c0 = encryptNote(bjj, self, change, undefined, false);
   const c1 = encryptNote(bjj, self, zero, undefined, false);
   const ext = {
-    recipient: PublicKey.default, relayer: PublicKey.default, relayerFee: 10n, exitTarget: NO_EXIT,
-    exitData: new Uint8Array(0), ciphertexts: [c0.ciphertext, c1.ciphertext], outCiphertext: new Uint8Array(0),
+    recipient: ZERO_ADDRESS, relayer: ZERO_ADDRESS, relayerFee: 10n, exitTarget: NO_EXIT,
+    exitData: new Uint8Array(0), ciphertext0: c0.ciphertext, ciphertext1: c1.ciphertext, outCiphertext: new Uint8Array(0),
   };
   const params = {
     spend: wallet.spend, fvk: wallet.fvk, root: await tree.root(), asset, publicAmount: -400n,

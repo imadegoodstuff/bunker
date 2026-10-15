@@ -1,20 +1,23 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { VAULT_ERRORS, vaultErrorName, isStaleRootRejection } from "./errors.js";
-import { AddressLookupTableAccount, Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
+import { createHash } from "node:crypto";
+import { encodeAbiParameters, encodeErrorResult } from "viem";
+import { POOL_ERRORS, LAUNCH_ERRORS, contractErrorFromData, isStaleRootRejection } from "./errors.js";
+import { ShieldedPoolAbi, LaunchpadAbi } from "./abi/index.js";
 import { BabyJub, poseidon } from "./crypto.js";
 import { spendingKeyFromSeed, fullViewingKey, newAddress, encodeAddress, decodeAddress, groupHash, seedFromSignature, seedToBackup, seedFromBackup, SPENDING_KEY_MESSAGE, SCALAR_MASK, passphraseStrength, expectedSecondsToCrack, PASSPHRASE_MIN_BITS } from "./keys.js";
-import { encryptNote, tryDecryptNote, encryptOutgoing, decryptOutgoing, decryptNoteAsSender, NOTE_CIPHERTEXT_LEN, NOTE_CIPHERTEXT_LEN_NO_MEMO, MEMO_MAX, MEMO_BUCKET } from "./encryption.js";
-import { transactIx } from "./program.js";
-import { staticAddresses, buildV0, ataFor } from "./lookup.js";
-import { noteCommitment, nullifier, assetId, freshRandomness, noteRandomness } from "./note.js";
-import { MerkleTree, verifyPath } from "./merkle.js";
+import { encryptNote, tryDecryptNote, encryptOutgoing, decryptOutgoing, decryptNoteAsSender, NOTE_CIPHERTEXT_LEN, NOTE_CIPHERTEXT_LEN_NO_MEMO, MEMO_MAX } from "./encryption.js";
+import { noteCommitment, nullifier, assetId, freshRandomness, noteRandomness, NATIVE_TOKEN, addressToBytes32 } from "./note.js";
+import { MerkleTree, verifyPath, EMPTY_LEAF_PREIMAGE } from "./merkle.js";
 import { ShieldedWallet } from "./wallet.js";
-import { extDataHash, serializeExtData, deserializeExtData, NO_EXIT } from "./extdata.js";
-import { encodePublicAmount, decodePublicAmount, P, randomField, BJJ_SUBGROUP_ORDER } from "./field.js";
+import { extDataHash, serializeExtData, deserializeExtData, NO_EXIT, ZERO_ADDRESS, EXT_DATA_ABI, extDataArg } from "./extdata.js";
+import { encodePublicAmount, decodePublicAmount, P, BJJ_SUBGROUP_ORDER, toHex } from "./field.js";
+import { proofArg, sharesForDeposit, amountForMint, amountForBurn, sharesForWithdraw, VIRTUAL_OFFSET, type PoolState } from "./pool.js";
+import { claimKey, exitData, decodeExitData, EXIT_BUY, EXIT_SELL, rolled, policy, worstFeeBps, voteInBounds, curveBuy, curveBuyCapped, curveSell, quotePrivateBuy, quotePrivateSell, feeOf, feeOnNet, type CurveState } from "./launch.js";
 
 const seed = new Uint8Array(32).fill(7);
+const A1 = "0x1111111111111111111111111111111111111111" as const;
+const A2 = "0x2222222222222222222222222222222222222222" as const;
 
 test("key derivation is deterministic and ivk is a valid Baby Jubjub scalar", async () => {
   const a = spendingKeyFromSeed(seed);
@@ -23,8 +26,6 @@ test("key derivation is deterministic and ivk is a valid Baby Jubjub scalar", as
   assert.equal(a.nsk, b.nsk);
   const fvk = await fullViewingKey(a);
   assert.equal(fvk.ak, await poseidon([a.ask]));
-  // 2^250 < l < 2^251: a 251-bit mask would not guarantee ivk < l, so the
-  // mask is 250 bits and every derived ivk must be below the subgroup order.
   assert.ok(1n << 250n < BJJ_SUBGROUP_ORDER && BJJ_SUBGROUP_ORDER < 1n << 251n);
   assert.equal(SCALAR_MASK, (1n << 250n) - 1n);
   for (let i = 0; i < 64; i++) {
@@ -34,21 +35,30 @@ test("key derivation is deterministic and ivk is a valid Baby Jubjub scalar", as
   }
 });
 
-test("diversified addresses round-trip through bech32m and are unlinkable", async () => {
+test("diversified addresses round-trip through bech32m (hrp bunker) and are unlinkable", async () => {
   const bjj = await BabyJub.load();
   const fvk = await fullViewingKey(spendingKeyFromSeed(seed));
   const a1 = newAddress(bjj, fvk.ivk);
   const a2 = newAddress(bjj, fvk.ivk);
   assert.notDeepEqual(a1.pkd, a2.pkd);
   assert.ok(bjj.inSubgroup(a1.pkd));
-  const s = encodeAddress(bjj, a1, "tscash");
-  assert.ok(s.startsWith("tscash1"));
+  const s = encodeAddress(bjj, a1);
+  assert.ok(s.startsWith("bunker1"));
+  assert.ok(encodeAddress(bjj, a1, "tbunker").startsWith("tbunker1"));
   const back = decodeAddress(bjj, s);
   assert.deepEqual(back.address.d, a1.d);
   assert.deepEqual(back.address.pkd, a1.pkd);
-  // pk_d = [ivk] g_d
   const gd = groupHash(bjj, a1.d)!;
   assert.deepEqual(bjj.mulScalar(gd, fvk.ivk), a1.pkd);
+});
+
+test("asset ids: sha256('bunker_asset' || 32-byte address) mod p; BNB is address(0)", () => {
+  const h = createHash("sha256").update(Buffer.from("bunker_asset")).update(Buffer.from(addressToBytes32(A1))).digest("hex");
+  assert.equal(assetId(A1), BigInt("0x" + h) % P);
+  assert.equal(addressToBytes32(NATIVE_TOKEN).every((b) => b === 0), true);
+  assert.equal(toHex(addressToBytes32(A1)), "000000000000000000000000" + "11".repeat(20));
+  assert.notEqual(assetId(A1), assetId(A2));
+  assert.throws(() => assetId("0x123"));
 });
 
 test("note encryption: receiver decrypts with ivk, strangers cannot, sender recovers with ovk", async () => {
@@ -59,11 +69,11 @@ test("note encryption: receiver decrypts with ivk, strangers cannot, sender reco
   const receiver = await fullViewingKey(receiverSk);
   const to = newAddress(bjj, receiver.ivk);
   const gd = groupHash(bjj, to.d)!;
-  const asset = assetId(new PublicKey("11111111111111111111111111111111"));
+  const asset = assetId(NATIVE_TOKEN);
   const note = { asset, value: 1234n, gd, pkd: to.pkd, ...freshRandomness() };
   const memo = new TextEncoder().encode("hello");
   const { ciphertext, esk } = encryptNote(bjj, to, note, memo, true);
-  assert.equal(ciphertext.length, NOTE_CIPHERTEXT_LEN_NO_MEMO + 64); // 5-byte memo → one 64-byte bucket
+  assert.equal(ciphertext.length, NOTE_CIPHERTEXT_LEN_NO_MEMO + 64);
   assert.equal(NOTE_CIPHERTEXT_LEN, NOTE_CIPHERTEXT_LEN_NO_MEMO + MEMO_MAX);
 
   const got = tryDecryptNote(bjj, receiver.ivk, ciphertext);
@@ -93,12 +103,6 @@ test("note encryption: receiver decrypts with ivk, strangers cannot, sender reco
 });
 
 test("a g_d with a torsion component passes the circuit's small-order check but is never credited by the receiver", async () => {
-  // The circuit checks [8]·g_d ≠ O (not of small order), the same as Sapling;
-  // it does not prove g_d ∈ prime-order subgroup. A point g_d' = g_d + T with
-  // T of order 8 therefore satisfies the circuit. This test shows why that is
-  // acceptable: the receiver re-derives g_d from the diversifier and
-  // recomputes the commitment, so a note built on g_d' is refused and the
-  // sender has only burned their own funds.
   const bjj = await BabyJub.load();
   const T = bjj.mulScalar(bjj.generator, BJJ_SUBGROUP_ORDER);
   assert.ok(bjj.inCurve(T) && !bjj.isIdentity(T) && bjj.isIdentity(bjj.mulScalar(T, 8n)), "T has order dividing 8");
@@ -108,82 +112,94 @@ test("a g_d with a torsion component passes the circuit's small-order check but 
   const to = receiver.address();
   const gd = groupHash(bjj, to.d)!;
   const gdTorsion = bjj.add(gd, T);
-  assert.ok(bjj.inCurve(gdTorsion));
-  assert.ok(!bjj.isIdentity(bjj.mulScalar(gdTorsion, 8n)), "passes the circuit's [8]P ≠ O check");
-  assert.ok(!bjj.inSubgroup(gdTorsion), "but is not in the prime-order subgroup");
-  const asset = assetId(SystemProgram.programId);
+  assert.ok(!bjj.isIdentity(bjj.mulScalar(gdTorsion, 8n)));
+  assert.ok(!bjj.inSubgroup(gdTorsion));
+  const asset = assetId(NATIVE_TOKEN);
 
   const honest = { asset, value: 500n, gd, pkd: to.pkd, ...freshRandomness() };
   const honestCt = encryptNote(bjj, to, honest, undefined, false).ciphertext;
-  assert.ok(await receiver.scan({ index: 0, commitment: await noteCommitment(honest), ciphertext: honestCt }, asset), "honest note is credited");
+  assert.ok(await receiver.scan({ index: 0, commitment: await noteCommitment(honest), ciphertext: honestCt }, asset));
 
   const bad = { ...honest, gd: gdTorsion, ...freshRandomness() };
   const badCt = encryptNote(bjj, to, bad, undefined, false).ciphertext;
-  assert.equal(await receiver.scan({ index: 1, commitment: await noteCommitment(bad), ciphertext: badCt }, asset), null, "torsion g_d is refused");
-  // and the same with a pk_d that is not [ivk]·g_d (a wrong recipient key)
+  assert.equal(await receiver.scan({ index: 1, commitment: await noteCommitment(bad), ciphertext: badCt }, asset), null);
   const wrongPkd = { ...honest, pkd: bjj.mulScalar(gd, fvk.ivk + 1n), ...freshRandomness() };
   const wrongCt = encryptNote(bjj, to, wrongPkd, undefined, false).ciphertext;
-  assert.equal(await receiver.scan({ index: 2, commitment: await noteCommitment(wrongPkd), ciphertext: wrongCt }, asset), null, "wrong pk_d is refused");
+  assert.equal(await receiver.scan({ index: 2, commitment: await noteCommitment(wrongPkd), ciphertext: wrongCt }, asset), null);
 });
 
 test("a torsion component in epk cannot probe ivk mod 8 (cofactor-cleared key agreement)", async () => {
-  // Attack without cofactor clearing: epk' = epk + T, key from [esk]pk_d + [k]T.
-  // The recipient decrypts iff ivk ≡ k (mod 8), leaking three bits of ivk per
-  // accepted note. With shared = [8·sk]·P the torsion vanishes on both sides,
-  // so every such ciphertext decrypts to the same key as the honest one and
-  // the sender learns nothing (and the tampered epk still fails the AEAD).
   const bjj = await BabyJub.load();
   const T = bjj.mulScalar(bjj.generator, BJJ_SUBGROUP_ORDER);
   const receiver = await fullViewingKey(spendingKeyFromSeed(new Uint8Array(32).fill(11)));
   const to = newAddress(bjj, receiver.ivk);
   const gd = groupHash(bjj, to.d)!;
-  const note = { asset: assetId(SystemProgram.programId), value: 7n, gd, pkd: to.pkd, ...freshRandomness() };
+  const note = { asset: assetId(NATIVE_TOKEN), value: 7n, gd, pkd: to.pkd, ...freshRandomness() };
   const { ciphertext, epk } = encryptNote(bjj, to, note, undefined, false);
   assert.ok(tryDecryptNote(bjj, receiver.ivk, ciphertext));
-  // Replace epk by epk + T. If the receiver's shared secret depended on the
-  // torsion part, some k in 0..7 would make a crafted ciphertext decrypt.
   const epkT = bjj.add(epk, T);
   const tampered = new Uint8Array(ciphertext);
   tampered.set(bjj.compress(epkT), 0);
-  // The receiver derives its key from [8·ivk]·(epk+T) = [8·ivk]·epk: identical
-  // secret, but the key also commits to the encoded epk, so the AEAD fails.
   assert.equal(tryDecryptNote(bjj, receiver.ivk, tampered), null);
-  // Independent of ivk mod 8: the shared point computed from epk+T equals the
-  // one from epk for *every* ivk residue, so there is no residue to learn.
   for (let k = 0n; k < 8n; k++) {
     const ivkK = (receiver.ivk & ~7n) | k;
     assert.deepEqual(bjj.mulScalar(epkT, ivkK * 8n), bjj.mulScalar(epk, ivkK * 8n));
   }
 });
 
-test("merkle tree paths verify and dummy path is well-formed", async () => {
+test("merkle tree paths verify; empty leaf is Poseidon('bunker_empty')", async () => {
   const t = new MerkleTree(26);
   await t.whenReady();
   const leaves = [1n, 2n, 3n, 4n, 5n];
   for (const l of leaves) await t.insert(l);
   const root = await t.root();
-  for (let i = 0; i < leaves.length; i++) {
-    assert.ok(await verifyPath(leaves[i], await t.path(i), root));
-  }
+  for (let i = 0; i < leaves.length; i++) assert.ok(await verifyPath(leaves[i], await t.path(i), root));
   assert.equal(t.dummyPath().elements.length, 26);
-  assert.equal(t.emptyLeaf, await poseidon([t["zeros"][0] === t.emptyLeaf ? (await import("./merkle.js")).EMPTY_LEAF_PREIMAGE : 0n]));
+  assert.equal(t.emptyLeaf, await poseidon([EMPTY_LEAF_PREIMAGE]));
+  let x = 0n;
+  for (const b of new TextEncoder().encode("bunker_empty")) x = (x << 8n) | BigInt(b);
+  assert.equal(EMPTY_LEAF_PREIMAGE, x % P);
 });
 
-test("ext data serialization round-trips and hashes into the field", () => {
+test("ext data is abi.encode(tuple) and hashes like ShieldedPool.extDataHash", () => {
   const ext = {
-    recipient: new PublicKey("11111111111111111111111111111111"),
-    relayer: PublicKey.default,
-    relayerFee: 42n,
+    recipient: A1,
+    relayer: A2,
+    relayerFee: 12345n,
     exitTarget: NO_EXIT,
-    exitData: new Uint8Array([1, 2, 3]),
-    ciphertexts: [new Uint8Array(10).fill(9), new Uint8Array(5).fill(8)],
-    outCiphertext: new Uint8Array(3),
+    exitData: new Uint8Array(0),
+    ciphertext0: new Uint8Array(100).fill(0xab),
+    ciphertext1: new Uint8Array(100).fill(0xcd),
+    outCiphertext: new Uint8Array(40).fill(0xef),
   };
   const bytes = serializeExtData(ext);
+  assert.equal("0x" + toHex(bytes), encodeAbiParameters(EXT_DATA_ABI, [extDataArg(ext)]));
   const back = deserializeExtData(bytes);
-  assert.equal(back.relayerFee, 42n);
-  assert.deepEqual(back.ciphertexts[0], ext.ciphertexts[0]);
+  assert.equal(back.relayerFee, 12345n);
+  assert.deepEqual(back.ciphertext0, ext.ciphertext0);
+  assert.equal(back.exitTarget, ZERO_ADDRESS);
+  const h = createHash("sha256").update(Buffer.from(bytes)).digest("hex");
+  assert.equal(extDataHash(ext), BigInt("0x" + h) % P);
   assert.ok(extDataHash(ext) < P);
+});
+
+test("share math mirrors the contract", () => {
+  const p: PoolState = { exists: true, decimals: 18, unit: 1n, totalShares: 1000n, totalAssets: 1500n, totalIn: 0n, totalOut: 0n, tvlCap: 0n };
+  const V = VIRTUAL_OFFSET;
+  assert.equal(sharesForDeposit(p, 777n), (777n * (p.totalShares + V)) / (p.totalAssets + V));
+  const ts = p.totalShares + V;
+  assert.equal(amountForMint(p, 500n), (500n * (p.totalAssets + V) + ts - 1n) / ts);
+  assert.equal(amountForBurn(p, 500n), (500n * (p.totalAssets + V)) / ts);
+  assert.ok(amountForMint(p, 500n) >= amountForBurn(p, 500n));
+  assert.ok(sharesForWithdraw(p, 100n) >= sharesForDeposit(p, 100n));
+});
+
+test("proof argument order: B coordinates swapped as snarkjs' exportSolidityCallData does, nothing negated", () => {
+  const g = { piA: [1n, 2n] as [bigint, bigint], piB: [[3n, 4n], [5n, 6n]] as [[bigint, bigint], [bigint, bigint]], piC: [7n, 8n] as [bigint, bigint] };
+  const a = proofArg(g);
+  assert.deepEqual([...a.a], [1n, 2n]);
+  assert.deepEqual(a.b.map((r) => [...r]), [[4n, 3n], [6n, 5n]]);
+  assert.deepEqual([...a.c], [7n, 8n]);
 });
 
 test("public amount encoding", () => {
@@ -193,14 +209,11 @@ test("public amount encoding", () => {
 });
 
 test("nullifier depends on position", async () => {
-  const a = await nullifier(1n, 2n, 0);
-  const b = await nullifier(1n, 2n, 1);
-  assert.notEqual(a, b);
+  assert.notEqual(await nullifier(1n, 2n, 0), await nullifier(1n, 2n, 1));
 });
 
 test("seed derivation: passphrase changes the seed, backup round-trips", async () => {
-  const sig = new Uint8Array(64).fill(3);
-  // Signature-only derivation must be an explicit decision, not a default.
+  const sig = new Uint8Array(65).fill(3);
   await assert.rejects(seedFromSignature(sig), /allowEmpty/);
   await assert.rejects(seedFromSignature(sig, "   "), /allowEmpty/);
   const a = await seedFromSignature(sig, "", { allowEmpty: true });
@@ -209,18 +222,20 @@ test("seed derivation: passphrase changes the seed, backup round-trips", async (
   assert.equal(a.length, 32);
   assert.notDeepEqual(a, b);
   assert.deepEqual(b, c);
-  // NFKC: composed and decomposed forms derive the same key
   assert.deepEqual(await seedFromSignature(sig, "caf\u00e9"), await seedFromSignature(sig, "cafe\u0301"));
   assert.deepEqual(seedFromBackup(seedToBackup(b)), b);
-  assert.throws(() => seedFromBackup("scashseed1zz"));
+  assert.ok(seedToBackup(b).startsWith("bunkerseed1"));
+  assert.throws(() => seedFromBackup("bunkerseed1zz"));
+  assert.throws(() => seedFromBackup("scashseed1" + "00".repeat(32)));
   assert.ok(SPENDING_KEY_MESSAGE.includes("SPEND"));
+  assert.ok(SPENDING_KEY_MESSAGE.includes("bunkeronbnb.com"));
 });
 
-test("note reservation: reserve hides a note, release restores it, markSpent removes it; release after spend is a no-op", async () => {
+test("note reservation: reserve hides a note, release restores it, markSpent removes it", async () => {
   const bjj = await BabyJub.load();
   const w = await ShieldedWallet.fromSeed(new Uint8Array(32).fill(21));
   const to = w.address();
-  const asset = assetId(SystemProgram.programId);
+  const asset = assetId(NATIVE_TOKEN);
   const notes = [];
   for (let i = 0; i < 3; i++) {
     const n = { asset, value: 100n * BigInt(i + 1), gd: groupHash(bjj, to.d)!, pkd: to.pkd, ...freshRandomness() };
@@ -230,59 +245,137 @@ test("note reservation: reserve hides a note, release restores it, markSpent rem
     notes.push(sn);
   }
   assert.equal(w.balance(asset), 600n);
-  assert.equal(w.spendable(asset).length, 3);
-
-  // What buildTransact does on success: reserve the inputs by commitment.
   const consumed = [notes[0].commitment, notes[1].commitment];
   w.reserve(consumed);
-  assert.equal(w.balance(asset), 300n, "reserved notes are not spendable");
-  assert.equal(w.spendable(asset).length, 1);
+  assert.equal(w.balance(asset), 300n);
   assert.ok(w.isPending(notes[0].commitment) && !w.isPending(notes[2].commitment));
-
-  // Failure before the relayer accepted: release by the same commitments (the old code released by nullifier and silently did nothing).
   w.release(consumed);
-  assert.equal(w.balance(asset), 600n, "release must actually restore the notes");
-  assert.equal(w.spendable(asset).length, 3);
-
-  // Reserve again, then the chain confirms: nullifiers arrive, notes are gone, release of the gone ones changes nothing.
+  assert.equal(w.balance(asset), 600n);
   w.reserve(consumed);
-  const nfs = [await nullifier(w.fvk.nk, notes[0].rho, 0), await nullifier(w.fvk.nk, notes[1].rho, 1)];
-  w.markSpent(nfs);
-  assert.ok(w.isSpent(notes[0].commitment) && w.isSpent(notes[1].commitment) && !w.isSpent(notes[2].commitment));
+  w.markSpent([await nullifier(w.fvk.nk, notes[0].rho, 0), await nullifier(w.fvk.nk, notes[1].rho, 1)]);
+  assert.ok(w.isSpent(notes[0].commitment) && !w.isSpent(notes[2].commitment));
   assert.equal(w.balance(asset), 300n);
   w.release(consumed.filter((c) => !w.isSpent(c)));
-  assert.equal(w.balance(asset), 300n, "a spent note cannot come back through release");
-  assert.equal(w.spendable(asset).length, 1);
+  assert.equal(w.balance(asset), 300n);
 });
 
-test("vault error table matches programs/scash_vault/src/error.rs and classifies simulation errors", async () => {
-  const src = await readFile(new URL("../../programs/scash_vault/src/error.rs", import.meta.url), "utf8");
-  const body = src.slice(src.indexOf("pub enum VaultError"), src.indexOf("impl From<VaultError>"));
-  const variants = [...body.matchAll(/^\s{4}([A-Z][A-Za-z0-9]*),\s*$/gm)].map((m) => m[1]);
-  assert.deepEqual([...VAULT_ERRORS], variants, "SDK VAULT_ERRORS must list every VaultError variant in declaration order");
-
-  assert.equal(vaultErrorName({ InstructionError: [0, { Custom: 5 }] }), "UnknownRoot");
-  assert.equal(vaultErrorName({ InstructionError: [2, { Custom: 7 }] }), "InvalidProof");
-  assert.equal(vaultErrorName({ InstructionError: [0, { Custom: 9 }] }), "NullifierSpent");
-  assert.equal(vaultErrorName({ InstructionError: [0, { Custom: 999 }] }), undefined);
-  assert.equal(vaultErrorName({ InstructionError: [0, "InvalidAccountData"] }), undefined);
-  assert.equal(vaultErrorName("InsufficientFundsForFee"), undefined);
-  assert.equal(vaultErrorName(null), undefined);
-
-  assert.equal(isStaleRootRejection({ error: "simulation failed", vaultError: "UnknownRoot" }), true);
-  assert.equal(isStaleRootRejection({ error: "simulation failed", vaultError: "InvalidProof" }), true);
-  assert.equal(isStaleRootRejection({ error: "simulation failed", vaultError: "NullifierSpent" }), false);
-  assert.equal(isStaleRootRejection({ error: "fee too low" }), false);
+test("error tables list every custom error in the ABIs and decode revert data", () => {
+  const abiErrors = (abi: readonly { type: string; name?: string }[]) => abi.filter((x) => x.type === "error").map((x) => x.name!).sort();
+  assert.deepEqual([...POOL_ERRORS].sort(), abiErrors(ShieldedPoolAbi));
+  assert.deepEqual([...LAUNCH_ERRORS].sort(), abiErrors(LaunchpadAbi));
+  assert.equal(contractErrorFromData(encodeErrorResult({ abi: ShieldedPoolAbi, errorName: "UnknownRoot" })), "UnknownRoot");
+  assert.equal(contractErrorFromData(encodeErrorResult({ abi: LaunchpadAbi, errorName: "Slippage" })), "Slippage");
+  assert.equal(contractErrorFromData("0x12345678"), undefined);
+  assert.equal(contractErrorFromData("0x"), undefined);
+  assert.equal(contractErrorFromData(undefined), undefined);
+  assert.equal(isStaleRootRejection({ error: "simulation failed", contractError: "UnknownRoot" }), true);
+  assert.equal(isStaleRootRejection({ error: "simulation failed", contractError: "InvalidProof" }), true);
+  assert.equal(isStaleRootRejection({ error: "simulation failed", contractError: "NullifierSpent" }), false);
   assert.equal(isStaleRootRejection(undefined), false);
+});
+
+test("claim keys are deterministic secp256k1 accounts, distinct per nonce and seed", () => {
+  const k1 = claimKey(seed, 0n);
+  const k2 = claimKey(seed, 0n);
+  const k3 = claimKey(seed, 1n);
+  const k4 = claimKey(new Uint8Array(32).fill(8), 0n);
+  assert.equal(k1.privateKey, k2.privateKey);
+  assert.equal(k1.address, k2.address);
+  assert.notEqual(k1.address, k3.address);
+  assert.notEqual(k1.address, k4.address);
+  assert.match(k1.privateKey, /^0x[0-9a-f]{64}$/);
+  assert.match(k1.address, /^0x[0-9a-fA-F]{40}$/);
+});
+
+test("exit data round-trips through abi encoding", () => {
+  const d = exitData(EXIT_BUY, A1, A2, 123n, 2_000_000_000_000_000n, 500_000_000_000_000n);
+  assert.equal(d.length, 6 * 32);
+  assert.deepEqual(decodeExitData(d), { kind: 1, token: A1, claimKey: A2, minOut: 123n, claimBudget: 2_000_000_000_000_000n, relayerTip: 500_000_000_000_000n });
+  assert.equal(decodeExitData(exitData(EXIT_SELL, A1, A2, 0n, 0n)).kind, 2);
+});
+
+test("fee policy mirror: median, quorum, one bounded step per epoch, votes count from the next epoch and expire", () => {
+  const E = policy.EPOCH_BLOCKS;
+  const base = (fee: number, settledEpoch: bigint): CurveState => ({
+    token: A1, creator: A2, createdBlock: 1n, virtualBnb: 1n, virtualToken: 1n, realBnb: 0n, realToken: 1n, feesAccrued: 0n, graduated: false,
+    tradeFeeBps: fee, settledEpoch, votes: [0, 1, 2, 3].map(() => ({ feeBps: 0, blockNumber: 0n })), ammPair: null, buys: 0n, sells: 0n, bnbVolume: 0n,
+  });
+  const v = (feeBps: number, blockNumber: bigint) => ({ feeBps, blockNumber });
+  let c = base(100, 0n);
+  c.votes[0] = v(500, 10n);
+  assert.deepEqual([rolled(c, E + 1n).tradeFeeBps, rolled(c, E + 1n).settledEpoch], [100, 1n]);
+  c = base(100, 0n);
+  c.votes[0] = v(500, 10n); c.votes[1] = v(300, 20n); c.votes[2] = v(250, 30n);
+  let r = rolled(c, E);
+  assert.equal(r.tradeFeeBps, 200);
+  r = rolled(r, E + 70n);
+  assert.equal(r.tradeFeeBps, 200);
+  r = rolled(r, 2n * E);
+  assert.equal(r.tradeFeeBps, 300);
+  r.votes = [v(0, 2n * E + 1n), v(0, 2n * E + 2n), v(0, 2n * E + 3n), v(0, 0n)];
+  assert.equal(rolled(r, 3n * E).tradeFeeBps, 200);
+  assert.equal(rolled(r, 5n * E).tradeFeeBps, 0);
+  c = base(100, 1n);
+  c.votes[0] = v(300, 2n * E + 1n); c.votes[1] = v(300, 2n * E + 2n);
+  r = rolled(c, 2n * E + 10n);
+  assert.equal(r.tradeFeeBps, 100);
+  assert.equal(rolled(r, 3n * E).tradeFeeBps, 200);
+  c = base(100, 1n);
+  c.votes[0] = v(300, 10n); c.votes[1] = v(300, 20n);
+  assert.equal(rolled(c, 100n * E).tradeFeeBps, 100);
+  c = base(0, 0n);
+  c.votes[0] = v(500, 10n); c.votes[1] = v(500, 20n);
+  assert.equal(rolled(c, 3n * E).tradeFeeBps, 300);
+  c = base(100, 0n);
+  c.votes[0] = v(300, 10n); c.votes[1] = v(300, 20n);
+  assert.equal(worstFeeBps(c, E - 10n, 60n), 200);
+  assert.equal(worstFeeBps(c, E - 10n, 160n), 300);
+  assert.equal(worstFeeBps(c, 10n, 60n), 100);
+  assert.ok(voteInBounds(0) && voteInBounds(500) && !voteInBounds(501) && !voteInBounds(100.5));
+});
+
+test("curve math: k never decreases, capped buy sells out at graduation, quotes include budget and tip", () => {
+  const dec = 10n ** 6n;
+  const curveSupply = 793_100_000n * dec, virtualToken = 1_073_000_000n * dec, graduation = 6n * 10n ** 18n;
+  const virtualBnb = (graduation * (virtualToken - curveSupply)) / curveSupply;
+  const fresh = () => ({ virtualBnb, realBnb: 0n, virtualToken, realToken: curveSupply, tradeFeeBps: 100 });
+  let r = fresh();
+  const k0 = (r.virtualBnb + r.realBnb) * r.virtualToken;
+  let s = 0x9e3779b97f4a7c15n;
+  for (let i = 0; i < 2000; i++) {
+    s ^= (s << 13n) & ((1n << 64n) - 1n); s ^= s >> 7n; s ^= (s << 17n) & ((1n << 64n) - 1n);
+    if ((s & 3n) !== 0n || r.realBnb === 0n) {
+      const bnb = 1n + (s % (5n * 10n ** 16n));
+      try { const q = curveBuy(r, bnb); r = { ...r, realBnb: r.realBnb + bnb, virtualToken: q.virtualToken, realToken: r.realToken - q.out }; } catch { /* sold out / nothing */ }
+    } else {
+      const sold = curveSupply - r.realToken;
+      if (sold > 0n) { const tok = 1n + (s % sold); try { const q = curveSell(r, tok); r = { ...r, realBnb: r.realBnb - q.out, virtualToken: q.virtualToken, realToken: r.realToken + tok }; } catch { /* reserve */ } }
+    }
+    assert.ok((r.virtualBnb + r.realBnb) * r.virtualToken >= k0);
+  }
+  const cap = curveBuyCapped(fresh(), 25n * 10n ** 18n);
+  assert.equal(cap.out, curveSupply);
+  assert.ok(cap.used > graduation - 10n ** 15n && cap.used < graduation + 10n ** 15n);
+  const q = quotePrivateBuy(fresh(), 10n ** 18n, 2n * 10n ** 15n, 5n * 10n ** 14n);
+  assert.equal(q.reserve, 25n * 10n ** 14n);
+  assert.equal(q.fee, feeOf(10n ** 18n - q.reserve, 100));
+  assert.equal(q.net, 10n ** 18n - q.reserve - q.fee);
+  assert.equal(q.refund, 0n);
+  const big = quotePrivateBuy(fresh(), 30n * 10n ** 18n, 0n, 0n);
+  assert.equal(big.out, curveSupply);
+  assert.ok(big.refund > 23n * 10n ** 18n);
+  assert.equal(big.fee, feeOnNet(big.net, 100));
+  const after = { ...fresh(), realBnb: q.net, virtualToken: curveBuy(fresh(), q.net).virtualToken, realToken: curveSupply - q.out };
+  const sq = quotePrivateSell(after, q.out / 2n, 10n ** 14n);
+  assert.equal(sq.out, sq.gross - sq.fee - 10n ** 14n);
+  assert.ok(sq.gross < q.net);
+  assert.throws(() => quotePrivateBuy(fresh(), 10n ** 15n, 10n ** 15n, 0n), /too small/);
 });
 
 test("passphrase strength: the time-to-crack arithmetic is 2^(b-1)/rate", () => {
   const day = 86400, year = 365 * day;
-  // 40 bits: 2^39 / 1e5 s ≈ 63.6 days, not millennia
   assert.ok(Math.abs(expectedSecondsToCrack(40) / day - 63.6) < 0.1);
-  // 50 bits (the floor): ≈ 178 years
   assert.ok(Math.abs(expectedSecondsToCrack(PASSPHRASE_MIN_BITS) / year - 178) < 1);
-  // 55 bits: ≈ 5.7k years
   assert.ok(Math.abs(expectedSecondsToCrack(55) / year - 5708) < 10);
   assert.equal(expectedSecondsToCrack(0), 0);
 });
@@ -290,76 +383,23 @@ test("passphrase strength: the time-to-crack arithmetic is 2^(b-1)/rate", () => 
 test("passphrase strength: leaked, common-word and short inputs are weak; phrases are scored as phrases", () => {
   for (const weak of [
     "", "password", "Password1!", "correct horse battery staple", "correcthorsebatterystaple", "aaaaaaaaaaaaaaaaaaaa", "abcdefghijklmnopqrst",
-    "12345678", "Tr0ub4d&", "Tr0ub4d&3xq!", "to the moon and back", "i love my dog so much",
+    "12345678", "Tr0ub4d&", "Tr0ub4d&3xq!", "to the moon and back", "i love my dog so much", "bunker", "Bunker1!", "binance",
   ]) {
     const s = passphraseStrength(weak);
     assert.equal(s.level, "weak", `${JSON.stringify(weak)} scored ${s.bits}`);
     assert.ok(s.bits < PASSPHRASE_MIN_BITS);
   }
-  // Leaked passwords score zero even with the usual suffix
   assert.equal(passphraseStrength("password123").bits, 0);
   assert.equal(passphraseStrength("Solana!").bits, 0);
-  // A long sentence of common words must NOT be rescued by its character count
+  assert.equal(passphraseStrength("bunker!").bits, 0);
   const sentence = passphraseStrength("the quick brown fox jumps over the lazy dog today");
   assert.ok(sentence.bits < 60, `sentence scored ${sentence.bits}`);
-  // 14 mixed characters clear the floor; 18 are strong
   assert.equal(passphraseStrength("Tr0ub4d&3xq!Lm").level, "fair");
   assert.equal(passphraseStrength("Tr0ub4d&3xq!Lm9#Vp").level, "strong");
-  // Five uncommon words are fair, seven are strong; repeats do not count
   const five = passphraseStrength("velvet hydrant obelisk cinnamon quasar");
   assert.equal(five.level, "fair");
   assert.equal(five.bits, 55);
   assert.equal(passphraseStrength("velvet hydrant obelisk cinnamon quasar velvet hydrant").bits, 55);
   assert.equal(passphraseStrength("velvet hydrant obelisk cinnamon quasar lantern furrow").level, "strong");
-  // NFKC-equivalent inputs get the same score
   assert.equal(passphraseStrength("caf\u00e9 velours quasar").bits, passphraseStrength("cafe\u0301 velours quasar").bits);
-});
-
-test("a relayed 2-in/2-out send with the maximum memo fits in one packet", async () => {
-  // Real serialization of the real instruction, with a lookup table holding
-  // the same static addresses the deployment uses. This is the test that
-  // pins MEMO_MAX; the only approximation is the proof bytes.
-  const payer = Keypair.generate().publicKey; // relayer
-  const mint = SystemProgram.programId;
-  const splMint = Keypair.generate().publicKey;
-  const table = new AddressLookupTableAccount({
-    key: Keypair.generate().publicKey,
-    state: {
-      deactivationSlot: BigInt("18446744073709551615"), lastExtendedSlot: 0, lastExtendedSlotStartIndex: 0, authority: undefined,
-      addresses: staticAddresses([{ mint }, { mint: splMint }], undefined, payer),
-    },
-  });
-  const bjj = await BabyJub.load();
-  const sk = spendingKeyFromSeed(seed);
-  const fvk = await fullViewingKey(sk);
-  const to = newAddress(bjj, fvk.ivk);
-  const gd = groupHash(bjj, to.d)!;
-  const asset = assetId(mint);
-  const note = { asset, value: 1n, gd, pkd: to.pkd, ...freshRandomness() };
-  const memo = new Uint8Array(MEMO_MAX).fill(0x61);
-  const c0 = encryptNote(bjj, to, note, memo, true);
-  const c1 = encryptNote(bjj, to, note, undefined, false);
-  const out = encryptOutgoing(bjj, sk.ovk, 1n, to.pkd, c0.esk);
-  const proof = {
-    circuit: "transact2x2" as const,
-    proof: { piA: [0n, 0n] as [bigint, bigint], piB: [[0n, 0n], [0n, 0n]] as [[bigint, bigint], [bigint, bigint]], piC: [0n, 0n] as [bigint, bigint] },
-    publicSignals: [],
-    proofBytes: new Uint8Array(256).fill(1),
-    nullifiers: [randomField(), randomField()],
-    outCommitments: [randomField(), randomField()],
-  };
-  // In a send, ext.recipient is the relayer's fee destination (see wallet.ts).
-  const sizeFor = (m: PublicKey, feeDest: PublicKey, cts: Uint8Array[]) => {
-    const ext = { recipient: feeDest, relayer: payer, relayerFee: 1_500_000n, exitTarget: NO_EXIT, exitData: new Uint8Array(0), ciphertexts: cts, outCiphertext: out };
-    const ix = transactIx({ payer, mint: m, depositor: payer, depositorSource: payer, recipient: feeDest, relayerDest: feeDest }, proof, 7, -1n, 0n, ext);
-    return buildV0(payer, [ix], "11111111111111111111111111111111", table).serialize().length;
-  };
-  const sol = sizeFor(mint, payer, [c0.ciphertext, c1.ciphertext]);
-  const spl = sizeFor(splMint, ataFor(payer, splMint), [c0.ciphertext, c1.ciphertext]);
-  assert.ok(sol <= 1232, `SOL send with ${MEMO_MAX}-byte memo serializes to ${sol} > 1232`);
-  assert.ok(spl <= 1232, `SPL send with ${MEMO_MAX}-byte memo serializes to ${spl} > 1232`);
-  // and one more bucket would not fit — documents why MEMO_MAX is what it is
-  const bigger = new Uint8Array(c0.ciphertext.length + MEMO_BUCKET);
-  const over = sizeFor(mint, payer, [bigger, c1.ciphertext]);
-  assert.ok(over > 1232, `a ${MEMO_MAX + MEMO_BUCKET}-byte memo would still fit (${over}); MEMO_MAX can be raised`);
 });

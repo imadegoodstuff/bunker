@@ -8,7 +8,7 @@ export interface MerklePath {
   indices: number[]; // bits, LSB first
 }
 
-export const EMPTY_LEAF_PREIMAGE = mod(bytesToBigIntBE(new TextEncoder().encode("scash_empty")));
+export const EMPTY_LEAF_PREIMAGE = mod(bytesToBigIntBE(new TextEncoder().encode("bunker_empty")));
 
 export class MerkleTree {
   readonly depth: number;

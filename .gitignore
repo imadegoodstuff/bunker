@@ -21,6 +21,11 @@ circuits/ptau/*.ptau
 *.sym
 *.wtns
 
+# hardhat
+contracts/artifacts/
+contracts/cache/
+contracts/typechain-types/
+
 # secrets and local state
 .env
 .env.*
@@ -38,4 +43,7 @@ Thumbs.db
 *.sqlite*
 
 circuits/src/circomlib/
+
+
+contracts/deployments/31337.json
 

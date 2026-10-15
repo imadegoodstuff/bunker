@@ -1,7 +1,7 @@
 {
-  "name": "@scash/sdk",
+  "name": "@bunker/sdk",
   "version": "0.1.0",
-  "description": "Client library for scash: keys, addresses, notes, note encryption, Merkle proofs, Groth16 proving and transaction building.",
+  "description": "Client library for BUNKER: keys, addresses, notes, note encryption, Merkle proofs, Groth16 proving and transaction building for the BNB Smart Chain contracts.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -22,12 +22,11 @@
   "dependencies": {
     "@noble/ciphers": "^2.4.0",
     "@noble/hashes": "^2.4.0",
-    "@solana/web3.js": "^1.98.4",
     "bech32": "^2.0.0",
-    "borsh": "^2.0.0",
     "circomlibjs": "^0.1.7",
     "ffjavascript": "^0.3.1",
-    "snarkjs": "^0.7.6"
+    "snarkjs": "^0.7.6",
+    "viem": "^2.38.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

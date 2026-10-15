@@ -1,0 +1,61 @@
+app = "bunker-agents"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile.service"
+  [build.args]
+    SERVICE = "agents"
+
+# Secrets (set with `flyctl secrets set`, never in this file):
+#   AGENT_0_KEY … AGENT_3_KEY           hex private keys of the four agent EOAs (must match the launchpad's `agents`)
+#   ORBIO_CLIENT_ID, ORBIO_CLIENT_SECRET  the "Sign in with Orbio" server app; redirect URI
+#                                         https://bunker-agents.fly.dev/auth/orbio/callback must be registered there
+#   ORBIO_CONNECT_SECRET                  random string; the owner connects once at
+#                                         https://bunker-agents.fly.dev/auth/orbio/start?key=<it>
+#   AGENT_0_MODEL … AGENT_3_MODEL         optional; default is four vendors through Orbio.
+#                                         Direct providers (openai:…, anthropic:…) need their own *_API_KEY.
+#   RPC_URL                               keyed endpoint (overrides the public fallback below)
+#   POOL_ADDRESS, LAUNCHPAD_ADDRESS       from contracts/deployments/56.json
+#   RELAYER_ADDRESS                       the relayer EOA the treasury keeps fuelled
+#   BUNKER_TOKEN, BUNKER_TOKEN_START_BLOCK  the BUNKER token; set them and the treasury (agent 0) starts the random
+#                                         buybacks (burn or airdrop). Unset = buybacks off, gas top-ups still run.
+[env]
+  PORT = "8789"
+  CHAIN_ID = "56"
+  PUBLIC_URL = "https://bunker-agents.fly.dev"
+  RPC_URL = "https://bsc-dataseed.bnbchain.org"
+  INDEXER_URL = "https://bunker-indexer.fly.dev"
+  PANCAKE_ROUTER = "0x10ED43C718714eb63d5aA57B78B54704E256024E"
+  WBNB = "0xbb4CdB9CBd36B01bD1cBaEbF2De08d9173bc095c"
+  TICK_MS = "60000"
+  ORBIO_TOKEN_PATH = "/data/orbio.json"
+  # treasury (agent 0): fuel the other keys and the relayer, keep a reserve, buy back at random
+  GAS_FLOAT_BNB = "0.01"
+  TREASURY_RESERVE_BNB = "0.05"
+  BUYBACK_MEAN_MINUTES = "240"
+  BUYBACK_SLIPPAGE_BPS = "300"
+  AIRDROP_MAX_HOLDERS = "40"
+  HARVEST_MIN_BNB = "0.01"
+
+# The Orbio token pair (refresh tokens are single use) must survive restarts.
+[mounts]
+  source = "bunker_agents_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8789
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/live"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

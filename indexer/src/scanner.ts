@@ -1,58 +1,65 @@
-// Pulls confirmed transactions for the vault program, parses `sol_log_data`
-// events ("Program data: <b64> <b64> ...") and writes them to the database.
-import { Connection, PublicKey, type ParsedTransactionWithMeta, type ConfirmedSignatureInfo } from "@solana/web3.js";
+// Pulls the pool's and the launchpad's logs block range by block range
+// (`eth_getLogs`), decodes them with the contract ABIs and writes them to the
+// database. The scan position is a block number; a range is only committed
+// once every log in it has been written, so a failed RPC call simply means the
+// same range is asked again on the next tick. Only blocks at least
+// `confirmations` behind the head are read, so reorgs below that depth never
+// reach the database.
+import { parseEventLogs, type Log, type Hex } from "viem";
+import { ShieldedPoolAbi, LaunchpadAbi } from "@bunker/sdk";
 import { Db } from "./db.js";
 
-const td = new TextDecoder();
-
-function u64le(b: Uint8Array): bigint {
-  let x = 0n;
-  for (let i = 7; i >= 0; i--) x = (x << 8n) | BigInt(b[i]);
-  return x;
-}
-function hex(b: Uint8Array): string {
-  return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+/** The subset of a viem PublicClient the scanner uses; tests pass fakes. */
+export interface ChainReader {
+  getBlockNumber(): Promise<bigint>;
+  getLogs(args: { address: `0x${string}`[]; fromBlock: bigint; toBlock: bigint }): Promise<Log[]>;
+  getBlock(args: { blockNumber: bigint }): Promise<{ timestamp: bigint }>;
 }
 
-export interface Deferred {
-  signature: string;
-  /** ms epoch of first deferral */
-  since: number;
-  attempts: number;
-  lastReason: string;
-}
+/** 32-byte big-endian hex, no prefix: the wire form of field elements in this API. */
+export const hex32 = (x: bigint) => x.toString(16).padStart(64, "0");
+const bytesOf = (h: Hex) => Uint8Array.from(Buffer.from(h.slice(2), "hex"));
 
-/** A confirmed transaction the RPC still cannot return after this long is an incident, not lag. */
-export const DEGRADED_AFTER_MS = 10 * 60 * 1000;
+export interface ScannerOpts {
+  pool: `0x${string}`;
+  launchpad?: `0x${string}`;
+  /** first block to scan on an empty database (the deployment block) */
+  startBlock: number;
+  /** blocks per eth_getLogs call; public BSC endpoints cap this around 5000 */
+  chunk?: number;
+  /** blocks behind the head that are treated as final */
+  confirmations?: number;
+  /** launch token decimals (constant per launchpad; the Launch event does not carry it) */
+  launchDecimals: number;
+  intervalMs?: number;
+}
 
 export class Scanner {
   private running = false;
-  /** Primary first, then fallbacks. Every read that can fail over does so in this order. */
-  readonly conns: Connection[];
-  readonly conn: Connection;
-  /** How many deferred or missing transactions each fallback endpoint has supplied (index 0 = primary). */
+  readonly readers: ChainReader[];
+  /** How many ranges each fallback endpoint supplied after the primary failed (index 0 = primary). */
   readonly recoveredVia: number[];
-  constructor(
-    conn: Connection | Connection[],
-    readonly db: Db,
-    readonly programId: PublicKey,
-    readonly intervalMs = 4000
-  ) {
-    this.conns = Array.isArray(conn) ? conn : [conn];
-    if (this.conns.length === 0) throw new Error("scanner needs at least one RPC connection");
-    this.conn = this.conns[0];
-    this.recoveredVia = this.conns.map(() => 0);
+  private lastError: string | null = null;
+  private lastErrorAt = 0;
+  private lastOkAt = Date.now();
+  private times = new Map<bigint, number>();
+
+  constructor(reader: ChainReader | ChainReader[], readonly db: Db, readonly opts: ScannerOpts) {
+    this.readers = Array.isArray(reader) ? reader : [reader];
+    if (this.readers.length === 0) throw new Error("scanner needs at least one RPC endpoint");
+    this.recoveredVia = this.readers.map(() => 0);
   }
 
-  /** Run `f` against each endpoint in order until one answers; rethrow the last error if none does. */
-  private async withFailover<T>(what: string, f: (c: Connection, i: number) => Promise<T>): Promise<T> {
+  private async withFailover<T>(what: string, f: (c: ChainReader, i: number) => Promise<T>): Promise<T> {
     let lastErr: unknown;
-    for (let i = 0; i < this.conns.length; i++) {
+    for (let i = 0; i < this.readers.length; i++) {
       try {
-        return await f(this.conns[i], i);
+        const r = await f(this.readers[i], i);
+        if (i > 0) this.recoveredVia[i]++;
+        return r;
       } catch (e) {
         lastErr = e;
-        if (i + 1 < this.conns.length) console.warn(`[scanner] ${what} failed on endpoint ${i} (${(e as Error).message}); trying endpoint ${i + 1}`);
+        if (i + 1 < this.readers.length) console.warn(`[scanner] ${what} failed on endpoint ${i} (${(e as Error).message}); trying endpoint ${i + 1}`);
       }
     }
     throw lastErr;
@@ -66,204 +73,136 @@ export class Scanner {
       } catch (e) {
         console.error("[scanner] tick failed:", (e as Error).message);
       }
-      await new Promise((r) => setTimeout(r, this.intervalMs));
+      await new Promise((r) => setTimeout(r, this.opts.intervalMs ?? 3000));
     }
   }
   stop() {
     this.running = false;
   }
 
-  /** Walk backwards from the newest signature until we hit the last one we processed. */
-  async tick() {
-    const last = this.db.getMeta("last_signature");
-    const batch: ConfirmedSignatureInfo[] = [];
-    let before: string | undefined;
-    outer: for (;;) {
-      const page = await this.withFailover("getSignaturesForAddress", (c) => c.getSignaturesForAddress(this.programId, { before, limit: 1000 }, "confirmed"));
-      if (page.length === 0) break;
-      for (const s of page) {
-        if (s.signature === last) break outer;
-        batch.push(s);
-      }
-      before = page[page.length - 1].signature;
-      if (page.length < 1000) break;
-    }
-    await this.retrySkipped();
-    if (batch.length === 0) return;
-    batch.reverse(); // oldest first
-    for (let i = 0; i < batch.length; i += 50) {
-      const chunk = batch.slice(i, i + 50);
-      const txs = await this.fetchParsed(chunk.map((s) => s.signature));
-      txs.forEach((tx, j) => {
-        // Every signature here came from getSignaturesForAddress at
-        // `confirmed`, so the transaction exists. `null` (RPC has no data for
-        // it yet) and `undefined` (RPC threw) are both "not now", never "never".
-        if (tx === undefined || tx === null) this.defer(chunk[j].signature, tx === null ? "rpc returned null" : "rpc error");
-        else if (!tx.meta?.err) this.ingest(chunk[j].signature, tx);
-      });
-      this.db.setMeta("last_signature", chunk[chunk.length - 1].signature);
-    }
-    console.log(`[scanner] ingested ${batch.length} tx, commitments=${this.db.count()}, deferred=${this.deferred().length}`);
+  /** Last block whose logs are in the database (startBlock − 1 on an empty database). */
+  lastBlock(): number {
+    const v = this.db.getMeta("last_block");
+    return v === undefined ? this.opts.startBlock - 1 : Number(v);
   }
 
-  /**
-   * Signatures whose transaction the RPC has not returned yet. Each is retried
-   * on every tick until it decodes; nothing is ever dropped automatically,
-   * because a deferred transaction can hold leaves and dropping it would leave
-   * a permanent hole that `/commitments` would then (correctly) refuse to page
-   * past. Each retry asks every configured endpoint (`RPC_URLS`), so a single
-   * RPC that is behind or down is survived without anyone acting; `/health`
-   * exposes this list and flips `degraded` once any entry is older than
-   * DEGRADED_AFTER_MS, which now means *no* endpoint could return it.
-   */
-  deferred(): Deferred[] {
-    return JSON.parse(this.db.getMeta("deferred_signatures") ?? "[]") as Deferred[];
-  }
-  /** Backwards-compatible view used by older callers and tests. */
-  skipped(): string[] {
-    return this.deferred().map((d) => d.signature);
-  }
+  /** The scan has not advanced for a long time while the RPC keeps failing: wallets behind this indexer are stale. */
   degraded(now = Date.now()): boolean {
-    return this.deferred().some((d) => now - d.since > DEGRADED_AFTER_MS);
+    return this.lastError !== null && now - this.lastOkAt > DEGRADED_AFTER_MS;
   }
-  private saveDeferred(list: Deferred[]) {
-    this.db.setMeta("deferred_signatures", JSON.stringify(list));
-  }
-  private defer(sig: string, reason: string) {
-    const list = this.deferred();
-    const cur = list.find((d) => d.signature === sig);
-    if (cur) {
-      cur.attempts += 1;
-      cur.lastReason = reason;
-    } else {
-      list.push({ signature: sig, since: Date.now(), attempts: 1, lastReason: reason });
-    }
-    this.saveDeferred(list);
-    console.warn(`[scanner] deferring ${sig} (${reason})`);
-  }
-  private async retrySkipped() {
-    const list = this.deferred();
-    if (list.length === 0) return;
-    const remaining: Deferred[] = [];
-    for (const d of list) {
-      // Every endpoint is asked, in order; a deferred signature is only kept
-      // when none of them can return the transaction.
-      const r = await this.fetchOne(d.signature);
-      if (r instanceof Error) {
-        remaining.push({ ...d, attempts: d.attempts + 1, lastReason: r.message });
-        continue;
-      }
-      if (r === null) {
-        remaining.push({ ...d, attempts: d.attempts + 1, lastReason: "rpc returned null" });
-        continue;
-      }
-      if (!r.tx.meta?.err) this.ingest(d.signature, r.tx);
-      console.log(`[scanner] recovered ${d.signature} after ${d.attempts} attempts via endpoint ${r.via}`);
-    }
-    for (const d of remaining) {
-      if (Date.now() - d.since > DEGRADED_AFTER_MS) console.error(`[scanner] DEGRADED: ${d.signature} undecodable for ${Math.round((Date.now() - d.since) / 1000)}s (${d.lastReason})`);
-    }
-    this.saveDeferred(remaining);
+  status() {
+    return { lastBlock: this.lastBlock(), lastError: this.lastError, lastErrorAt: this.lastErrorAt || null, lastOkAt: this.lastOkAt };
   }
 
-  private static readonly FETCH_OPTS = { maxSupportedTransactionVersion: 1, commitment: "confirmed" as const };
-
-  /**
-   * Anyone can send the program a transaction in any format, so the fetch must
-   * accept every version the RPC knows (legacy, v0, v1 — SIMD-0385, live since
-   * September 2026) and must never let one undecodable signature stall the
-   * scan: a batch that fails is retried one signature at a time, each
-   * signature the primary cannot return is asked of every fallback endpoint,
-   * and whatever is still missing is recorded (`undefined`/`null` here →
-   * `deferred_signatures`) so the scan position can move past it while it is
-   * retried on every later tick. A deferred transaction is therefore delayed,
-   * never lost. Events are read from program logs, so the transaction format
-   * does not matter to `ingest`.
-   */
-  private async fetchParsed(sigs: string[]): Promise<(ParsedTransactionWithMeta | null | undefined)[]> {
-    let out: (ParsedTransactionWithMeta | null | undefined)[];
+  async tick() {
+    const chunk = this.opts.chunk ?? 2000;
+    const conf = BigInt(this.opts.confirmations ?? 3);
     try {
-      out = await this.conn.getParsedTransactions(sigs, Scanner.FETCH_OPTS);
+      const head = await this.withFailover("getBlockNumber", (c) => c.getBlockNumber());
+      const safe = head - conf;
+      let from = BigInt(this.lastBlock() + 1);
+      let ranges = 0;
+      while (from <= safe) {
+        const to = from + BigInt(chunk) - 1n < safe ? from + BigInt(chunk) - 1n : safe;
+        const addresses: `0x${string}`[] = [this.opts.pool, ...(this.opts.launchpad ? [this.opts.launchpad] : [])];
+        const logs = await this.withFailover("getLogs", (c) => c.getLogs({ address: addresses, fromBlock: from, toBlock: to }));
+        await this.ingest(logs);
+        this.db.setMeta("last_block", to.toString());
+        from = to + 1n;
+        ranges++;
+        // a long catch-up: yield between chunks so /health keeps answering
+        if (ranges % 10 === 0) await new Promise((r) => setImmediate(r));
+      }
+      this.lastOkAt = Date.now();
+      this.lastError = null;
+      if (ranges > 0) console.log(`[scanner] at block ${this.lastBlock()}, commitments=${this.db.count()}`);
     } catch (e) {
-      console.warn(`[scanner] batch fetch failed (${(e as Error).message}); retrying individually`);
-      out = sigs.map(() => undefined);
+      this.lastError = (e as Error).message;
+      this.lastErrorAt = Date.now();
+      throw e;
     }
-    for (let i = 0; i < sigs.length; i++) {
-      if (out[i]) continue;
-      // Batch threw: start at the primary. Batch answered null: the primary has spoken, ask the fallbacks.
-      const r = await this.fetchOne(sigs[i], out[i] === undefined ? 0 : 1);
-      if (r instanceof Error) {
-        console.warn(`[scanner] deferring ${sigs[i]}: ${r.message}`);
-        out[i] = undefined;
-      } else if (r === null) {
-        out[i] = null;
-      } else {
-        out[i] = r.tx;
-      }
-    }
-    return out;
   }
 
-  /**
-   * One signature against endpoints `start..`. Returns the transaction and the
-   * endpoint that had it; `null` if every endpoint answered null (or there were
-   * none to ask); an `Error` if every endpoint threw.
-   */
-  private async fetchOne(sig: string, start = 0): Promise<{ tx: ParsedTransactionWithMeta; via: number } | null | Error> {
-    let outcome: null | Error = start > 0 ? null : new Error("no endpoint asked");
-    for (let i = start; i < this.conns.length; i++) {
-      try {
-        const tx = await this.conns[i].getParsedTransaction(sig, Scanner.FETCH_OPTS);
-        if (tx) {
-          if (i > 0) {
-            this.recoveredVia[i]++;
-            console.log(`[scanner] ${sig}: endpoint ${i} supplied what ${i === 1 ? "endpoint 0" : `endpoints 0–${i - 1}`} could not`);
-          }
-          return { tx, via: i };
-        }
-        outcome = null; // a definite null beats an earlier error as the recorded reason
-      } catch (e) {
-        if (outcome !== null) outcome = e as Error;
-      }
+  private async blockTime(n: bigint): Promise<number | null> {
+    const c = this.times.get(n);
+    if (c !== undefined) return c;
+    try {
+      const b = await this.withFailover("getBlock", (r) => r.getBlock({ blockNumber: n }));
+      const t = Number(b.timestamp);
+      if (this.times.size > 5000) this.times.clear();
+      this.times.set(n, t);
+      return t;
+    } catch {
+      return null;
     }
-    return outcome;
   }
 
-  ingest(signature: string, tx: ParsedTransactionWithMeta) {
-    const logs = tx.meta?.logMessages ?? [];
-    const slot = tx.slot;
-    const bt = tx.blockTime ?? null;
-    // best-effort mint from the first vault instruction (account index 5 = mint)
-    let mint = "unknown";
-    for (const ix of tx.transaction.message.instructions) {
-      if (ix.programId.equals(this.programId) && "accounts" in ix && ix.accounts.length > 5) {
-        mint = ix.accounts[5].toBase58();
-        break;
-      }
-    }
-    for (const line of logs) {
-      if (!line.startsWith("Program data: ")) continue;
-      const parts = line.slice("Program data: ".length).split(" ").map((p) => Uint8Array.from(Buffer.from(p, "base64")));
-      const tag = td.decode(parts[0]);
-      switch (tag) {
-        case "transact": {
-          const [, idxB, cm0, cm1, ct0, ct1, outCt, root] = parts;
-          const first = Number(u64le(idxB));
-          this.db.insertCommitment(first, hex(cm0), ct0, signature, slot, bt);
-          this.db.insertCommitment(first + 1, hex(cm1), ct1, signature, slot, bt);
-          this.db.insertOutCiphertext(signature, first, outCt);
-          this.db.insertRoot(hex(root), first + 2, signature, slot);
+  /** Decode and write one batch of raw logs. Idempotent: every write is keyed by (txHash, logIndex) or a unique value. */
+  async ingest(raw: Log[]) {
+    const events = parseEventLogs({ abi: [...ShieldedPoolAbi, ...LaunchpadAbi], logs: raw, strict: false });
+    for (const ev of events) {
+      const block = Number(ev.blockNumber);
+      const txHash = ev.transactionHash as string;
+      const logIndex = Number(ev.logIndex);
+      const bt = await this.blockTime(ev.blockNumber as bigint);
+      const a = ev.args as Record<string, unknown>;
+      const addr = (x: unknown) => (x as string).toLowerCase();
+      const big = (x: unknown) => (x as bigint).toString();
+      switch (ev.eventName) {
+        // --- pool
+        case "Transact": {
+          const first = Number(a.firstIndex);
+          const token = addr(a.token);
+          this.db.insertCommitment(first, hex32(a.commitment0 as bigint), token, bytesOf(a.ciphertext0 as Hex), txHash, block, bt);
+          this.db.insertCommitment(first + 1, hex32(a.commitment1 as bigint), token, bytesOf(a.ciphertext1 as Hex), txHash, block, bt);
+          this.db.insertOutCiphertext(txHash, first, bytesOf(a.outCiphertext as Hex));
+          this.db.insertRoot(hex32(a.newRoot as bigint), first + 2, txHash, block);
           break;
         }
-        case "nullifier":
-          this.db.insertNullifier(hex(parts[1]), signature, slot);
+        case "Nullified":
+          this.db.insertNullifier(hex32(a.nullifier as bigint), txHash, block);
           break;
-        case "shield":
-        case "unshield":
-        case "donate":
-          this.db.insertFlow(signature, tag, mint, u64le(parts[1]).toString(), slot, bt);
+        case "Shield":
+        case "Unshield":
+        case "Donate":
+          this.db.insertFlow(txHash, logIndex, ev.eventName.toLowerCase(), addr(a.token), big(a.amount), block, bt);
+          break;
+        // --- launchpad
+        case "Launch":
+          this.db.insertLaunch({
+            token: addr(a.token), creator: addr(a.creator), name: a.name as string, symbol: a.symbol as string, uri: a.uri as string, decimals: this.opts.launchDecimals,
+            virtualBnb: big(a.virtualBnb), virtualToken: big(a.virtualToken), curveSupply: big(a.curveSupply), totalSupply: big(a.totalSupply), graduationWei: big(a.graduationWei),
+            txHash, block, blockTime: bt,
+          });
+          break;
+        case "CurveBuy":
+        case "CurveSell": {
+          const buy = ev.eventName === "CurveBuy";
+          this.db.insertTrade({
+            txHash, logIndex, token: addr(a.token), side: buy ? "buy" : "sell", bnb: big(buy ? a.bnbIn : a.bnbOut), fee: big(a.fee), tokens: big(buy ? a.tokensOut : a.tokensIn),
+            claimKey: addr(a.claimKey), realBnb: big(a.realBnb), realToken: big(a.realToken), virtualToken: big(a.virtualToken), block, blockTime: bt,
+          });
+          break;
+        }
+        case "Harvest":
+          this.db.insertHarvest(txHash, logIndex, addr(a.token), big(a.amount), block, bt);
+          break;
+        case "Graduate":
+          this.db.markGraduated(addr(a.token), big(a.realBnb), big(a.realToken));
+          break;
+        case "Migrate":
+          this.db.markMigrated(addr(a.token), addr(a.pair), big(a.bnbIn), big(a.tokensIn));
+          break;
+        case "FeeVote":
+          this.db.insertFeeEvent({ txHash, logIndex, token: addr(a.token), kind: "vote", agent: Number(a.agent), feeBps: Number(a.feeBps), block: Number(a.blockNumber), blockTime: bt });
+          break;
+        case "FeeRoll":
+          this.db.insertFeeEvent({ txHash, logIndex, token: addr(a.token), kind: "roll", agent: null, feeBps: Number(a.feeBps), epoch: Number(a.epoch), block, blockTime: bt });
           break;
       }
     }
   }
 }
+
+/** The scan failing for this long is an incident, not lag. */
+export const DEGRADED_AFTER_MS = 10 * 60 * 1000;

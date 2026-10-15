@@ -1,98 +1,95 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
-import { readFileSync } from "node:fs";
-import { Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction, type AccountMeta } from "@solana/web3.js";
-import { deserializeExtData, PROGRAM_ID as DEFAULT_PROGRAM, decodePool, poolPda, buildV0, fetchLookupTable, vaultErrorName } from "@scash/sdk";
-import { FeePolicy } from "./policy.js";
+import { readFileSync, existsSync } from "node:fs";
+import { createPublicClient, createWalletClient, http, defineChain, getAddress, isAddress, type Hex } from "viem";
+import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
+import { bsc, bscTestnet, hardhat } from "viem/chains";
+import {
+  transactCallFromJson, contractErrorName, readPool, readCurve, decodeExitData, EXIT_BUY, EXIT_SELL, ZERO_ADDRESS, NATIVE_UNIT,
+  type TransactCallJson, type EvmAddress,
+} from "@bunker/sdk";
+import { FeePolicy, NATIVE } from "./policy.js";
 import { SubmitQueue } from "./queue.js";
-import { PriorityFeeOracle } from "./fees.js";
+import { GasPriceOracle } from "./fees.js";
+import { DynamicAssets } from "./assets.js";
 
-const RPC = process.env.RPC_URL ?? "https://api.devnet.solana.com";
-const PROGRAM = new PublicKey(process.env.PROGRAM_ID ?? DEFAULT_PROGRAM.toBase58());
+// ---- configuration
+
+const RPC = process.env.RPC_URL ?? "https://bsc-dataseed.bnbchain.org";
+const CHAIN_ID = Number(process.env.CHAIN_ID ?? 56);
+const deployments = loadDeployments(CHAIN_ID);
+const POOL = getAddress(process.env.POOL_ADDRESS ?? deployments?.pool ?? fail("POOL_ADDRESS"));
+// The one exit target the relayer will forward to: the launchpad. Set LAUNCHPAD_ADDRESS="" to refuse all exits.
+const LAUNCHPAD: EvmAddress | undefined = process.env.LAUNCHPAD_ADDRESS === "" ? undefined : getAddress(process.env.LAUNCHPAD_ADDRESS ?? deployments?.launchpad ?? fail("LAUNCHPAD_ADDRESS"));
+const ROUTER = getAddress(process.env.PANCAKE_ROUTER ?? deployments?.router ?? "0x10ED43C718714eb63d5aA57B78B54704E256024E");
+const WBNB = getAddress(process.env.WBNB ?? (CHAIN_ID === 97 ? "0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd" : "0xbb4CdB9CBd36B01bD1cBaEbF2De08d9173bc095c"));
 const PORT = Number(process.env.PORT ?? 8787);
-const signer = loadKeypair();
-const policy = new FeePolicy(process.env.FEE_POLICY, BigInt(process.env.MIN_FEE_LAMPORTS ?? "1500000"));
-const conn = new Connection(RPC, "confirmed");
-// CU_PRICE is the floor, CU_PRICE_MAX the cap; between them the price follows
-// getRecentPrioritizationFees (p75, refreshed every FEE_REFRESH_MS).
-const priority = new PriorityFeeOracle(conn, {
-  floor: Number(process.env.CU_PRICE ?? 0),
-  cap: Number(process.env.CU_PRICE_MAX ?? 20_000),
+
+const chain = CHAIN_ID === 56 ? bsc : CHAIN_ID === 97 ? bscTestnet : CHAIN_ID === 31337 ? hardhat : defineChain({ id: CHAIN_ID, name: `chain-${CHAIN_ID}`, nativeCurrency: { name: "BNB", symbol: "BNB", decimals: 18 }, rpcUrls: { default: { http: [RPC] } } });
+const account = loadAccount();
+const publicClient = createPublicClient({ chain, transport: http(RPC) });
+const walletClient = createWalletClient({ account, chain, transport: http(RPC) });
+
+const policy = new FeePolicy(process.env.FEE_POLICY, BigInt(process.env.MIN_FEE_UNITS ?? "300000")); // 0.0003 BNB in gwei
+// GAS_PRICE_FLOOR_GWEI is the floor, GAS_PRICE_CAP_GWEI the cap; between them the price follows eth_gasPrice.
+const gwei = (s: string) => BigInt(Math.round(Number(s) * 1e9));
+const gas = new GasPriceOracle(publicClient, {
+  floor: gwei(process.env.GAS_PRICE_FLOOR_GWEI ?? "0.1"),
+  cap: gwei(process.env.GAS_PRICE_CAP_GWEI ?? "5"),
   refreshMs: Number(process.env.FEE_REFRESH_MS ?? 30_000),
 });
-await priority.refresh();
-priority.start();
-const queue = new SubmitQueue(conn, signer, {
+await gas.refresh();
+gas.start();
+const GAS_LIMIT = BigInt(process.env.GAS_LIMIT ?? 1_600_000);
+const queue = new SubmitQueue({ publicClient, walletClient }, {
   minDelayMs: Number(process.env.MIN_DELAY_MS ?? 5_000),
   maxDelayMs: Number(process.env.MAX_DELAY_MS ?? 90_000),
-  cuLimit: Number(process.env.CU_LIMIT ?? 1_400_000),
-  cuPriceMicroLamports: priority.opts.floor,
-  cuPrice: () => priority.current(),
+  gasLimit: GAS_LIMIT,
+  gasPrice: () => gas.current(),
   maxAttempts: 4,
+  pool: POOL,
 });
-if (process.env.LOOKUP_TABLE) {
-  queue.table = await fetchLookupTable(conn, new PublicKey(process.env.LOOKUP_TABLE));
-  console.log(`[relayer] using lookup table ${process.env.LOOKUP_TABLE} (${queue.table.state.addresses.length} addresses)`);
-}
 queue.start();
+// Any ERC-20 with a pool: fee priced off PancakeSwap. DYNAMIC_ASSETS=0 limits the relayer to FEE_POLICY.
+const dynamic = new DynamicAssets(publicClient, POOL, {
+  router: ROUTER,
+  wbnb: WBNB,
+  marginBps: Number(process.env.DYNAMIC_MARGIN_BPS ?? 5_000),
+  bps: Number(process.env.DYNAMIC_FEE_BPS ?? 5),
+  priceTtlMs: Number(process.env.PRICE_TTL_MS ?? 60_000),
+  enabled: process.env.DYNAMIC_ASSETS !== "0",
+});
 
-function loadKeypair(): Keypair {
-  const raw = process.env.RELAYER_KEYPAIR ?? (process.env.RELAYER_KEYPAIR_PATH ? readFileSync(process.env.RELAYER_KEYPAIR_PATH, "utf8") : undefined);
+function fail(name: string): never {
+  throw new Error(`${name} not set and no deployments file for chain ${CHAIN_ID}`);
+}
+function loadDeployments(chainId: number): { pool?: string; launchpad?: string; router?: string } | undefined {
+  const p = process.env.DEPLOYMENTS ?? `contracts/deployments/${chainId}.json`;
+  return existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : undefined;
+}
+function loadAccount() {
+  const raw = process.env.RELAYER_KEY ?? (process.env.RELAYER_KEY_PATH ? readFileSync(process.env.RELAYER_KEY_PATH, "utf8").trim() : undefined);
   if (!raw) {
-    const k = Keypair.generate();
-    console.warn("[relayer] RELAYER_KEYPAIR not set; using ephemeral key", k.publicKey.toBase58());
-    return k;
+    const k = generatePrivateKey();
+    const a = privateKeyToAccount(k);
+    console.warn("[relayer] RELAYER_KEY not set; using ephemeral key", a.address);
+    return a;
   }
-  return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(raw)));
+  return privateKeyToAccount((raw.startsWith("0x") ? raw : `0x${raw}`) as Hex);
 }
 
 /**
- * What one relayed transact costs the relayer in lamports: nullifier rent +
- * signature + priority fee. The fee check at /relay prices the priority fee
- * at the *cap*, not the current reading, because submission happens up to
- * MAX_DELAY_MS later and the price may have moved: a fee that clears the cap
- * is sufficient whatever the market does inside the window.
+ * What one relayed transact costs the relayer in wei: gas limit × gas price.
+ * The fee check at /relay prices gas at the *cap*, not the current reading,
+ * because submission happens up to MAX_DELAY_MS later and the price may have
+ * moved: a fee that clears the cap is sufficient whatever the market does
+ * inside the window.
  */
 const COST_MARGIN_BPS = Number(process.env.COST_MARGIN_BPS ?? 2_000); // 20 % over cost by default
-let rentPerNullifier: bigint | undefined;
-async function relayCostLamports(nNullifiers: number, cuPrice = priority.opts.cap): Promise<bigint> {
-  rentPerNullifier ??= BigInt(await conn.getMinimumBalanceForRentExemption(1));
-  const signature = 5_000n;
-  const priorityLamports = (BigInt(cuPrice) * BigInt(queue.opts.cuLimit)) / 1_000_000n;
-  return rentPerNullifier * BigInt(nNullifiers) + signature + priorityLamports;
-}
-{
-  const c2 = await relayCostLamports(2), c4 = await relayCostLamports(4);
-  console.log(`[relayer] cost per relayed transact at CU price cap ${priority.opts.cap}: 2-in ${c2} lamports, 4-in ${c4} lamports; SOL fee floor = cost + ${COST_MARGIN_BPS} bps; current CU price ${priority.current()}`);
-  for (const f of policy.list()) {
-    if (f.mint !== SystemProgram.programId.toBase58()) console.log(`[relayer] ${f.mint}: min ${f.min} base units — make sure this exceeds ~${c4} lamports at market rate`);
-  }
-}
-
-interface RelayBody {
-  /** base64 of the Transact instruction data (built by the SDK) */
-  data: string;
-  /** account metas in order */
-  keys: { pubkey: string; isSigner: boolean; isWritable: boolean }[];
-}
-
-/** Parse the fields of a Transact instruction we need to enforce policy. */
-function parseTransact(data: Uint8Array) {
-  if (data[0] !== 2) throw new Error("not a transact instruction");
-  let o = 1;
-  const dv = () => new DataView(data.buffer, data.byteOffset);
-  const proofLen = dv().getUint32(o, true); o += 4 + proofLen;
-  o += 1; // root index
-  const signedShares = dv().getBigInt64(o, true); o += 8;
-  const hasAsp = data[o]; o += 1 + (hasAsp ? 32 : 0);
-  const nNf = dv().getUint32(o, true); o += 4;
-  const nullifiers: string[] = [];
-  for (let i = 0; i < nNf; i++, o += 32) nullifiers.push(Buffer.from(data.subarray(o, o + 32)).toString("hex"));
-  const nCm = dv().getUint32(o, true); o += 4 + 32 * nCm;
-  const ext = deserializeExtData(data.slice(o));
-  return { signedShares, ext, nNf, nullifiers };
-}
+const relayCostWei = (gasPrice = gas.opts.cap): bigint => GAS_LIMIT * gasPrice;
+const floorWei = (): bigint => { const c = relayCostWei(); return c + (c * BigInt(COST_MARGIN_BPS)) / 10_000n; };
+console.log(`[relayer] cost per relayed transact at gas cap ${gas.opts.cap} wei: ${relayCostWei()} wei; BNB fee floor = ${floorWei()} wei; current gas price ${gas.current()}`);
 
 const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
 await app.register(cors, { origin: true });
@@ -100,114 +97,152 @@ await app.register(rateLimit, { max: 60, timeWindow: "1 minute" });
 
 app.get("/info", async () => ({
   commit: process.env.GIT_SHA ?? "unknown",
-  relayer: signer.publicKey.toBase58(),
-  program: PROGRAM.toBase58(),
-  cluster: RPC.includes("devnet") ? "devnet" : RPC.includes("mainnet") ? "mainnet-beta" : "custom",
-  // For SOL, advertise the effective minimum (policy or 4-input cost floor,
-  // whichever is higher) so clients never build a fee the relayer refuses.
-  fees: await Promise.all(policy.list().map(async (f) => {
-    if (f.mint !== SystemProgram.programId.toBase58()) return f;
-    const cost = await relayCostLamports(4);
-    const floor = cost + (cost * BigInt(COST_MARGIN_BPS)) / 10_000n;
-    return { ...f, min: (floor > BigInt(f.min) ? floor : BigInt(f.min)).toString(), costLamports: cost.toString() };
-  })),
+  relayer: account.address,
+  chainId: CHAIN_ID,
+  pool: POOL,
+  launchpad: LAUNCHPAD ?? null,
+  // For BNB, advertise the effective minimum (policy or cost floor, whichever is higher) in internal units (gwei).
+  fees: policy.list().map((f) => {
+    if (f.token !== NATIVE) return f;
+    const floorUnits = (floorWei() + NATIVE_UNIT - 1n) / NATIVE_UNIT;
+    return { ...f, min: (floorUnits > BigInt(f.min) ? floorUnits : BigInt(f.min)).toString(), costWei: relayCostWei().toString() };
+  }),
   delay: { minMs: queue.opts.minDelayMs, maxMs: queue.opts.maxDelayMs },
   /** what the relayer will attach at submission; the fee floor above is priced at `cap` */
-  priorityFee: priority.info(),
-  cuLimit: queue.opts.cuLimit,
-  lookupTable: process.env.LOOKUP_TABLE ?? null,
+  gasPrice: gas.info(),
+  gasLimit: GAS_LIMIT.toString(),
+  /** any ERC-20 with a pool can be relayed; ask /asset/:token for its fee */
+  dynamicAssets: dynamic.opts.enabled,
   queued: queue.size(),
 }));
 
-app.get("/health", async () => {
-  const bal = await conn.getBalance(signer.publicKey).catch(() => -1);
-  // Runway in relayed transactions at the worst-case (4-input, cap-priced) cost; an operator alarm, not a user-facing number.
-  const worst = await relayCostLamports(4).catch(() => 0n);
-  const runway = worst > 0n && bal > 0 ? Number(BigInt(bal) / worst) : 0;
-  return { ok: bal > 0 && runway >= 10, balanceLamports: bal, worstCaseCostLamports: worst.toString(), runwayTransacts: runway, queued: queue.size(), priorityFee: priority.info() };
-});
-
-app.post<{ Body: RelayBody }>("/relay", async (req, reply) => {
-  const body = req.body;
-  if (!body?.data || !Array.isArray(body.keys)) return reply.code(400).send({ error: "data and keys required" });
-  const data = Uint8Array.from(Buffer.from(body.data, "base64"));
-  if (data.length > 1100) return reply.code(400).send({ error: "instruction too large" });
-  const keys: AccountMeta[] = body.keys.map((k) => ({ pubkey: new PublicKey(k.pubkey), isSigner: !!k.isSigner, isWritable: !!k.isWritable }));
-
-  // --- structural policy
-  let parsed;
+/** Fee quote for one ERC-20 (BNB is in /info), in the token pool's internal units. */
+app.get<{ Params: { token: string } }>("/asset/:token", async (req, reply) => {
+  if (!isAddress(req.params.token)) return reply.code(400).send({ error: "bad token address" });
+  const token = getAddress(req.params.token);
+  if (token === ZERO_ADDRESS) return reply.code(400).send({ error: "BNB is quoted in /info" });
   try {
-    parsed = parseTransact(data);
+    return await dynamic.quote(token, floorWei());
   } catch (e) {
     return reply.code(400).send({ error: (e as Error).message });
   }
-  if (keys.length < 14) return reply.code(400).send({ error: "too few accounts" });
-  if (!keys[0].pubkey.equals(signer.publicKey)) return reply.code(400).send({ error: "payer must be the relayer", relayer: signer.publicKey.toBase58() });
-  // nobody but the relayer may be required to sign
-  for (let i = 1; i < keys.length; i++) if (keys[i].isSigner) return reply.code(400).send({ error: "extra signer not allowed (shields are self-paid)" });
-  if (parsed.signedShares > 0n) return reply.code(400).send({ error: "shields are not relayed" });
-  if (!parsed.ext.relayer.equals(signer.publicKey)) return reply.code(400).send({ error: "ext.relayer must be the relayer" });
-  const mint = keys[5].pubkey;
-  if (!policy.supports(mint.toBase58())) return reply.code(400).send({ error: "unsupported asset" });
-  const relayerDest = keys[11].pubkey;
-  const expectedDest = policy.get(mint.toBase58())?.dest;
-  if (mint.equals(SystemProgram.programId) ? !relayerDest.equals(signer.publicKey) : expectedDest && !relayerDest.equals(new PublicKey(expectedDest))) {
-    return reply.code(400).send({ error: "relayer destination mismatch" });
+});
+
+app.get("/health", async () => {
+  const bal = await publicClient.getBalance({ address: account.address }).catch(() => -1n);
+  // Runway in relayed transactions at the cap-priced cost; an operator alarm, not a user-facing number.
+  const worst = relayCostWei();
+  const runway = bal > 0n ? Number(bal / worst) : 0;
+  return { ok: bal > 0n && runway >= 10, balanceWei: bal.toString(), worstCaseCostWei: worst.toString(), runwayTransacts: runway, queued: queue.size(), gasPrice: gas.info() };
+});
+
+app.post<{ Body: TransactCallJson }>("/relay", async (req, reply) => {
+  const body = req.body;
+  if (!body || typeof body !== "object" || !body.proof || !body.ext) return reply.code(400).send({ error: "transact call required" });
+  let call;
+  try {
+    call = transactCallFromJson(POOL, body);
+  } catch (e) {
+    return reply.code(400).send({ error: (e as Error).message });
+  }
+  const [, token, , publicAmount, , , nullifiers, , ext] = call.args;
+  if (!isAddress(token)) return reply.code(400).send({ error: "bad token" });
+
+  // --- structural policy
+  if (publicAmount > 0n) return reply.code(400).send({ error: "shields are not relayed" });
+  if (call.value !== 0n) return reply.code(400).send({ error: "relayed calls carry no value" });
+  if (getAddress(ext.relayer) !== account.address) return reply.code(400).send({ error: "ext.relayer must be the relayer", relayer: account.address });
+
+  // --- exit target: none, or the launchpad (a private buy or sell on a curve)
+  let launch: { kind: number; tip: bigint } | undefined;
+  if (ext.exitTarget !== ZERO_ADDRESS) {
+    if (!LAUNCHPAD || getAddress(ext.exitTarget) !== LAUNCHPAD) return reply.code(400).send({ error: "unsupported exit target" });
+    if (getAddress(ext.recipient) !== LAUNCHPAD) return reply.code(400).send({ error: "an exit pays the launchpad" });
+    let ed;
+    try { ed = decodeExitData(Uint8Array.from(Buffer.from(ext.exitData.slice(2), "hex"))); } catch (e) { return reply.code(400).send({ error: (e as Error).message }); }
+    if (ed.kind !== EXIT_BUY && ed.kind !== EXIT_SELL) return reply.code(400).send({ error: "unknown exit kind" });
+    if (ed.kind === EXIT_SELL && getAddress(token) !== getAddress(ed.token)) return reply.code(400).send({ error: "a sell spends the token being sold" });
+    if (ed.kind === EXIT_BUY && token !== ZERO_ADDRESS) return reply.code(400).send({ error: "a buy spends BNB" });
+    const curve = await readCurve(publicClient, LAUNCHPAD, getAddress(ed.token));
+    if (!curve) return reply.code(400).send({ error: "curve not found" });
+    if (curve.graduated) return reply.code(400).send({ error: curve.ammPair ? "this token trades on PancakeSwap now" : "this curve has graduated and is moving to PancakeSwap" });
+    launch = { kind: ed.kind, tip: ed.relayerTip };
+  }
+
+  const sell = launch?.kind === EXIT_SELL;
+  // The relayer pays gas. For BNB the fee (in gwei units) must cover that cost
+  // plus a margin; for ERC-20 assets the fee is in tokens: FEE_POLICY if the
+  // operator priced the token, otherwise a live PancakeSwap quote with its own margin.
+  const costWei = relayCostWei();
+  const floor = floorWei();
+  let dyn: Awaited<ReturnType<typeof dynamic.policyFor>>;
+  if (!sell && !policy.supports(token)) {
+    dyn = await dynamic.policyFor(getAddress(token), floor);
+    if (!dyn) return reply.code(400).send({ error: "unsupported asset" });
   }
 
   // --- fee check (convert shares -> amount using the pool rate)
+  const pool = await readPool(publicClient, POOL, getAddress(token));
+  if (!pool.exists) return reply.code(400).send({ error: "pool not found" });
   let amount = 0n;
-  if (parsed.signedShares < 0n) {
-    const info = await conn.getAccountInfo(poolPda(mint, PROGRAM));
-    if (!info) return reply.code(400).send({ error: "pool not found" });
-    const pool = decodePool(new Uint8Array(info.data));
-    const shares = -parsed.signedShares;
+  if (publicAmount < 0n) {
+    const shares = -publicAmount;
     amount = pool.totalShares === 0n ? 0n : (shares * pool.totalAssets) / pool.totalShares;
   }
-  // The relayer is `payer`: it funds one rent-exempt 1-byte PDA per nullifier
-  // (dummy inputs included, so a 2-in tx costs 2 rents, a 4-in tx 4), the
-  // signature fee and any priority fee. For SOL the fee must cover that cost
-  // plus a margin; a policy minimum below cost would make every relayed
-  // transaction a loss, and a zero-value "no-op" transact can never pay it.
-  // For SPL assets the fee is in tokens, so the operator must price FEE_POLICY
-  // above the SOL cost themselves (we log the cost at startup).
-  const costLamports = await relayCostLamports(parsed.nNf);
-  let required = policy.required(mint.toBase58(), amount);
-  if (mint.equals(SystemProgram.programId)) {
-    const floor = costLamports + (costLamports * BigInt(COST_MARGIN_BPS)) / 10_000n;
-    if (floor > required) required = floor;
-  }
-  if (parsed.ext.relayerFee < required) {
-    return reply.code(402).send({ error: "fee too low", required: required.toString(), relayerCostLamports: costLamports.toString() });
+  if (sell) {
+    // A private sell's pool fee would be in the token being sold, which this
+    // relayer does not price; the launchpad pays the relayer a BNB tip out of
+    // the proceeds instead (exit data), and that tip must clear the floor.
+    const nativeMin = policy.required(NATIVE, 0n) * NATIVE_UNIT;
+    const required = nativeMin > floor ? nativeMin : floor;
+    if (launch!.tip < required) {
+      return reply.code(402).send({ error: "relayer tip too low", requiredWei: required.toString(), relayerCostWei: costWei.toString() });
+    }
+  } else {
+    let required: bigint;
+    if (dyn) {
+      const pct = (amount * BigInt(dyn.bps)) / 10_000n;
+      required = pct > dyn.min ? pct : dyn.min;
+    } else {
+      required = policy.required(token, amount);
+      if (token === ZERO_ADDRESS) {
+        const floorUnits = (floor + NATIVE_UNIT - 1n) / NATIVE_UNIT;
+        if (floorUnits > required) required = floorUnits;
+      }
+    }
+    if (ext.relayerFee < required) {
+      return reply.code(402).send({ error: "fee too low", required: required.toString(), relayerCostWei: costWei.toString() });
+    }
   }
 
   // --- idempotency: same nullifier ⇒ same payment ⇒ same job
-  const live = queue.findByNullifiers(parsed.nullifiers);
+  const nfHex = nullifiers.map((n) => n.toString(16));
+  const live = queue.findByNullifiers(nfHex);
   if (live) {
-    return reply.code(200).send({ id: live.id, releaseAt: live.releaseAt, duplicate: true, status: live.status, signature: live.signature });
+    return reply.code(200).send({ id: live.id, releaseAt: live.releaseAt, duplicate: true, status: live.status, txHash: live.txHash });
   }
 
   // --- simulate before accepting (catches bad proofs / stale roots / spent notes)
-  const ix = new TransactionInstruction({ programId: PROGRAM, keys, data: Buffer.from(data) });
-  const sim = buildV0(signer.publicKey, [ix], (await conn.getLatestBlockhash()).blockhash, queue.table, { cuLimit: queue.opts.cuLimit });
-  sim.sign([signer]);
-  if (sim.serialize().length > 1232) return reply.code(400).send({ error: "transaction too large", bytes: sim.serialize().length });
-  const res = await conn.simulateTransaction(sim, { sigVerify: false });
-  if (res.value.err) {
-    // `vaultError` is the contract with clients (SDK `RelayRejection`); `details` is raw RPC output for humans.
-    const vaultError = vaultErrorName(res.value.err);
-    return reply.code(422).send({ error: vaultError ? `simulation failed: ${vaultError}` : "simulation failed", vaultError, details: res.value.err, logs: res.value.logs?.slice(-8) });
+  let gasEstimate: bigint;
+  try {
+    await publicClient.simulateContract({ ...call, account });
+    gasEstimate = await publicClient.estimateContractGas({ ...call, account }).catch(() => 0n);
+  } catch (e) {
+    // `contractError` is the contract with clients (SDK `RelayRejection`); `details` is the raw message for humans.
+    const contractError = contractErrorName(e);
+    return reply.code(422).send({ error: contractError ? `simulation failed: ${contractError}` : "simulation failed", contractError, details: (e as { shortMessage?: string }).shortMessage ?? (e as Error).message });
   }
+  if (gasEstimate > GAS_LIMIT) return reply.code(400).send({ error: "transaction exceeds the relayer's gas limit", gas: gasEstimate.toString() });
 
-  const job = queue.enqueue(ix, parsed.nullifiers);
-  return { id: job.id, releaseAt: job.releaseAt, cu: res.value.unitsConsumed };
+  const job = queue.enqueue(call, nfHex);
+  return { id: job.id, releaseAt: job.releaseAt, gas: gasEstimate.toString() };
 });
 
 app.get<{ Params: { id: string } }>("/job/:id", async (req, reply) => {
   const j = queue.get(req.params.id);
   if (!j) return reply.code(404).send({ error: "unknown job" });
-  return { id: j.id, status: j.status, signature: j.signature, error: j.error, releaseAt: j.releaseAt };
+  return { id: j.id, status: j.status, txHash: j.txHash, error: j.error, releaseAt: j.releaseAt };
 });
 
 await app.listen({ port: PORT, host: "0.0.0.0" });
-console.log(`[relayer] ${signer.publicKey.toBase58()} on ${RPC} port ${PORT}`);
+console.log(`[relayer] ${account.address} on ${RPC} (chain ${CHAIN_ID}) port ${PORT}`);

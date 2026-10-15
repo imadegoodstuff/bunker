@@ -1,39 +1,40 @@
-// Fee policy: per-asset minimum fee in base units + optional bps of the
-// unshield amount. Loaded from env `FEE_POLICY` as JSON, e.g.
-//   {"11111111111111111111111111111111":{"min":"2000000","bps":10}}
+// Fee policy: per-asset minimum fee in the pool's internal units + optional bps
+// of the unshield amount. Loaded from env `FEE_POLICY` as JSON keyed by token
+// address (address(0) = BNB, units of 1 gwei), e.g.
+//   {"0x0000000000000000000000000000000000000000":{"min":"2000000","bps":10}}
+export const NATIVE = "0x0000000000000000000000000000000000000000";
+
 export interface AssetPolicy {
-  /** minimum fee in base units */
+  /** minimum fee in internal units */
   min: bigint;
   /** basis points of the withdrawn amount */
   bps: number;
-  /** relayer's receiving account (token account, or relayer key for SOL) */
-  dest?: string;
 }
 
 export class FeePolicy {
   private readonly assets = new Map<string, AssetPolicy>();
 
-  constructor(json: string | undefined, defaultSol: bigint) {
-    this.assets.set("11111111111111111111111111111111", { min: defaultSol, bps: 5 });
+  constructor(json: string | undefined, defaultNative: bigint) {
+    this.assets.set(NATIVE, { min: defaultNative, bps: 5 });
     if (!json) return;
-    const o = JSON.parse(json) as Record<string, { min: string; bps?: number; dest?: string }>;
-    for (const [mint, p] of Object.entries(o)) {
-      this.assets.set(mint, { min: BigInt(p.min), bps: p.bps ?? 0, dest: p.dest });
+    const o = JSON.parse(json) as Record<string, { min: string; bps?: number }>;
+    for (const [token, p] of Object.entries(o)) {
+      this.assets.set(token.toLowerCase(), { min: BigInt(p.min), bps: p.bps ?? 0 });
     }
   }
 
-  supports(mint: string) {
-    return this.assets.has(mint);
+  supports(token: string) {
+    return this.assets.has(token.toLowerCase());
   }
-  get(mint: string) {
-    return this.assets.get(mint);
+  get(token: string) {
+    return this.assets.get(token.toLowerCase());
   }
   list() {
-    return [...this.assets.entries()].map(([mint, p]) => ({ mint, min: p.min.toString(), bps: p.bps }));
+    return [...this.assets.entries()].map(([token, p]) => ({ token, min: p.min.toString(), bps: p.bps }));
   }
-  /** Minimum fee required for a withdrawal of `amount` (0 for private sends). */
-  required(mint: string, amount: bigint): bigint {
-    const p = this.assets.get(mint);
+  /** Minimum fee required for a withdrawal of `amount` units (0 for private sends). */
+  required(token: string, amount: bigint): bigint {
+    const p = this.assets.get(token.toLowerCase());
     if (!p) throw new Error("unsupported asset");
     const pct = (amount * BigInt(p.bps)) / 10_000n;
     return pct > p.min ? pct : p.min;

@@ -1,19 +1,6 @@
 "use client";
-import { useMemo } from "react";
-import { ConnectionProvider, WalletProvider } from "@solana/wallet-adapter-react";
-import { WalletModalProvider } from "@solana/wallet-adapter-react-ui";
-import { RPC_URL } from "@/lib/config";
-import "@solana/wallet-adapter-react-ui/styles.css";
-
+// No provider tree is needed: wallet and vault state are zustand stores. Kept
+// as the one place to add one if that changes.
 export function Providers({ children }: { children: React.ReactNode }) {
-  // Wallet Standard wallets (Phantom, Solflare, Backpack, ...) are discovered
-  // automatically; no per-wallet adapter packages are needed.
-  const wallets = useMemo(() => [], []);
-  return (
-    <ConnectionProvider endpoint={RPC_URL}>
-      <WalletProvider wallets={wallets} autoConnect>
-        <WalletModalProvider>{children}</WalletModalProvider>
-      </WalletProvider>
-    </ConnectionProvider>
-  );
+  return <>{children}</>;
 }
