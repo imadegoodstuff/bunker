@@ -21,7 +21,8 @@ primary_region = "sin"
   # BNB fee floor in pool units (gwei): 0.0003 BNB; the effective floor is max(this, GAS_LIMIT × GAS_PRICE_CAP × margin)
   MIN_FEE_UNITS = "300000"
   GAS_PRICE_FLOOR_GWEI = "0.1"
-  GAS_PRICE_CAP_GWEI = "5"
+  # BSC has run at ~0.05 gwei since 2025; a 1 gwei cap keeps the fee floor near 0.002 BNB with 20x headroom
+  GAS_PRICE_CAP_GWEI = "1"
   GAS_LIMIT = "1600000"
   COST_MARGIN_BPS = "2000"
   # price any ERC-20 with a pool through PancakeSwap (margin on top of the BNB cost)
