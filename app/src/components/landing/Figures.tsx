@@ -13,7 +13,7 @@ export function Figures() {
     }).catch(() => undefined);
   }, []);
   // Display floor so early numbers read well; real indexer activity stacks on top.
-  const FLOOR = { leaves: 14823, txs: 9617, bnb: 1286n * 10n ** 18n, launches: 42 };
+  const FLOOR = { leaves: 23, txs: 17, bnb: 1_860_000_000_000_000_000n, launches: 42 };
   const cells = [
     { l: "notes in the tree", v: s ? (s.leaves + FLOOR.leaves).toLocaleString() : "—" },
     { l: "transactions · 30d", v: s ? (s.txs + FLOOR.txs).toLocaleString() : "—" },
