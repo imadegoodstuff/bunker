@@ -28,32 +28,38 @@ export default function Landing() {
       </header>
 
       {/* hero */}
-      <section className="relative overflow-hidden border-b rule grid-bg">
-        <div className="scanline" />
-        <div className="max-w-7xl mx-auto px-5 md:px-10 pt-16 md:pt-24 pb-16 md:pb-24">
+      <section className="relative overflow-hidden border-b rule">
+        <div className="aurora" />
+        <div className="absolute inset-0 grid-bg" />
+        <div className="relative max-w-7xl mx-auto px-5 md:px-10 pt-16 md:pt-28 pb-16 md:pb-28">
           <div className="grid lg:grid-cols-[1fr_auto] gap-10 lg:gap-16 items-center">
             <div>
-              <div className="label-signal mb-6 rise">Shielded pool · private launchpad · BNB Smart Chain</div>
+              <div className="inline-flex items-center gap-3 mb-8 rise">
+                <span className="inline-block w-1.5 h-1.5 bg-ok dot-ok blink" />
+                <span className="label-signal">Shielded pool · private launchpad · BNB Smart Chain</span>
+              </div>
               <h1 className="display text-[18vw] md:text-[11rem] leading-[0.85] font-bold rise" style={{ animationDelay: ".05s" }}>
-                BUN<span className="text-signal">K</span>ER
+                <span className="metal">BUN</span><span className="gold">K</span><span className="metal">ER</span>
               </h1>
             </div>
             <div className="relative justify-self-center lg:justify-self-end rise" style={{ animationDelay: ".1s" }}>
-              <div className="absolute inset-0 rounded-full blur-3xl opacity-40" style={{ background: "radial-gradient(closest-side, var(--color-signal), transparent 70%)" }} />
+              <div className="absolute -inset-10 rounded-full blur-3xl opacity-50" style={{ background: "radial-gradient(closest-side, var(--color-signal), transparent 70%)" }} />
+              <div className="absolute inset-0 rounded-full" style={{ boxShadow: "0 0 120px 20px rgb(246 183 60 / 0.12)" }} />
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src="/brand/mark-512.png" alt="BUNKER vault mark" className="relative w-[220px] md:w-[300px] lg:w-[340px] h-auto select-none" draggable={false} />
+              <img src="/brand/mark-512.png" alt="BUNKER vault mark" className="relative w-[220px] md:w-[300px] lg:w-[360px] h-auto select-none drop-shadow-[0_30px_60px_rgba(0,0,0,0.8)]" draggable={false} />
             </div>
           </div>
-          <div className="grid md:grid-cols-[1fr_auto] gap-8 items-end mt-10">
+          <div className="grid md:grid-cols-[1fr_auto] gap-8 items-end mt-12">
             <p className="text-lg md:text-2xl text-mute max-w-2xl leading-snug rise" style={{ animationDelay: ".15s" }}>
-              Shield once. Then send, trade and launch tokens with no trace back to your wallet. Zcash-Sapling cryptography, proofs made in your browser, contracts you can read.
+              Shield once. Then send, trade and launch tokens with no trace back to your wallet. <span className="text-fg">Zcash-Sapling cryptography</span>, proofs made in your browser, contracts you can read.
             </p>
-            <div className="flex gap-2 rise" style={{ animationDelay: ".25s" }}>
-              <Link href="/app" className="btn btn-signal h-12 px-6">Open vault</Link>
-              <a href={GITHUB} target="_blank" rel="noreferrer" className="btn h-12 px-6">Source</a>
+            <div className="flex gap-3 rise" style={{ animationDelay: ".25s" }}>
+              <Link href="/app" className="btn btn-signal h-12 px-7">Open vault</Link>
+              <a href={GITHUB} target="_blank" rel="noreferrer" className="btn h-12 px-7">Source</a>
             </div>
           </div>
         </div>
+        <div className="hair absolute bottom-0 left-0 right-0" />
       </section>
 
       <Contracts />
@@ -64,10 +70,11 @@ export default function Landing() {
       <section className="border-b rule">
         <div className="max-w-7xl mx-auto grid md:grid-cols-2 lg:grid-cols-4">
           {PILLARS.map((p, i) => (
-            <div key={p.n} className={`p-8 md:p-10 border-b md:border-b-0 rule ${i < PILLARS.length - 1 ? "lg:border-r md:[&:nth-child(odd)]:border-r lg:[&:nth-child(odd)]:border-r" : ""}`}>
-              <div className="font-mono text-[11px] text-signal mb-6">{p.n}</div>
-              <h3 className="display text-xl mb-3">{p.t}</h3>
-              <p className="text-sm text-mute leading-relaxed">{p.d}</p>
+            <div key={p.n} className={`group relative p-8 md:p-10 border-b md:border-b-0 rule transition hover:bg-[rgb(255_255_255/0.015)] ${i < PILLARS.length - 1 ? "lg:border-r md:[&:nth-child(odd)]:border-r lg:[&:nth-child(odd)]:border-r" : ""}`}>
+              <div className="absolute top-0 left-0 right-0 h-px bg-signal opacity-0 group-hover:opacity-100 transition" />
+              <div className="font-mono text-[11px] text-signal mb-8 flex items-center gap-3"><span>{p.n}</span><span className="h-px w-8 bg-signal/40" /></div>
+              <h3 className="display text-xl md:text-[22px] mb-3">{p.t}</h3>
+              <p className="text-[15px] text-mute leading-relaxed">{p.d}</p>
             </div>
           ))}
         </div>

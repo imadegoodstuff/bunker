@@ -6,7 +6,7 @@ import { useLaunchpad } from "@/lib/launchpad";
 import { useBunker } from "@/lib/store";
 import { useLegacy } from "@/lib/legacy";
 import { useSigner } from "@/lib/useSigner";
-import { fmtAmount, fmtProgress, barWidth, timeAgo } from "@/lib/format";
+import { fmtAmount, fmtPrice, fmtProgress, barWidth, timeAgo } from "@/lib/format";
 import type { LaunchRow } from "@/lib/api";
 
 const MAX_IMG = 4.5 * 1024 * 1024;
@@ -45,7 +45,7 @@ export default function LaunchIndex() {
       {!lp.loaded && !legacy.launchesLoaded ? <p className="font-mono text-[11px] text-dim">loading…</p> : rows.length === 0 ? (
         <p className={`font-mono text-[11px] py-10 text-center ${lp.loadError ? "text-warn" : "text-dim"}`}>{lp.loadError ?? "nothing here yet"}</p>
       ) : (
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-px bg-line border rule">
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {rows.map((l) => <LaunchCard key={l.token} l={l} />)}
         </div>
       )}
@@ -57,24 +57,26 @@ export default function LaunchIndex() {
 function LaunchCard({ l }: { l: LaunchRow & { v1?: boolean } }) {
   const progress = Number(BigInt(l.real_bnb) * 10_000n / BigInt(l.graduation_wei)) / 10_000;
   const x = BigInt(l.virtual_bnb) + BigInt(l.real_bnb);
-  const price = Number(x) / Number(BigInt(l.virtual_token)) * 10 ** l.decimals;
+  // BNB per whole token: x is wei, virtual_token is base units
+  const price = (Number(x) / 1e18) / (Number(BigInt(l.virtual_token)) / 10 ** l.decimals);
   return (
-    <Link href={l.v1 ? `/launch/v1/${l.token}` : `/launch/${l.token}`} className="bg-slab p-5 hover:bg-slab-2 transition group">
-      <div className="flex items-start gap-3 mb-4">
-        {l.image ? <img src={l.image} alt="" className="w-12 h-12 object-cover border rule" /> : <div className="w-12 h-12 border rule bg-bg" />}
-        <div className="min-w-0">
-          <div className="display text-lg truncate group-hover:text-signal transition">{l.symbol}{l.v1 ? <span className="ml-2 align-middle font-mono text-[9px] tracking-[0.2em] text-dim border rule px-1.5 py-0.5">V1</span> : null}</div>
-          <div className="text-xs text-mute truncate">{l.name}</div>
+    <Link href={l.v1 ? `/launch/v1/${l.token}` : `/launch/${l.token}`} className="tile p-5 group overflow-hidden">
+      {l.header ? <img src={l.header} alt="" className="absolute inset-x-0 top-0 h-20 w-full object-cover opacity-30 group-hover:opacity-45 transition pointer-events-none" style={{ maskImage: "linear-gradient(to bottom, #000, transparent)", WebkitMaskImage: "linear-gradient(to bottom, #000, transparent)" }} /> : null}
+      <div className="relative flex items-start gap-4 mb-5">
+        {l.image ? <img src={l.image} alt="" className="w-14 h-14 object-cover rounded-[var(--edge)] border rule shadow-[0_8px_24px_-8px_rgba(0,0,0,0.8)]" /> : <div className="w-14 h-14 rounded-[var(--edge)] border rule bg-bg" />}
+        <div className="min-w-0 pt-0.5">
+          <div className="display text-xl truncate group-hover:text-signal transition">{l.symbol}{l.v1 ? <span className="ml-2 align-middle font-mono text-[9px] tracking-[0.2em] text-dim border rule rounded-[var(--edge)] px-1.5 py-0.5">V1</span> : null}</div>
+          <div className="text-[13px] text-mute truncate">{l.name}</div>
         </div>
-        <span className="ml-auto font-mono text-[10px] text-dim">{l.block_time ? timeAgo(l.block_time * 1000) : "pending"}</span>
+        <span className="ml-auto font-mono text-[10px] text-dim whitespace-nowrap pt-1">{l.block_time ? timeAgo(l.block_time * 1000) : "pending"}</span>
       </div>
-      <div className="flex items-end justify-between font-mono text-[11px] mb-2">
-        <span className="text-mute">{l.graduated ? "on PancakeSwap" : `${fmtProgress(progress)} to graduation`}</span>
-        <span className="text-fg num">{fmtAmount(BigInt(l.real_bnb), 18, 3)} BNB</span>
+      <div className="flex items-end justify-between mb-2">
+        <span className="font-mono text-[11px] text-mute">{l.graduated ? "on PancakeSwap" : `${fmtProgress(progress)} to graduation`}</span>
+        <span className="font-mono text-[13px] text-fg num">{fmtAmount(BigInt(l.real_bnb), 18, 3)} <span className="text-mute text-[11px]">BNB</span></span>
       </div>
       <div className="meter"><i style={{ width: l.graduated ? "100%" : barWidth(progress) }} /></div>
-      <div className="mt-3 flex justify-between font-mono text-[10.5px] text-dim">
-        <span>{price.toExponential(2)} BNB</span>
+      <div className="mt-4 flex justify-between font-mono text-[10.5px] text-dim">
+        <span><span className="text-mute">{fmtPrice(price)}</span> BNB / {l.symbol}</span>
         <span>{l.buys + l.sells} trades</span>
       </div>
     </Link>

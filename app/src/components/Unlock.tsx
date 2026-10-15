@@ -50,16 +50,23 @@ export function Unlock() {
   };
 
   return (
-    <div className="max-w-xl mx-auto rise">
+    <div className="max-w-5xl mx-auto rise grid lg:grid-cols-[1fr_minmax(0,34rem)] gap-10 lg:gap-16 items-start">
+      <div className="lg:sticky lg:top-28">
+      <div className="relative w-28 h-28 mb-8 hidden lg:block">
+        <div className="absolute -inset-6 rounded-full blur-2xl opacity-50" style={{ background: "radial-gradient(closest-side, var(--color-signal), transparent 70%)" }} />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/brand/mark-512.png" alt="" className="relative w-full h-full select-none" draggable={false} />
+      </div>
       <div className="label-signal mb-3">Open the vault</div>
-      <h1 className="display text-4xl md:text-5xl mb-4">Your keys never exist on a server.</h1>
-      <p className="text-mute leading-relaxed mb-8">
+      <h1 className="display text-4xl md:text-5xl mb-4 metal">Your keys never exist on a server.</h1>
+      <p className="text-mute leading-relaxed mb-8 text-[15px]">
         {mode === "device"
           ? <>A vault on this device: a random key kept only here, with a built-in BNB account to pay for shields. One backup string restores both. Nothing to install, nothing to sign.</>
           : mode === "view"
           ? <>A viewing key opens a read-only mirror of a vault: every note, memo and spend, exactly as the owner sees them, and no way to sign. For a second device, an accountant, or proving what you hold.</>
           : <>The spending key is derived in this tab from a wallet signature stretched with a passphrase. The signature alone is not enough: any page that gets you to sign the same message would otherwise own your vault. Same wallet, same passphrase, same key, on any device.</>}
       </p>
+      </div>
 
       <div className="slab brackets p-6 md:p-8"><span className="bk" />
         <div className="flex gap-1 border-b rule mb-6 overflow-x-auto">

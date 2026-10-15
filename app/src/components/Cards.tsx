@@ -9,9 +9,9 @@ import { fmtAmount, short, timeAgo } from "@/lib/format";
 
 export function Card({ title, children, right }: { title: string; children: React.ReactNode; right?: React.ReactNode }) {
   return (
-    <section className="slab p-5">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="label">{title}</h3>
+    <section className="slab p-5 md:p-6">
+      <div className="flex items-center justify-between mb-5">
+        <h3 className="label flex items-center gap-2.5"><span className="inline-block w-1 h-3 bg-signal/80 rounded-sm" />{title}</h3>
         {right}
       </div>
       {children}

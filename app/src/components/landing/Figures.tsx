@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { IndexerApi as IndexerApiV1 } from "@bunker/sdk-v1";
+import { NATIVE_UNIT } from "@bunker/sdk";
 import { indexer } from "@/lib/api";
 import { INDEXER_V1_URL } from "@/lib/config";
 import { fmtAmount } from "@/lib/format";
@@ -10,8 +11,9 @@ type Stats = { leaves: number; txs: number; shieldedBnb: bigint; launches: numbe
 
 async function statsFrom(api: { stats: (days: number) => Promise<{ leaves: number; perToken: Record<string, { shielded: string; unshielded: string }>; daily: { txs: number }[] }>; launches: (n: number) => Promise<unknown[]> }): Promise<Stats> {
   const [st, ls] = await Promise.all([api.stats(30), api.launches(200)]);
-  const bnb = st.perToken[NATIVE];
-  const shielded = bnb ? BigInt(bnb.shielded) - BigInt(bnb.unshielded) : 0n;
+  const bnb = st.perToken[NATIVE] ?? Object.entries(st.perToken).find(([k]) => k.toLowerCase() === NATIVE)?.[1];
+  // the indexer counts in pool units; BNB is accounted in gwei in both protocols
+  const shielded = bnb ? (BigInt(bnb.shielded) - BigInt(bnb.unshielded)) * NATIVE_UNIT : 0n;
   return { leaves: st.leaves, txs: st.daily.reduce((n, d) => n + d.txs, 0), shieldedBnb: shielded < 0n ? 0n : shielded, launches: ls.length };
 }
 
@@ -34,16 +36,16 @@ export function Figures() {
   const cells = [
     { l: "notes in the trees", v: s ? s.leaves.toLocaleString() : "—" },
     { l: "transactions · 30d", v: s ? s.txs.toLocaleString() : "—" },
-    { l: "BNB shielded now", v: s ? fmtAmount(s.shieldedBnb, 18, 2) : "—" },
+    { l: "BNB shielded now", v: s ? fmtAmount(s.shieldedBnb, 18, 3) : "—" },
     { l: "tokens launched", v: s ? s.launches.toLocaleString() : "—" },
   ];
   return (
     <section className="border-b rule">
       <div className="max-w-7xl mx-auto grid grid-cols-2 lg:grid-cols-4">
         {cells.map((c, i) => (
-          <div key={c.l} className={`px-8 md:px-10 py-8 ${i % 2 === 0 ? "border-r rule" : ""} ${i < 2 ? "border-b lg:border-b-0 rule" : ""} ${i === 1 ? "lg:border-r" : ""}`}>
-            <div className="label mb-2">{c.l}</div>
-            <div className="display text-3xl md:text-5xl num">{c.v}</div>
+          <div key={c.l} className={`px-8 md:px-10 py-10 ${i % 2 === 0 ? "border-r rule" : ""} ${i < 2 ? "border-b lg:border-b-0 rule" : ""} ${i === 1 ? "lg:border-r" : ""}`}>
+            <div className="label mb-3">{c.l}</div>
+            <div className="display text-4xl md:text-6xl num metal">{c.v}</div>
           </div>
         ))}
       </div>
