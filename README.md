@@ -12,10 +12,17 @@ per-asset turnstile. No owner, no upgrade, no pause on withdrawals. Live at [bun
 | | |
 |---|---|
 | **Shield** | Move BNB or any ERC-20 into the pool. You receive a *note* holding pool shares. The first shield of a token opens its pool; no listing, no permission. |
-| **Send** | Pay any `bunker1…` address privately. Amount, sender, recipient: all hidden. The relayer pays gas and is repaid from the note. |
-| **Unshield** | Withdraw to any address from a relayer-signed transaction. Your public wallet never appears. |
-| **Launch** | A token launchpad whose primary market exists only inside the pool: buys and sells are unshields whose exit target is the curve, proceeds land at a one-use key derived from your seed and are shielded straight back. Each token gets its own shielded pool at launch and the token has no owner. The trading fee (0–5 %) is set per token by four model-driven agents voting every minute, with no proposer, guardian or pause anywhere; the fee goes to the agents' own treasury, which pays their gas and buys back the BUNKER token to burn or airdrop it. Until graduation there is no public route in; at graduation the curve's BNB and the reserved 20.7 % of supply become a PancakeSwap V2 pair with every LP token burned. [SPEC §13](SPEC.md#13-the-launchpad). |
+| **Send** | Pay any `bunker1…` address, or a plain `0x…` address whose owner registered one, privately. Amount, sender, recipient: all hidden. The relayer pays gas and is paid with a *shielded note* of its own, so even the fee is private. |
+| **Unshield** | Withdraw to any address from a relayer-signed transaction. The recipient gets exactly the amount; your public wallet never appears. |
+| **Swap** | Trade shielded BNB for shielded USDT (or any PancakeSwap V2 pair) in one transaction: the pool pays `SwapExit`, the router fills, the output comes back to the pool as a note of yours. No account on-chain holds either side. |
+| **Launch** | A token launchpad whose primary market exists only inside the pool: a buy is one relayed transaction in which the pool pays the curve and the curve pays the tokens straight back into a fresh note of yours; a sell is the mirror image. Each token gets its own shielded pool at launch and the token has no owner. The trading fee (0–5 %) is set per token by four model-driven agents voting every minute, with no proposer, guardian or pause anywhere; the fee goes to the agents' own treasury, which pays their gas and buys back the BUNKER token to burn or airdrop it. Until graduation there is no public route in; at graduation the curve's BNB and the reserved 20.7 % of supply become a PancakeSwap V2 pair with every LP token burned. [SPEC §13](SPEC.md#13-the-launchpad). |
+| **Watch** | A full viewing key (`bunkerview1…`) opens a read-only mirror of a vault anywhere: every note, memo and spend, and no way to sign. |
 | **Yield** | Notes hold shares; `donate()` raises a pool's share rate for every holder of that asset with no distribution and no information about who holds what. |
+
+Protocol v2 (October 2026) also batches tree insertion: new commitments wait in an on-chain queue that
+anyone may `drain()` (the relayer's keeper does, within seconds), so a transaction pays for one root
+per batch instead of 26 Poseidon hashes per leaf. Nullifiers are never deferred. The v1 pool
+(`0xD327…12bF`) remains live for its existing notes; see `contracts/deployments/56.v1.json`.
 
 ## Why it is different
 
@@ -33,10 +40,10 @@ Full protocol: [SPEC.md](SPEC.md).
 ## Repository
 
 ```
-circuits/     circom 2 circuits (transact2x2: 33,515 constraints · transact4x2: 64,860), build/setup/ceremony scripts
-contracts/    Hardhat: ShieldedPool.sol (tree, verifier, pools, turnstile, exits) · Launchpad.sol + LaunchToken.sol · generated verifiers · deploy/verify scripts
-sdk/          TypeScript: keys, addresses, notes, encryption, Merkle, proving, viem call builders, wallet, and `BunkerClient` for the live deployment (see sdk/README.md)
-relayer/      Fee-paying relayer with policy checks, simulation, PancakeSwap fee pricing, randomized delay queue
+circuits/     circom 2 circuits (transact2x3 · transact4x3: 2 or 4 inputs, 3 outputs), build/setup/ceremony scripts
+contracts/    Hardhat: ShieldedPool.sol (tree + insertion queue, verifier, pools, turnstile, registry, exits with reshield) · Launchpad.sol + LaunchToken.sol · SwapExit.sol · generated verifiers · deploy/verify scripts
+sdk/          TypeScript: keys, viewing keys, addresses, notes, encryption, Merkle, proving, viem call builders, wallet, and `BunkerClient` for the live deployment (see sdk/README.md)
+relayer/      Relayer paid in shielded fee notes: decrypts and verifies its note, simulates, randomized delay queue, drain keeper, fee-note sweeper, PancakeSwap/curve fee pricing
 indexer/      eth_getLogs scanner → SQLite, HTTP API for commitments / nullifiers / roots / stats / launches / metadata
 agents/       Four AI agents (one key, one model provider each) that vote the launchpad fee policy, keep the curves (harvest, migrate) and run the treasury
 app/          Next.js wallet with in-browser proving (bunkeronbnb.com)
@@ -73,7 +80,8 @@ CHAIN_ID=31337 RPC_URL=http://127.0.0.1:8545 RELAYER_KEY=0x… npm run -w relaye
 NEXT_PUBLIC_CHAIN_ID=31337 NEXT_PUBLIC_POOL_ADDRESS=0x… NEXT_PUBLIC_LAUNCHPAD_ADDRESS=0x… npm run -w app dev
 ```
 
-Services read `POOL_ADDRESS`/`LAUNCHPAD_ADDRESS` from the environment or from `contracts/deployments/<chainId>.json`.
+Services read `POOL_ADDRESS`/`LAUNCHPAD_ADDRESS`/`SWAP_EXIT_ADDRESS` from the environment or from `contracts/deployments/<chainId>.json`.
+The relayer also wants `INDEXER_URL` and `ARTIFACTS_DIR` (the circuit build directory) so it can sweep its fee notes back to its account.
 
 ## Deploy
 

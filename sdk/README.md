@@ -104,20 +104,42 @@ const curve = await lp.curve(tokens[0].token);         // reserves, fee, graduat
 const q = await lp.quoteBuy(tokens[0].token, parseEther("0.05"));
 console.log("you would receive", q.out, "tokens at", q.curve.tradeFeeBps, "bps");
 
-// Private buy: shielded BNB → launchpad through the pool's exit hook → tokens shielded back to you.
+// Private buy: one relayed transaction. The pool pays the curve through its exit
+// hook and the curve hands the tokens straight back to the pool as a note of yours.
 const r = await lp.buy(tokens[0].token, parseEther("0.05"), { slippageBps: 100n });
-console.log(r.tradeTxHash, r.claimTxHash);
+console.log(r.txHash);
 
-// Private sell is the mirror image.
+// Private sell is the mirror image: the BNB comes back as a note in the same tx.
 await lp.sell(tokens[0].token, 1_000_000n);
 
 // Launch your own token from a public account (metadata is hosted by the indexer).
 const token = await lp.launch({ name: "Bunker Cat", symbol: "BCAT", image: dataUrl, description: "…" }, account);
 ```
 
-A trade lands on a throwaway *claim key* derived from your seed before it is
-shielded back. If a process dies between the two steps, `lp.recover()` sweeps
-every claim key that still holds something.
+## Private swaps, pay-by-address, viewing keys
+
+```ts
+// Shielded BNB → shielded USDT on PancakeSwap V2, atomically, through SwapExit.
+const q = await bunker.quoteSwap("BNB", parseEther("0.1"), USDT);
+await bunker.swap("BNB", parseEther("0.1"), USDT, { slippageBps: 100n });
+
+// Let anyone pay your plain 0x address privately: one public registration.
+await bunker.register(account);
+await bunker.send("BNB", parseEther("0.01"), "0xFriendWhoRegistered…");
+
+// A watch-only mirror: sees every note and spend, signs nothing.
+const mirror = await BunkerClient.connect({ viewingKey: bunker.viewingKey() });
+await mirror.sync();
+console.log(await mirror.balance("BNB"));
+```
+
+## Settling
+
+New commitments wait in an on-chain queue until someone calls `drain()`; the
+relayer's keeper does within seconds, and `bunker.ensureInserted()` hurries
+it (with a `signer`, it drains itself if nobody else does). `balance()` reports
+`amount` (spendable) and `queued` separately; `send`/`unshield` wait for the
+queue when the spendable notes alone fall short.
 
 ## Reading the network
 
@@ -141,23 +163,27 @@ relayer or indexer, or build a different wallet.
 | | |
 |---|---|
 | chain | BNB Smart Chain (56) |
-| pool | `0xD327D391Ba9f5924F4fD82AB0cd23A2b4F5812bF` |
-| launchpad | `0x1A6b0e1Fc2CC10218a6d5e48b33442a1B9DFAaA6` |
+| protocol | v2 |
+| pool | `0x0c5d2bB3867ADfea4506801df95Fd9895bda105a` |
+| launchpad | `0x3aBa205aEE7D6673F3EC640f9f79bDC48C8E093D` |
+| swap exit | `0x2E17431d3D7df13168522F03D71268bA73bDF6f8` |
+| v1 pool (read-only in this SDK, `bscV1`) | `0xD327D391Ba9f5924F4fD82AB0cd23A2b4F5812bF` |
 | indexer | https://bunker-indexer.fly.dev |
 | relayer | https://bunker-relayer.fly.dev |
 | agents | https://bunker-agents.fly.dev |
 | proving keys | https://bunkeronbnb.com/circuits/ |
 
-Pass `overrides` to `connect` to use your own RPC, indexer or relayer:
+Pass `overrides` to `connect` to use your own RPC, indexer or relayers. With
+several `relayerUrls` the client picks the cheapest healthy one for the pool:
 
 ```ts
-await BunkerClient.connect({ seed, overrides: { rpcUrl: "https://my-node", relayerUrl: "https://my-relayer" } });
+await BunkerClient.connect({ seed, overrides: { rpcUrl: "https://my-node", relayerUrls: ["https://my-relayer", "https://bunker-relayer.fly.dev"] } });
 ```
 
-Proving artifacts (≈ 4 MB wasm, 21 MB and 36 MB zkeys) are downloaded on
+Proving artifacts (≈ 4 MB wasm, 24 MB and 45 MB zkeys) are downloaded on
 first use and cached for the life of the client. Supply them yourself with
-`artifacts: { transact2x2: { wasm, zkey }, transact4x2: { wasm, zkey } }`
-(bytes or URLs) to skip the download.
+`artifacts: { transact2x3: { wasm, zkey }, transact4x3: { wasm, zkey } }`
+(bytes or URLs), or an `artifactLoader(circuit)` callback, to skip the download.
 
 ## Caveats
 

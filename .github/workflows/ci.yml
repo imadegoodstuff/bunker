@@ -119,7 +119,7 @@ jobs:
       - name: adversarial witness tests (every tampering must be unsatisfiable)
         run: npm run -w circuits test
       - run: npm run -w contracts build
-      - name: e2e (shield → private send → unshield → donate → replay rejected → launch → private buy/claim → votes/fee roll → private sell/claim → graduation → PancakeSwap migration)
+      - name: e2e (shield → private send → unshield → donate → replay rejected → launch → private buy → votes/fee roll → private sell → graduation → PancakeSwap migration → private swap)
         run: node scripts/e2e.mjs --spawn
 
   # Manual, gated on the `bsc` environment: deploys the contracts of this commit to BNB Smart Chain
