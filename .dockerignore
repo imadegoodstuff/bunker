@@ -11,3 +11,6 @@ circuits/build/**/*.r1cs
 contracts/artifacts
 contracts/cache
 docs
+circuits/legacy/build/**/*.sym
+circuits/legacy/build/**/*.r1cs
+circuits/legacy/src/circomlib

@@ -47,3 +47,6 @@ circuits/src/circomlib/
 
 contracts/deployments/31337.json
 
+
+circuits/legacy/src/circomlib/
+

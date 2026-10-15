@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useWallet } from "@/lib/wallet";
 import { useLaunchpad } from "@/lib/launchpad";
 import { useBunker } from "@/lib/store";
+import { useLegacy } from "@/lib/legacy";
 import { useSigner } from "@/lib/useSigner";
 import { fmtAmount, fmtProgress, barWidth, timeAgo } from "@/lib/format";
 import type { LaunchRow } from "@/lib/api";
@@ -16,9 +17,12 @@ export default function LaunchIndex() {
   const [tab, setTab] = useState<"live" | "graduated">("live");
   const [q, setQ] = useState("");
   const [create, setCreate] = useState(false);
-  useEffect(() => { void lp.load(); const id = setInterval(() => void lp.load(), 15_000); return () => clearInterval(id); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const legacy = useLegacy();
+  useEffect(() => { void lp.load(); void legacy.loadLaunches(); const id = setInterval(() => { void lp.load(); void legacy.loadLaunches(); }, 15_000); return () => clearInterval(id); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const rows = useMemo(() => lp.launches.filter((l) => (tab === "live" ? !l.graduated : !!l.graduated)).filter((l) => !q || `${l.name} ${l.symbol} ${l.token}`.toLowerCase().includes(q.toLowerCase())), [lp.launches, tab, q]);
+  // v2 curves first, then the protocol-v1 curves (still trading on the first launchpad), newest first within each
+  const all = useMemo<(LaunchRow & { v1?: boolean })[]>(() => [...lp.launches, ...legacy.launches.map((l) => ({ ...l, v1: true }))], [lp.launches, legacy.launches]);
+  const rows = useMemo(() => all.filter((l) => (tab === "live" ? !l.graduated : !!l.graduated)).filter((l) => !q || `${l.name} ${l.symbol} ${l.token}`.toLowerCase().includes(q.toLowerCase())), [all, tab, q]);
 
   return (
     <div className="max-w-6xl mx-auto rise">
@@ -38,7 +42,7 @@ export default function LaunchIndex() {
         <input className="field h-8 w-56 ml-auto text-[11px] mb-1" placeholder="search" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
 
-      {!lp.loaded ? <p className="font-mono text-[11px] text-dim">loading…</p> : rows.length === 0 ? (
+      {!lp.loaded && !legacy.launchesLoaded ? <p className="font-mono text-[11px] text-dim">loading…</p> : rows.length === 0 ? (
         <p className={`font-mono text-[11px] py-10 text-center ${lp.loadError ? "text-warn" : "text-dim"}`}>{lp.loadError ?? "nothing here yet"}</p>
       ) : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-px bg-line border rule">
@@ -50,16 +54,16 @@ export default function LaunchIndex() {
   );
 }
 
-function LaunchCard({ l }: { l: LaunchRow }) {
+function LaunchCard({ l }: { l: LaunchRow & { v1?: boolean } }) {
   const progress = Number(BigInt(l.real_bnb) * 10_000n / BigInt(l.graduation_wei)) / 10_000;
   const x = BigInt(l.virtual_bnb) + BigInt(l.real_bnb);
   const price = Number(x) / Number(BigInt(l.virtual_token)) * 10 ** l.decimals;
   return (
-    <Link href={`/launch/${l.token}`} className="bg-slab p-5 hover:bg-slab-2 transition group">
+    <Link href={l.v1 ? `/launch/v1/${l.token}` : `/launch/${l.token}`} className="bg-slab p-5 hover:bg-slab-2 transition group">
       <div className="flex items-start gap-3 mb-4">
         {l.image ? <img src={l.image} alt="" className="w-12 h-12 object-cover border rule" /> : <div className="w-12 h-12 border rule bg-bg" />}
         <div className="min-w-0">
-          <div className="display text-lg truncate group-hover:text-signal transition">{l.symbol}</div>
+          <div className="display text-lg truncate group-hover:text-signal transition">{l.symbol}{l.v1 ? <span className="ml-2 align-middle font-mono text-[9px] tracking-[0.2em] text-dim border rule px-1.5 py-0.5">V1</span> : null}</div>
           <div className="text-xs text-mute truncate">{l.name}</div>
         </div>
         <span className="ml-auto font-mono text-[10px] text-dim">{l.block_time ? timeAgo(l.block_time * 1000) : "pending"}</span>

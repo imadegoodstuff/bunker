@@ -157,7 +157,8 @@ export class SubmitQueue {
       }
       if (job.kind !== "transact") return false;
       const nf = (job.call as TransactCall).args[6][0];
-      return await this.chain.publicClient.readContract({ address: this.opts.pool, abi: ShieldedPoolAbi, functionName: "nullifierSpent", args: [nf] });
+      // the job's own pool: v2 by default, the legacy v1 pool for /v1/relay jobs (same `nullifierSpent` view)
+      return await this.chain.publicClient.readContract({ address: job.call.address ?? this.opts.pool, abi: ShieldedPoolAbi, functionName: "nullifierSpent", args: [nf] });
     } catch {
       return false;
     }

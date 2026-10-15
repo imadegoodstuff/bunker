@@ -9,8 +9,10 @@ import { createRequire } from "node:module";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
-const src = join(root, "src");
-const build = join(root, "build");
+// CIRCUITS_SUBDIR=legacy builds the frozen v1 circuits from legacy/src into legacy/build.
+const sub = process.env.CIRCUITS_SUBDIR ? join(root, process.env.CIRCUITS_SUBDIR) : root;
+const src = join(sub, "src");
+const build = join(sub, "build");
 const require = createRequire(import.meta.url);
 
 const circomBin = resolve(dirname(require.resolve("circom2/package.json")), "cli.js");

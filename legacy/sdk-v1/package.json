@@ -1,0 +1,47 @@
+{
+  "name": "@bunker/sdk-v1",
+  "version": "0.1.0",
+  "description": "Frozen protocol-v1 client library (legacy pool 0xD327…12bF / launchpad 0x1A6b…AaA6 on BSC), kept so v1 notes and tokens stay spendable: keys, addresses, notes, note encryption, Merkle proofs, Groth16 proving and transaction building for the BNB Smart Chain contracts.",
+  "license": "MIT",
+  "homepage": "https://bunkeronbnb.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/imadegoodstuff/bunker.git",
+    "directory": "legacy/sdk-v1"
+  },
+  "keywords": ["bnb", "bsc", "privacy", "zk", "shielded", "launchpad", "bunker"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.*",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && node --test dist/**/*.test.js"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "bech32": "^2.0.0",
+    "circomlibjs": "^0.1.7",
+    "ffjavascript": "^0.3.1",
+    "snarkjs": "^0.7.6",
+    "viem": "^2.38.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -4,6 +4,7 @@ import { Unlock } from "@/components/Unlock";
 import { VaultPanel } from "@/components/VaultPanel";
 import { TxOverlay } from "@/components/TxOverlay";
 import { Activity, AddressCard, AnonymityPanel, BackupCard } from "@/components/Cards";
+import { LegacyPanel } from "@/components/LegacyPanel";
 
 export default function VaultPage() {
   const { phase, lock, error } = useBunker();
@@ -19,7 +20,10 @@ export default function VaultPage() {
       </div>
       {error ? <p className="mb-4 font-mono text-[11px] text-warn">{error}</p> : null}
       <div className="grid lg:grid-cols-[1fr_360px] gap-4">
-        <VaultPanel />
+        <div className="space-y-4">
+          <VaultPanel />
+          <LegacyPanel />
+        </div>
         <div className="space-y-4">
           <AddressCard />
           <AnonymityPanel />

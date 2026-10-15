@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { BUNKER_TOKEN, LAUNCHPAD_ADDRESS, POOL_ADDRESS, SWAP_EXIT_ADDRESS, CONFIGURED, explorerAddr } from "@/lib/config";
+import { BUNKER_TOKEN, LAUNCHPAD_ADDRESS, POOL_ADDRESS, SWAP_EXIT_ADDRESS, CONFIGURED, explorerAddr, POOL_V1_ADDRESS, LAUNCHPAD_V1_ADDRESS, MIGRATE_EXIT_ADDRESS } from "@/lib/config";
 
 export const metadata: Metadata = { title: "Docs" };
 
@@ -41,6 +41,10 @@ const SECTIONS: { h: string; p: React.ReactNode }[] = [
     p: <>The same exit hook reaches PancakeSwap V2: <code>SwapExit</code> takes the withdrawn asset, trades it along a path you chose (BNB, USDT, any pair through WBNB), and returns the output to the pool as a note of yours, atomically. A shielded BNB balance becomes a shielded USDT balance without any account on-chain ever holding either.</>,
   },
   {
+    h: "Protocol v1 and migration",
+    p: <>The first mainnet pool and launchpad (protocol v1) are immutable contracts and remain live: every v1 note is still spendable with the v1 circuits, the four v1 curves still trade, and nothing was moved or reset. The same seed opens both. From the vault, a v1 balance migrates into v2 in one relayed transaction: the v1 pool unshields to <code>MigrateExit</code>, which shields the same funds into the v2 pool before the transaction ends, so no public address ever holds them. v1 tokens are listed on the launchpad with a V1 tag; buys there spend v1 BNB and settle as v1 notes you can migrate afterwards. The relayer serves v1 under <code>/v1/*</code> and a frozen v1 indexer keeps the original history.</>,
+  },
+  {
     h: "Fee policy",
     p: <>Four agent keys vote a fee per curve. Each 80-block epoch the fee moves toward the median of fresh votes by at most 100 bps, bounded 0–500 bps, with a quorum of two. Because only votes cast before an epoch began count, a trade knows its fee before the proof is generated.</>,
   },
@@ -80,7 +84,7 @@ await bunker.swap("BNB", parseEther("0.1"), usdt);      // private PancakeSwap s
 await bunker.register(account);                          // let people pay your 0x privately
 const mirror = await BunkerClient.connect({ viewingKey: bunker.viewingKey() });`}</pre>
         <span className="block mt-3 font-mono text-[11px]">
-          indexer <code>bunker-indexer.fly.dev</code> · relayer <code>bunker-relayer.fly.dev</code> · agents <code>bunker-agents.fly.dev</code> · proving keys <code>/circuits/</code>
+          indexer <code>bunker-indexer.fly.dev</code> · relayer <code>bunker-relayer.fly.dev</code> (v1 under <code>/v1</code>) · agents <code>bunker-agents.fly.dev</code> · v1 indexer <code>bunker-indexer-v1.fly.dev</code> · proving keys <code>/circuits/</code> and <code>/circuits/v1/</code>
         </span>
       </>
     ),
@@ -97,6 +101,9 @@ export default function Docs() {
         <div className="flex justify-between gap-4"><span className="text-mute">pool</span>{CONFIGURED ? <a className="text-steel hover:text-fg break-all" href={explorerAddr(POOL_ADDRESS)} target="_blank" rel="noreferrer">{POOL_ADDRESS}</a> : <span className="text-warn">not configured</span>}</div>
         <div className="flex justify-between gap-4"><span className="text-mute">launchpad</span>{CONFIGURED ? <a className="text-steel hover:text-fg break-all" href={explorerAddr(LAUNCHPAD_ADDRESS)} target="_blank" rel="noreferrer">{LAUNCHPAD_ADDRESS}</a> : <span className="text-warn">not configured</span>}</div>
         {SWAP_EXIT_ADDRESS ? <div className="flex justify-between gap-4"><span className="text-mute">swap exit</span><a className="text-steel hover:text-fg break-all" href={explorerAddr(SWAP_EXIT_ADDRESS)} target="_blank" rel="noreferrer">{SWAP_EXIT_ADDRESS}</a></div> : null}
+        {POOL_V1_ADDRESS ? <div className="flex justify-between gap-4 pt-1.5 border-t rule"><span className="text-mute">pool · v1</span><a className="text-dim hover:text-fg break-all" href={explorerAddr(POOL_V1_ADDRESS)} target="_blank" rel="noreferrer">{POOL_V1_ADDRESS}</a></div> : null}
+        {LAUNCHPAD_V1_ADDRESS ? <div className="flex justify-between gap-4"><span className="text-mute">launchpad · v1</span><a className="text-dim hover:text-fg break-all" href={explorerAddr(LAUNCHPAD_V1_ADDRESS)} target="_blank" rel="noreferrer">{LAUNCHPAD_V1_ADDRESS}</a></div> : null}
+        {MIGRATE_EXIT_ADDRESS ? <div className="flex justify-between gap-4"><span className="text-mute">migrate exit · v1 → v2</span><a className="text-dim hover:text-fg break-all" href={explorerAddr(MIGRATE_EXIT_ADDRESS)} target="_blank" rel="noreferrer">{MIGRATE_EXIT_ADDRESS}</a></div> : null}
       </div>
       <div className="divide-y rule">
         {SECTIONS.map((s, i) => (

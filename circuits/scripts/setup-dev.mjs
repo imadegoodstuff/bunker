@@ -12,7 +12,8 @@ import * as snarkjs from "snarkjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
-const build = join(root, "build");
+// CIRCUITS_SUBDIR=legacy sets up the frozen v1 circuits under legacy/build; the ptau cache is shared.
+const build = join(process.env.CIRCUITS_SUBDIR ? join(root, process.env.CIRCUITS_SUBDIR) : root, "build");
 const ptauDir = join(root, "ptau");
 mkdirSync(ptauDir, { recursive: true });
 

@@ -15,6 +15,7 @@ import { publicClient } from "./chain";
 import { customTokens, describeToken, walletTokens } from "./walletAssets";
 import { artifactFor, prefetchArtifacts, type Progress } from "./artifacts";
 import { deviceProvider, forgetDeviceSeed, gasAccount, rememberDeviceSeed } from "./device";
+import { useLegacy } from "./legacy";
 import { useWallet } from "./wallet";
 
 export type Phase = "idle" | "deriving" | "syncing" | "ready" | "error";
@@ -22,7 +23,7 @@ export type TxStage = "idle" | "building" | "proving" | "draining" | "signing" |
 
 export interface ActivityItem {
   id: string;
-  kind: "shield" | "send" | "unshield" | "swap" | "buy" | "sell" | "launch" | "settle" | "register";
+  kind: "shield" | "send" | "unshield" | "swap" | "buy" | "sell" | "launch" | "settle" | "register" | "migrate";
   asset: string;
   /** base units of the asset */
   amount: bigint;
@@ -127,6 +128,8 @@ interface State {
   quoteSwap: (from: AssetMeta, amount: bigint, to: AssetMeta) => Promise<{ out: bigint; relayerFee: bigint }>;
   /** Run a private trade the launchpad store built; `kind`/`label` name it in the activity list. */
   runTrade: (kind: "buy" | "sell", label: string, amount: bigint, decimals: number, run: (onEvent: (e: TxEvent) => void) => Promise<Hex>) => Promise<Hex>;
+  /** Run a protocol-v1 (legacy) operation under the same overlay and activity log; the v1 client does the work. */
+  runLegacy: (kind: ActivityItem["kind"], label: string, amount: bigint, decimals: number, run: (onEvent: (e: TxEvent) => void) => Promise<Hex>) => Promise<Hex>;
   addLaunchAssets: (assets: AssetMeta[]) => void;
   pushActivity: (a: ActivityItem) => void;
   updateActivity: (id: string, patch: Partial<ActivityItem>) => void;
@@ -234,6 +237,8 @@ export const useBunker = create<State>((set, get) => {
     await get().refreshPools();
     await get().sync();
     set({ phase: "ready" });
+    // the same seed also opens this user's protocol-v1 notes (legacy pool); nothing to do for watch-only vaults
+    if (o.seed) void useLegacy.getState().open(o.seed);
   }
 
   async function opening(f: () => Promise<void>) {
@@ -321,6 +326,7 @@ export const useBunker = create<State>((set, get) => {
   },
 
   lock() {
+    useLegacy.getState().close();
     set({ phase: "idle", client: undefined, address: undefined, watchOnly: false, notes: [], balances: {}, queued: {}, pending: 0, syncedTo: 0, activity: [], registered: undefined, error: undefined });
   },
 
@@ -601,6 +607,19 @@ export const useBunker = create<State>((set, get) => {
       const h = await c.swap(tok(from), amount, tok(to), { onEvent });
       finish(id, h);
       await after();
+    } catch (e) {
+      fail(id, e);
+    }
+  },
+
+  async runLegacy(kind, label, amount, decimals, run) {
+    const id = activity(kind, label, amount, decimals);
+    set({ tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser (protocol v1)" } });
+    try {
+      const h = await run(onEvent);
+      finish(id, h);
+      if (get().client) await after();
+      return h;
     } catch (e) {
       fail(id, e);
     }

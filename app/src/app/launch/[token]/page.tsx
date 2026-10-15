@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { useWallet } from "@/lib/wallet";
 import { getAddress, isAddress } from "viem";
@@ -8,6 +8,7 @@ import { rolled, pancakeSwapUrl, spotPrice } from "@bunker/sdk";
 import { indexer, type FeeEventRow, type LaunchRow, type TradeRow } from "@/lib/api";
 import { assetOf, useLaunchpad, type BuyQuote, type SellQuote } from "@/lib/launchpad";
 import { queuedAmount, shieldedAmount, useBunker } from "@/lib/store";
+import { useLegacy } from "@/lib/legacy";
 import { useSigner } from "@/lib/useSigner";
 import { BNB, explorerAddr, explorerTx } from "@/lib/config";
 import { fmtAmount, fmtPrice, fmtProgress, barWidth, parseAmount, short, timeAgo } from "@/lib/format";
@@ -24,6 +25,8 @@ export default function TokenPage() {
   const lp = useLaunchpad();
   const bunker = useBunker();
   const signer = useSigner();
+  const router = useRouter();
+  const legacy = useLegacy();
   const owner = useWallet((w) => w.address);
   const [row, setRow] = useState<(LaunchRow & { trades: TradeRow[]; feeEvents: FeeEventRow[] }) | null>();
   const [side, setSide] = useState<"buy" | "sell">("buy");
@@ -38,6 +41,8 @@ export default function TokenPage() {
       await lp.refresh(token).catch(() => undefined);
       await indexer.launch(token.toLowerCase()).then(setRow).catch(() => setRow(null));
     };
+    // old links to a protocol-v1 token keep working: hand them to the v1 page
+    if (legacy.phase !== "off") void legacy.launch(token).then((r) => { if (r) router.replace(`/launch/v1/${token}`); });
     void load();
     const id = setInterval(() => { void lp.refresh(token).catch(() => undefined); void indexer.launch(token.toLowerCase()).then(setRow).catch(() => undefined); }, 10_000);
     return () => clearInterval(id);

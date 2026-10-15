@@ -8,6 +8,8 @@
     "circuits",
     "contracts",
     "sdk",
+    "legacy/sdk-v1",
+    "legacy/indexer-v1",
     "relayer",
     "indexer",
     "agents",

@@ -238,3 +238,33 @@ contract MockERC20 {
         return true;
     }
 }
+
+/// Stand-in for the v2 pool in MigrateExit tests: takes exactly `want` wei
+/// (or tokens), refunds the rest like `_moveIn`, and can be told to revert.
+contract MockShieldPool {
+    uint256 public want;
+    bool public failNext;
+    uint256 public shielded;
+
+    receive() external payable {}
+
+    function setWant(uint256 w) external { want = w; }
+    function setFail(bool f) external { failNext = f; }
+
+    function shield(address token) external payable {
+        require(!failNext, "SHIELD_FAIL");
+        if (token == address(0)) {
+            require(msg.value >= want, "VALUE");
+            shielded += want;
+            uint256 back = msg.value - want;
+            if (back > 0) {
+                (bool ok,) = msg.sender.call{value: back}("");
+                require(ok, "refund");
+            }
+        } else {
+            require(msg.value == 0, "VALUE");
+            require(IERC20(token).transferFrom(msg.sender, address(this), want), "pull");
+            shielded += want;
+        }
+    }
+}

@@ -1,5 +1,6 @@
 import { getAddress } from "viem";
 import { NATIVE_TOKEN, PROTOCOL_VERSION, bsc as bscPreset, type EvmAddress, type NetworkConfig } from "@bunker/sdk";
+import { bsc as bscV1, type NetworkConfig as NetworkConfigV1 } from "@bunker/sdk-v1";
 
 export const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://bunkeronbnb.com";
 export const GITHUB = "https://github.com/imadegoodstuff/bunker";
@@ -46,6 +47,31 @@ export const NETWORK: NetworkConfig = {
   artifactsUrl: ARTIFACT_BASE,
   explorerUrl: CHAIN_ID === 97 ? "https://testnet.bscscan.com" : "https://bscscan.com",
 };
+
+// ---- protocol v1 (legacy). The first mainnet pool/launchpad are immutable and still hold user notes and
+// four bonding curves; the app keeps them visible, tradable and migratable. Unset on networks without a v1.
+export const POOL_V1_ADDRESS: EvmAddress | null = process.env.NEXT_PUBLIC_POOL_V1_ADDRESS ? getAddress(process.env.NEXT_PUBLIC_POOL_V1_ADDRESS) : MAINNET ? bscV1.pool : null;
+export const LAUNCHPAD_V1_ADDRESS: EvmAddress | null = process.env.NEXT_PUBLIC_LAUNCHPAD_V1_ADDRESS ? getAddress(process.env.NEXT_PUBLIC_LAUNCHPAD_V1_ADDRESS) : MAINNET ? bscV1.launchpad : null;
+export const INDEXER_V1_URL: string | null = process.env.NEXT_PUBLIC_INDEXER_V1_URL || (MAINNET ? "https://bunker-indexer-v1.fly.dev" : null);
+/** The v1 -> v2 bridge: a v1 unshield into it becomes a v2 shield in the same transaction. */
+export const MIGRATE_EXIT_ADDRESS: EvmAddress | null = process.env.NEXT_PUBLIC_MIGRATE_EXIT_ADDRESS ? getAddress(process.env.NEXT_PUBLIC_MIGRATE_EXIT_ADDRESS) : MAINNET ? "0xE4E7B3AEC97b66263CC5CC08E931837aaf631f13" : null;
+export const LEGACY = !!(POOL_V1_ADDRESS && LAUNCHPAD_V1_ADDRESS && INDEXER_V1_URL);
+export const NETWORK_V1: NetworkConfigV1 | null = LEGACY
+  ? {
+      name: CHAIN_NAME,
+      chainId: CHAIN_ID,
+      rpcUrl: RPC_URL,
+      pool: POOL_V1_ADDRESS!,
+      launchpad: LAUNCHPAD_V1_ADDRESS!,
+      startBlock: bscV1.startBlock,
+      indexerUrl: INDEXER_V1_URL!,
+      // the v2 relayer serves v1 under /v1/* (same EOA, same queue)
+      relayerUrl: `${RELAYER_URL}/v1`,
+      agentsUrl: AGENTS_URL,
+      artifactsUrl: `${ARTIFACT_BASE}/v1`,
+      explorerUrl: CHAIN_ID === 97 ? "https://testnet.bscscan.com" : "https://bscscan.com",
+    }
+  : null;
 
 /** The $BUNKER token on BNB Smart Chain. */
 export const BUNKER_TOKEN: EvmAddress = "0x2Ec1e08C2C6343671728EF7C6E7FDe0bD6F07777";

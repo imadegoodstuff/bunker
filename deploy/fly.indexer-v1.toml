@@ -1,0 +1,47 @@
+# Frozen protocol-v1 indexer: serves the v1 pool/launchpad history (notes, trades, launches) that the v2 app shows and the migration flow reads.
+app = "bunker-indexer-v1"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile.service"
+  [build.args]
+    SERVICE = "legacy/indexer-v1"
+
+# Secrets: RPC_URL (keyed), RPC_URLS (comma-separated failover endpoints), POOL_ADDRESS, LAUNCHPAD_ADDRESS, START_BLOCK
+[env]
+  PORT = "8788"
+  CHAIN_ID = "56"
+  RPC_URL = "https://bsc-dataseed.bnbchain.org"
+  # the original v1 database, copied over from bunker-indexer's volume
+  DB_PATH = "/data/bunker-indexer.sqlite"
+  # public BSC endpoints cap eth_getLogs ranges well below 2000 blocks
+  SCAN_CHUNK = "400"
+  RPC_URLS = "https://bsc-dataseed1.defibit.io,https://bsc.drpc.org,https://bsc-dataseed1.ninicoin.io"
+  CONFIRMATIONS = "3"
+  SCAN_INTERVAL_MS = "3000"
+  META_DIR = "/data/meta"
+  PUBLIC_URL = "https://bunker-indexer-v1.fly.dev"
+  # no new v1 launches: metadata uploads stay off
+  META_UPLOADS_PER_HOUR = "0"
+
+[mounts]
+  source = "bunker_indexer_v1_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8788
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/live"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

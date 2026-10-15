@@ -10,12 +10,15 @@ COPY contracts/package.json contracts/
 COPY relayer/package.json relayer/
 COPY indexer/package.json indexer/
 COPY agents/package.json agents/
+COPY legacy/sdk-v1/package.json legacy/sdk-v1/
+COPY legacy/indexer-v1/package.json legacy/indexer-v1/
 RUN npm ci --no-audit --no-fund --ignore-scripts
 COPY sdk sdk
 COPY relayer relayer
 COPY indexer indexer
 COPY agents agents
-RUN npm run -w sdk build && npm run -w relayer build && npm run -w indexer build && npm run -w agents build
+COPY legacy legacy
+RUN npm run -w sdk build && npm run -w legacy/sdk-v1 build && npm run -w relayer build && npm run -w indexer build && npm run -w legacy/indexer-v1 build && npm run -w agents build
 
 FROM node:22-bookworm-slim AS runner
 ARG SERVICE
@@ -29,6 +32,12 @@ COPY --from=build --chown=app:app /repo/sdk/package.json sdk/package.json
 COPY --from=build --chown=app:app /repo/sdk/dist sdk/dist
 # the sdk pins its own versions of a few packages (bech32 v2, @noble); npm nests them under sdk/node_modules
 COPY --from=build --chown=app:app /repo/sdk/node_modules sdk/node_modules
+# protocol v1 (frozen): the relayer's /v1 routes and the legacy indexer
+COPY --from=build --chown=app:app /repo/legacy/sdk-v1/package.json legacy/sdk-v1/package.json
+COPY --from=build --chown=app:app /repo/legacy/sdk-v1/dist legacy/sdk-v1/dist
+COPY --from=build --chown=app:app /repo/legacy/sdk-v1/node_modules legacy/sdk-v1/node_modules
+COPY --from=build --chown=app:app /repo/legacy/indexer-v1/package.json legacy/indexer-v1/package.json
+COPY --from=build --chown=app:app /repo/legacy/indexer-v1/dist legacy/indexer-v1/dist
 COPY --from=build --chown=app:app /repo/relayer/package.json relayer/package.json
 COPY --from=build --chown=app:app /repo/relayer/dist relayer/dist
 COPY --from=build --chown=app:app /repo/indexer/package.json indexer/package.json
@@ -40,6 +49,8 @@ COPY --chown=app:app circuits/build/transact2x3/transact2x3_js/transact2x3.wasm 
 COPY --chown=app:app circuits/build/transact2x3/transact2x3_dev.zkey circuits/transact2x3.zkey
 COPY --chown=app:app circuits/build/transact4x3/transact4x3_js/transact4x3.wasm circuits/transact4x3.wasm
 COPY --chown=app:app circuits/build/transact4x3/transact4x3_dev.zkey circuits/transact4x3.zkey
+COPY --chown=app:app circuits/legacy/build/transact2x2/transact2x2_js/transact2x2.wasm circuits/v1/transact2x2.wasm
+COPY --chown=app:app circuits/legacy/build/transact2x2/transact2x2_dev.zkey circuits/v1/transact2x2.zkey
 USER app
 EXPOSE 8787 8788 8789
 CMD ["sh", "-c", "exec node --experimental-sqlite ${SERVICE}/dist/index.js"]

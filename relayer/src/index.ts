@@ -17,6 +17,7 @@ import { SubmitQueue } from "./queue.js";
 import { GasPriceOracle } from "./fees.js";
 import { DynamicAssets } from "./assets.js";
 import { Sweeper } from "./sweep.js";
+import { registerLegacy } from "./legacy.js";
 
 // ---- configuration
 
@@ -179,6 +180,8 @@ app.post("/sweep", { config: { rateLimit: { max: 2, timeWindow: "1 minute" } } }
 app.get("/info", async () => ({
   commit: process.env.GIT_SHA ?? "unknown",
   protocolVersion: PROTOCOL_VERSION,
+  /** v1 notes and curves are still served under /v1/* when this is set */
+  legacy: POOL_V1 ? { pool: POOL_V1, info: "/v1/info" } : null,
   relayer: account.address,
   shieldedAddress: SHIELDED_ADDRESS,
   chainId: CHAIN_ID,
@@ -360,6 +363,23 @@ app.post<{ Body: TransactCallJson }>("/relay", async (req, reply) => {
   const job = queue.enqueue(call, nfHex, gasFor > GAS_LIMIT ? gasFor : GAS_LIMIT);
   return { id: job.id, releaseAt: job.releaseAt, gas: gasEstimate.toString() };
 });
+
+// ---- protocol v1 (legacy pool + launchpad, and the v1 -> v2 migration bridge). LEGACY=0 turns it off.
+const legacyDeployments = loadLegacyDeployments(CHAIN_ID);
+const POOL_V1: EvmAddress | undefined = process.env.LEGACY === "0" ? undefined : (process.env.POOL_V1_ADDRESS ?? legacyDeployments?.pool) ? getAddress(process.env.POOL_V1_ADDRESS ?? legacyDeployments!.pool!) : undefined;
+if (POOL_V1) {
+  const LAUNCHPAD_V1 = (process.env.LAUNCHPAD_V1_ADDRESS ?? legacyDeployments?.launchpad) ? getAddress(process.env.LAUNCHPAD_V1_ADDRESS ?? legacyDeployments!.launchpad!) : undefined;
+  const MIGRATE_EXIT = (process.env.MIGRATE_EXIT_ADDRESS ?? legacyDeployments?.migrateExit) ? getAddress(process.env.MIGRATE_EXIT_ADDRESS ?? legacyDeployments!.migrateExit!) : undefined;
+  const dynamicV1 = new DynamicAssets(publicClient, POOL_V1, dynamic.opts);
+  registerLegacy(app, { pool: POOL_V1, launchpad: LAUNCHPAD_V1, migrateExit: MIGRATE_EXIT }, {
+    publicClient, account, queue, policy, dynamic: dynamicV1, relayCostWei, floorWei, gasLimit: GAS_LIMIT, gasInfo: () => gas.info(), v2Pool: POOL,
+  });
+  console.log(`[relayer] legacy v1 routes on: pool ${POOL_V1} launchpad ${LAUNCHPAD_V1 ?? "-"} migrateExit ${MIGRATE_EXIT ?? "-"}`);
+}
+function loadLegacyDeployments(chainId: number): { pool?: string; launchpad?: string; migrateExit?: string } | undefined {
+  const p = process.env.LEGACY_DEPLOYMENTS ?? `contracts/deployments/${chainId}.v1.json`;
+  return existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : undefined;
+}
 
 app.get<{ Params: { id: string } }>("/job/:id", async (req, reply) => {
   const j = queue.get(req.params.id);
