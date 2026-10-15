@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-interface ITransact2x2Verifier {
-    function verifyProof(uint256[2] calldata a, uint256[2][2] calldata b, uint256[2] calldata c, uint256[9] calldata input) external view returns (bool);
+interface ITransact2x3Verifier {
+    function verifyProof(uint256[2] calldata a, uint256[2][2] calldata b, uint256[2] calldata c, uint256[10] calldata input) external view returns (bool);
 }
 
-interface ITransact4x2Verifier {
-    function verifyProof(uint256[2] calldata a, uint256[2][2] calldata b, uint256[2] calldata c, uint256[11] calldata input) external view returns (bool);
+interface ITransact4x3Verifier {
+    function verifyProof(uint256[2] calldata a, uint256[2][2] calldata b, uint256[2] calldata c, uint256[12] calldata input) external view returns (bool);
 }
 
 /// @notice A contract the pool hands unshielded funds to inside the same transaction (SPEC §11).

@@ -1,5 +1,6 @@
-// Client side of contracts/contracts/ShieldedPool.sol: constants, share math,
-// proof encoding and the `transact` call arguments, plus typed reads.
+// Client side of contracts/contracts/ShieldedPool.sol (protocol v2): constants,
+// share math, proof encoding and the `transact` / `drain` / `register` call
+// arguments, plus typed reads.
 import type { PublicClient } from "viem";
 import { ShieldedPoolAbi } from "./abi/ShieldedPool.js";
 import { extDataArg, type EvmAddress, type ExtData } from "./extdata.js";
@@ -7,10 +8,14 @@ import type { Groth16Proof, TransactProof } from "./prover.js";
 
 export { ShieldedPoolAbi };
 
+export const PROTOCOL_VERSION = 2;
 /** Must equal `ShieldedPool.VIRTUAL_OFFSET`: V virtual shares backed by V units from creation (SPEC §9). */
 export const VIRTUAL_OFFSET = 1_000_000n;
 /** `ShieldedPool.NATIVE_UNIT`: BNB is accounted in gwei inside the pool. */
 export const NATIVE_UNIT = 1_000_000_000n;
+/** `ShieldedPool.MAX_DRAIN` / `AUTO_DRAIN`. */
+export const MAX_DRAIN = 512;
+export const AUTO_DRAIN = 64;
 
 /** Mirror of the contract's `Pool` struct. All amounts in internal units (`unit` wei each). */
 export interface PoolState {
@@ -78,7 +83,7 @@ export interface TransactCall {
     bigint,
     EvmAddress,
     readonly bigint[],
-    readonly [bigint, bigint],
+    readonly [bigint, bigint, bigint],
     ReturnType<typeof extDataArg>,
   ];
   /** wei to attach: `amountForMint(shares) * unit` on a shield, else 0 */
@@ -97,14 +102,35 @@ export function transactCall(
   ext: ExtData,
   value: bigint,
 ): TransactCall {
-  if (proof.outCommitments.length !== 2) throw new Error("two outputs required");
+  if (proof.outCommitments.length !== 3) throw new Error("three outputs required");
   return {
     address: pool,
     abi: ShieldedPoolAbi,
     functionName: "transact",
-    args: [proofArg(proof.proof), token, root, publicAmount, aspRoot, aspProvider, proof.nullifiers, [proof.outCommitments[0], proof.outCommitments[1]], extDataArg(ext)],
+    args: [
+      proofArg(proof.proof),
+      token,
+      root,
+      publicAmount,
+      aspRoot,
+      aspProvider,
+      proof.nullifiers,
+      [proof.outCommitments[0], proof.outCommitments[1], proof.outCommitments[2]],
+      extDataArg(ext),
+    ],
     value,
   };
+}
+
+/** `drain(max)`: move queued commitments into the tree. Anyone may call; relayers do it as a keeper. */
+export function drainCall(pool: EvmAddress, max = MAX_DRAIN) {
+  return { address: pool, abi: ShieldedPoolAbi, functionName: "drain" as const, args: [max] as const };
+}
+
+/** `register(bytes)`: publish (or clear, with empty bytes) the caller's shielded address. */
+export function registerCall(pool: EvmAddress, shieldedAddress: Uint8Array) {
+  const hex = `0x${Array.from(shieldedAddress, (b) => b.toString(16).padStart(2, "0")).join("")}` as const;
+  return { address: pool, abi: ShieldedPoolAbi, functionName: "register" as const, args: [hex] as const };
 }
 
 // ---- wire format (what a client posts to the relayer's /relay)
@@ -116,9 +142,18 @@ export interface TransactCallJson {
   aspRoot: string;
   aspProvider: EvmAddress;
   nullifiers: string[];
-  outCommitments: [string, string];
+  outCommitments: [string, string, string];
   proof: { a: [string, string]; b: [[string, string], [string, string]]; c: [string, string] };
-  ext: { recipient: EvmAddress; relayer: EvmAddress; relayerFee: string; exitTarget: EvmAddress; exitData: `0x${string}`; ciphertext0: `0x${string}`; ciphertext1: `0x${string}`; outCiphertext: `0x${string}` };
+  ext: {
+    recipient: EvmAddress;
+    exitTarget: EvmAddress;
+    exitData: `0x${string}`;
+    ciphertext0: `0x${string}`;
+    ciphertext1: `0x${string}`;
+    ciphertext2: `0x${string}`;
+    outCiphertext: `0x${string}`;
+    reshield: { token: EvmAddress; ownerHash: string; rho: string; rcm: string; ciphertext: `0x${string}` };
+  };
   value: string;
 }
 
@@ -132,9 +167,9 @@ export function transactCallToJson(c: TransactCall): TransactCallJson {
     aspRoot: s(aspRoot),
     aspProvider,
     nullifiers: nullifiers.map(s),
-    outCommitments: [s(outCommitments[0]), s(outCommitments[1])],
+    outCommitments: [s(outCommitments[0]), s(outCommitments[1]), s(outCommitments[2])],
     proof: { a: [s(proof.a[0]), s(proof.a[1])], b: [[s(proof.b[0][0]), s(proof.b[0][1])], [s(proof.b[1][0]), s(proof.b[1][1])]], c: [s(proof.c[0]), s(proof.c[1])] },
-    ext: { ...ext, relayerFee: s(ext.relayerFee) },
+    ext: { ...ext, reshield: { ...ext.reshield, ownerHash: s(ext.reshield.ownerHash), rho: s(ext.reshield.rho), rcm: s(ext.reshield.rcm) } },
     value: s(c.value),
   };
 }
@@ -142,16 +177,28 @@ export function transactCallToJson(c: TransactCall): TransactCallJson {
 export function transactCallFromJson(pool: EvmAddress, j: TransactCallJson): TransactCall {
   const b = (x: string) => BigInt(x);
   if (j.nullifiers.length !== 2 && j.nullifiers.length !== 4) throw new Error("2 or 4 nullifiers");
+  if (j.outCommitments.length !== 3) throw new Error("3 output commitments");
   const proof = {
     a: [b(j.proof.a[0]), b(j.proof.a[1])] as const,
     b: [[b(j.proof.b[0][0]), b(j.proof.b[0][1])], [b(j.proof.b[1][0]), b(j.proof.b[1][1])]] as const,
     c: [b(j.proof.c[0]), b(j.proof.c[1])] as const,
   };
+  const r = j.ext.reshield;
   return {
     address: pool,
     abi: ShieldedPoolAbi,
     functionName: "transact",
-    args: [proof, j.token, b(j.root), b(j.publicAmount), b(j.aspRoot), j.aspProvider, j.nullifiers.map(b), [b(j.outCommitments[0]), b(j.outCommitments[1])], { ...j.ext, relayerFee: b(j.ext.relayerFee) }],
+    args: [
+      proof,
+      j.token,
+      b(j.root),
+      b(j.publicAmount),
+      b(j.aspRoot),
+      j.aspProvider,
+      j.nullifiers.map(b),
+      [b(j.outCommitments[0]), b(j.outCommitments[1]), b(j.outCommitments[2])],
+      { ...j.ext, reshield: { token: r.token, ownerHash: b(r.ownerHash), rho: b(r.rho), rcm: b(r.rcm), ciphertext: r.ciphertext } },
+    ],
     value: b(j.value),
   };
 }
@@ -171,10 +218,24 @@ export async function readIsKnownRoot(client: PublicClient, pool: EvmAddress, ro
   return client.readContract({ address: pool, abi: ShieldedPoolAbi, functionName: "isKnownRoot", args: [root] });
 }
 
+/** Leaves in the tree plus the queue (the next transact's first output lands here). */
 export async function readNextIndex(client: PublicClient, pool: EvmAddress): Promise<number> {
   return Number(await client.readContract({ address: pool, abi: ShieldedPoolAbi, functionName: "nextIndex" }));
 }
 
+/** Leaves actually in the tree; a note at index >= this is queued and not yet spendable. */
+export async function readInsertedIndex(client: PublicClient, pool: EvmAddress): Promise<number> {
+  return Number(await client.readContract({ address: pool, abi: ShieldedPoolAbi, functionName: "insertedIndex" }));
+}
+
 export async function readNullifierSpent(client: PublicClient, pool: EvmAddress, nf: bigint): Promise<boolean> {
   return client.readContract({ address: pool, abi: ShieldedPoolAbi, functionName: "nullifierSpent", args: [nf] });
+}
+
+/** The 43-byte shielded address an EOA published, or null. */
+export async function readRegistry(client: PublicClient, pool: EvmAddress, owner: EvmAddress): Promise<Uint8Array | null> {
+  const hex = await client.readContract({ address: pool, abi: ShieldedPoolAbi, functionName: "registry", args: [owner] });
+  const h = hex.slice(2);
+  if (h.length === 0) return null;
+  return Uint8Array.from(h.match(/../g)!, (x) => parseInt(x, 16));
 }

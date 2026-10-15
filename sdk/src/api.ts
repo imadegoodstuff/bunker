@@ -21,8 +21,13 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 
 // ---- indexer
 
-export interface CommitmentRow { index: number; commitment: string; token: string; ciphertext: string; txHash: string; block: number; blockTime: number | null }
+/** One leaf. `kind: "open"` rows are notes the pool minted for exit proceeds: `shares` and `ownerHash` are public. */
+export interface CommitmentRow {
+  index: number; commitment: string; token: string; ciphertext: string; txHash: string; block: number; blockTime: number | null;
+  kind?: "note" | "open"; shares?: string | null; ownerHash?: string | null;
+}
 export interface CommitmentsPage { from: number; next: number; total: number; items: CommitmentRow[] }
+export interface RegistryRow { owner: string; shieldedAddress: string | null; block: number | null }
 export interface IndexerHealth {
   ok: boolean; degraded?: boolean; commit?: string; chainId: number; pool: string; launchpad?: string | null; commitments: number;
   scan: { lastBlock: number; head: number | null; lastError?: string | null };
@@ -51,12 +56,17 @@ export class IndexerApi {
   launches(limit = 100) { return json<LaunchRow[]>(`${this.url}/launches?limit=${limit}`); }
   launch(token: string) { return json<LaunchRow & { trades: TradeRow[]; feeEvents: FeeEventRow[] }>(`${this.url}/launches/${token}`); }
   uploadMeta(m: LaunchMetaInput) { return json<{ uri: string; image: string; header: string | null }>(`${this.url}/meta`, { method: "POST", body: JSON.stringify(m) }); }
+  /** The shielded address an EOA registered on-chain (the wallet re-checks the chain before paying). */
+  registry(owner: string) { return json<RegistryRow>(`${this.url}/registry/${owner}`); }
 }
 
 // ---- relayer
 
 export interface RelayerInfo {
-  relayer: string; chainId: number; pool: string; launchpad: string | null;
+  protocolVersion?: number;
+  relayer: string; chainId: number; pool: string; launchpad: string | null; swapExit?: string | null;
+  /** the relayer's shielded address: fee notes are encrypted to it */
+  shieldedAddress?: string;
   /** `min` in the pool's internal units; `bps` of the amount */
   fees: { token: string; min: string; bps: number; costWei?: string }[];
   delay: { minMs: number; maxMs: number };
@@ -64,6 +74,9 @@ export interface RelayerInfo {
   gasLimit: string;
   dynamicAssets?: boolean;
   queued: number;
+  /** leaves waiting for a drain, and whether this relayer drains as a keeper */
+  pending?: number;
+  drains?: boolean;
 }
 export interface AssetQuote {
   token: string; decimals: number; pool: boolean; unit?: string; supported: boolean; reason?: string;
@@ -78,6 +91,8 @@ export class RelayerApi {
   asset(token: string) { return json<AssetQuote>(`${this.url}/asset/${token}`); }
   relay(call: TransactCallJson) { return json<{ id: string; releaseAt: number; gas?: string; duplicate?: boolean }>(`${this.url}/relay`, { method: "POST", body: JSON.stringify(call) }); }
   job(id: string) { return json<RelayJob>(`${this.url}/job/${id}`); }
+  /** Ask the relayer to drain the queue now (it does so on its own every few seconds; this just hurries it). */
+  drain() { return json<{ txHash?: string; pending: number }>(`${this.url}/drain`, { method: "POST", body: "{}" }); }
 }
 
 // ---- agents

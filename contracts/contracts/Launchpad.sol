@@ -12,10 +12,10 @@ interface IShieldedPoolLite {
  * @title BUNKER privacy launchpad
  * @notice Constant-product bonding curve with virtual reserves (SPEC §13).
  * Every trade reaches the curve through the shielded pool's exit hook: the
- * trader unshields BNB (buy) or tokens (sell) straight into this contract with
- * a one-time claim key named in `exitData`; the curve pays that key, and the
- * key shields its proceeds back into the pool. The trader's wallet never
- * touches the curve.
+ * trader unshields BNB (buy) or tokens (sell) straight into this contract and
+ * the curve hands the proceeds straight back to the pool, which mints a note
+ * for them in the same transaction (an open note, see ShieldedPool). No
+ * public address, not even a throwaway one, ever holds the trader's funds.
  *
  * Fees go to the protocol treasury (the agents' wallet). The fee itself is set
  * per token by the four agent keys, one bounded step per epoch, see
@@ -86,8 +86,8 @@ contract Launchpad is IBunkerExit {
     // ---- events
 
     event Launch(address indexed token, address indexed creator, string name, string symbol, string uri, uint256 virtualBnb, uint256 virtualToken, uint256 curveSupply, uint256 totalSupply, uint256 graduationWei);
-    event CurveBuy(address indexed token, uint256 bnbIn, uint256 fee, uint256 tokensOut, uint256 realBnb, uint256 realToken, uint256 virtualToken, address claimKey);
-    event CurveSell(address indexed token, uint256 bnbOut, uint256 fee, uint256 tokensIn, uint256 realBnb, uint256 realToken, uint256 virtualToken, address claimKey);
+    event CurveBuy(address indexed token, uint256 bnbIn, uint256 fee, uint256 tokensOut, uint256 realBnb, uint256 realToken, uint256 virtualToken);
+    event CurveSell(address indexed token, uint256 bnbOut, uint256 fee, uint256 tokensIn, uint256 realBnb, uint256 realToken, uint256 virtualToken);
     event Harvest(address indexed token, uint256 amount);
     event FeeVote(address indexed token, uint8 agent, uint16 feeBps, uint64 blockNumber);
     event FeeRoll(address indexed token, uint16 feeBps, uint64 epoch);
@@ -186,89 +186,88 @@ contract Launchpad is IBunkerExit {
 
     /**
      * @dev Called by the pool after it delivered `amount` of `token` to this
-     * contract. `data` = abi.encode(kind, curveToken, claimKey, minOut, claimBudget, relayerTip):
-     * - buy  (token == BNB): `claimBudget` wei stay with the claim key for gas,
-     *   `relayerTip` wei go to the relayer; the rest, less the fee, buys tokens
-     *   that go to the claim key.
+     * contract. `data` = abi.encode(kind, curveToken, minOut):
+     * - buy  (token == BNB): the BNB, less the fee, buys tokens; the tokens go
+     *   back to the pool, which mints the trader an open note for them. A buy
+     *   that would overshoot the last tokens by more than `overshootSlack` is
+     *   refused (`SoldOut`): size it with `quoteBuyExactOut`.
      * - sell (token == launched token): all delivered tokens are sold; the BNB,
-     *   less fee and tip, goes to the claim key, which must end up above `claimBudget`.
+     *   less the fee, goes back to the pool.
+     * The pool measures what came back; `minOut` is enforced here.
      */
     struct Exit {
         uint8 kind;
         address token;
-        address claimKey;
         uint256 minOut;
-        uint256 claimBudget;
-        uint256 relayerTip;
     }
 
     function decodeExit(bytes calldata data) public pure returns (Exit memory e) {
-        (e.kind, e.token, e.claimKey, e.minOut, e.claimBudget, e.relayerTip) = abi.decode(data, (uint8, address, address, uint256, uint256, uint256));
+        (e.kind, e.token, e.minOut) = abi.decode(data, (uint8, address, uint256));
     }
 
-    function onExit(address token, uint256 amount, address relayer, bytes calldata data) external override {
+    function onExit(address token, uint256 amount, address, bytes calldata data) external override {
         if (msg.sender != pool) revert NotFromPool();
         Exit memory e = decodeExit(data);
         Curve storage c = _curves[e.token];
         if (c.createdBlock == 0) revert UnknownCurve();
-        if (e.claimKey == address(0)) revert BadExit();
         _roll(e.token, c, uint64(block.number));
         if (c.graduated) revert Migrated();
 
         if (e.kind == EXIT_BUY) {
             if (token != address(0)) revert BadExit();
-            _buy(c, e, amount, relayer);
+            _buy(c, e, amount);
         } else if (e.kind == EXIT_SELL) {
             if (token != e.token) revert BadExit();
-            _sell(c, e, amount, relayer);
+            _sell(c, e, amount);
         } else {
             revert BadExit();
         }
         _graduateIfDue(e.token, c);
     }
 
-    function _buy(Curve storage c, Exit memory e, uint256 amount, address relayer) internal {
-        uint256 reserve = e.claimBudget + e.relayerTip;
-        if (amount <= reserve) revert AmountTooSmall();
-        uint256 gross = amount - reserve;
-        uint256 fee_ = fee(gross, c.tradeFeeBps);
-        (uint256 out, uint256 y2, uint256 net) = buyCapped(c, gross - fee_);
+    function _buy(Curve storage c, Exit memory e, uint256 amount) internal {
+        if (amount == 0) revert AmountTooSmall();
+        uint256 fee_ = fee(amount, c.tradeFeeBps);
+        (uint256 out, uint256 y2, uint256 net) = buyCapped(c, amount - fee_);
         if (out < e.minOut) revert Slippage();
-        uint256 refund = 0;
-        if (net < gross - fee_) {
-            // the buy that empties the curve pays only for what it got
-            fee_ = feeOnNet(net, c.tradeFeeBps);
-            refund = gross - net - fee_;
-        }
+        // The proceeds come back as one note of one asset, so a buy cannot be partially refunded in
+        // BNB: a buy that would overshoot the last tokens must be sized to them (`quoteBuyExactOut`).
+        // The pool pays in whole units (1 gwei for BNB), so a last buy may land a hair above the
+        // exact size; up to `overshootSlack` is kept in the curve rather than refused, so the
+        // last tokens can always be bought.
+        if (net + overshootSlack(amount) < amount - fee_) revert SoldOut();
+        net = amount - fee_;
         c.realBnb += net;
         c.feesAccrued += fee_;
         c.virtualToken = y2;
         c.realToken -= out;
         c.buys += 1;
         c.bnbVolume += net;
-        _sendToken(e.token, e.claimKey, out);
-        if (e.claimBudget + refund > 0) _sendValue(e.claimKey, e.claimBudget + refund);
-        if (e.relayerTip > 0) _sendValue(relayer, e.relayerTip);
-        emit CurveBuy(e.token, net, fee_, out, c.realBnb, c.realToken, c.virtualToken, e.claimKey);
+        _sendToken(e.token, pool, out);
+        emit CurveBuy(e.token, net, fee_, out, c.realBnb, c.realToken, c.virtualToken);
     }
 
-    function _sell(Curve storage c, Exit memory e, uint256 amount, address relayer) internal {
+    /// @notice How far past the exact sell-out size a buy may land: 1 bp of it, at least 1 gwei.
+    function overshootSlack(uint256 amount) public pure returns (uint256 slack) {
+        slack = amount / 10_000;
+        if (slack < 1 gwei) slack = 1 gwei;
+    }
+
+    function _sell(Curve storage c, Exit memory e, uint256 amount) internal {
         if (amount == 0) revert AmountTooSmall();
         (uint256 grossOut, uint256 y2) = sell(c, amount);
         uint256 fee_ = fee(grossOut, c.tradeFeeBps);
-        if (grossOut < fee_ + e.relayerTip) revert AmountTooSmall();
-        uint256 out = grossOut - fee_ - e.relayerTip;
+        uint256 out = grossOut - fee_;
         if (out < e.minOut) revert Slippage();
-        if (out <= e.claimBudget) revert AmountTooSmall();
+        if (out == 0) revert AmountTooSmall();
         c.realBnb -= grossOut;
         c.feesAccrued += fee_;
         c.virtualToken = y2;
         c.realToken += amount;
         c.sells += 1;
         c.bnbVolume += grossOut;
-        _sendValue(e.claimKey, out);
-        if (e.relayerTip > 0) _sendValue(relayer, e.relayerTip);
-        emit CurveSell(e.token, grossOut, fee_, amount, c.realBnb, c.realToken, c.virtualToken, e.claimKey);
+        _sendValue(pool, out);
+        emit CurveSell(e.token, grossOut, fee_, amount, c.realBnb, c.realToken, c.virtualToken);
     }
 
     // ---- keeper entry points

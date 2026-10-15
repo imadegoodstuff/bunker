@@ -28,7 +28,7 @@ const PTAU = join(root, "ptau", "ppot_0080_16.ptau");
 const PTAU_SHA256 = "ed3622a7c79b0b49aadd134ebbc5b77df8c8c59bccebdfd0d9bf2c1a51561cf9";
 const TRANSCRIPT = join(repo, "ceremony", "transcript.json");
 const CONTRIB_DIR = join(repo, "ceremony", "contributions");
-const CIRCUITS = ["transact2x2", "transact4x2"];
+const CIRCUITS = ["transact2x3", "transact4x3"];
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,

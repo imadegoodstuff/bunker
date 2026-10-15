@@ -1,42 +1,13 @@
 // Client for contracts/contracts/Launchpad.sol: a bonding curve traded from
 // inside the shielded pool. Curve math and fee policy mirror the contract.
-import { sha256 } from "@noble/hashes/sha2.js";
-import { encodeAbiParameters, decodeAbiParameters, type Hex, type PublicClient } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import { encodeAbiParameters, decodeAbiParameters, type PublicClient } from "viem";
 import { LaunchpadAbi } from "./abi/Launchpad.js";
 import { LaunchTokenAbi } from "./abi/LaunchToken.js";
-import { bigIntToBytesLE, bigIntToBytesBE, bytesToBigIntBE, concatBytes, toHex, fromHex } from "./field.js";
+import { SwapExitAbi } from "./abi/SwapExit.js";
+import { toHex, fromHex } from "./field.js";
 import type { EvmAddress as Address } from "./extdata.js";
 
-export { LaunchpadAbi, LaunchTokenAbi };
-
-const enc = new TextEncoder();
-
-// ---- claim keys
-
-/** secp256k1 group order. */
-const SECP256K1_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
-
-export interface ClaimKey {
-  privateKey: Hex;
-  address: Address;
-}
-
-/**
- * The claim key is a throwaway EOA the buyer derives from their shielded seed
- * and a per-trade nonce. The curve funds it (tokens plus a little BNB for gas),
- * and it then sends an ordinary pool shield. It appears on-chain twice — in the
- * trade's exit data and as the shield's sender — and nowhere else, so it links
- * the two halves of one trade and nothing more. Deterministic, so a seed
- * backup recovers unclaimed trades.
- */
-export function claimKey(seed: Uint8Array, nonce: bigint): ClaimKey {
-  const h = sha256(concatBytes(enc.encode("bunker-claim-v1"), seed, bigIntToBytesLE(nonce, 8)));
-  let k = bytesToBigIntBE(h) % SECP256K1_N;
-  if (k === 0n) k = 1n;
-  const privateKey: Hex = `0x${toHex(bigIntToBytesBE(k, 32))}`;
-  return { privateKey, address: privateKeyToAccount(privateKey).address };
-}
+export { LaunchpadAbi, LaunchTokenAbi, SwapExitAbi };
 
 // ---- parameters
 
@@ -206,49 +177,65 @@ export const EXIT_SELL = 2;
 const EXIT_ABI = [
   { name: "kind", type: "uint8" },
   { name: "token", type: "address" },
-  { name: "claimKey", type: "address" },
   { name: "minOut", type: "uint256" },
-  { name: "claimBudget", type: "uint256" },
-  { name: "relayerTip", type: "uint256" },
 ] as const;
 
 /**
- * `claimBudget`: wei parked at the claim key for the gas of its shield.
- * `relayerTip`: wei paid from the BNB leg to the exit call's sender — the relayer. A relayed *sell*
- * has to pay its relayer this way, since the pool's own fee would be denominated in the token being sold.
+ * Exit data of a launchpad trade. The curve hands its proceeds straight back
+ * to the pool, which mints the trader a note for them in the same transaction;
+ * the relayer is paid by the transact's private fee note, never from the trade.
  */
-export function exitData(kind: 1 | 2, token: Address, claimKey: Address, minOut: bigint, claimBudget: bigint, relayerTip = 0n): Uint8Array {
-  return fromHex(encodeAbiParameters(EXIT_ABI, [kind, token, claimKey, minOut, claimBudget, relayerTip]));
+export function exitData(kind: 1 | 2, token: Address, minOut: bigint): Uint8Array {
+  return fromHex(encodeAbiParameters(EXIT_ABI, [kind, token, minOut]));
 }
-export function decodeExitData(d: Uint8Array): { kind: number; token: Address; claimKey: Address; minOut: bigint; claimBudget: bigint; relayerTip: bigint } {
-  const [kind, token, claimKey, minOut, claimBudget, relayerTip] = decodeAbiParameters(EXIT_ABI, `0x${toHex(d)}`);
-  return { kind, token, claimKey, minOut, claimBudget, relayerTip };
+export function decodeExitData(d: Uint8Array): { kind: number; token: Address; minOut: bigint } {
+  const [kind, token, minOut] = decodeAbiParameters(EXIT_ABI, `0x${toHex(d)}`);
+  return { kind, token, minOut };
 }
 
 /**
- * Tokens a private buy of `amountIn` wei (what the pool delivers after the
- * relayer fee) will park at the claim key. `refund` is what comes back to the
- * claim key when the buy empties the curve (the last buy before graduation).
+ * Tokens a private buy of `amountIn` wei (what the pool delivers to the curve)
+ * returns to the pool as the trader's note. A buy that would overshoot the last
+ * tokens is refused by the curve (`SoldOut`); `maxIn` is the most it accepts,
+ * so size the last buy of a curve to it.
  */
-export function quotePrivateBuy(curve: Reserves & { tradeFeeBps: number }, amountIn: bigint, claimBudget: bigint, relayerTip = 0n): { out: bigint; net: bigint; fee: bigint; reserve: bigint; refund: bigint } {
-  const reserve = claimBudget + relayerTip;
-  if (amountIn <= reserve) throw new Error("amount too small to cover the claim budget and tip");
-  const gross = amountIn - reserve;
-  let fee = feeOf(gross, curve.tradeFeeBps);
-  const { out, used: net } = curveBuyCapped(curve, gross - fee);
-  let refund = 0n;
-  if (net < gross - fee) {
-    fee = feeOnNet(net, curve.tradeFeeBps);
-    refund = gross - net - fee;
-  }
-  return { out, net, fee, reserve, refund };
+export function quotePrivateBuy(curve: Reserves & { tradeFeeBps: number }, amountIn: bigint): { out: bigint; net: bigint; fee: bigint; maxIn: bigint; overshoots: boolean } {
+  if (amountIn <= 0n) throw new Error("nothing");
+  const fee = feeOf(amountIn, curve.tradeFeeBps);
+  const { out, used } = curveBuyCapped(curve, amountIn - fee);
+  const lastNet = quoteBuyExactOut(curve, curve.realToken);
+  const maxIn = lastNet + feeOnNet(lastNet, curve.tradeFeeBps);
+  const overshoots = used + overshootSlack(amountIn) < amountIn - fee;
+  // within the slack the curve keeps the whole amount (mirror of `_buy`)
+  return { out, net: overshoots ? used : amountIn - fee, fee, maxIn, overshoots };
 }
-/** Wei a private sell of `tokenIn` parks at the claim key, after the curve fee and the relayer tip. Must exceed `claimBudget`. */
-export function quotePrivateSell(curve: Reserves & { tradeFeeBps: number }, tokenIn: bigint, relayerTip = 0n): { out: bigint; gross: bigint; fee: bigint } {
+/** Mirror of `Launchpad.overshootSlack`: 1 bp of the buy, at least 1 gwei. */
+export function overshootSlack(amount: bigint): bigint {
+  const s = amount / 10_000n;
+  return s < 1_000_000_000n ? 1_000_000_000n : s;
+}
+/** Wei a private sell of `tokenIn` returns to the pool, after the curve fee. */
+export function quotePrivateSell(curve: Reserves & { tradeFeeBps: number }, tokenIn: bigint): { out: bigint; gross: bigint; fee: bigint } {
   const { out: gross } = curveSell(curve, tokenIn);
   const fee = feeOf(gross, curve.tradeFeeBps);
-  if (gross - fee <= relayerTip) throw new Error("sale does not cover the relayer tip");
-  return { out: gross - fee - relayerTip, gross, fee };
+  return { out: gross - fee, gross, fee };
+}
+
+// ---- private swaps (SwapExit.sol)
+
+const SWAP_EXIT_ABI = [
+  { name: "path", type: "address[]" },
+  { name: "minOut", type: "uint256" },
+] as const;
+
+/** Exit data for `SwapExit`: a PancakeSwap V2 path (WBNB stands for BNB) and the minimum output. */
+export function swapExitData(path: readonly Address[], minOut: bigint): Uint8Array {
+  if (path.length < 2) throw new Error("path needs at least two tokens");
+  return fromHex(encodeAbiParameters(SWAP_EXIT_ABI, [path, minOut]));
+}
+export function decodeSwapExitData(d: Uint8Array): { path: readonly Address[]; minOut: bigint } {
+  const [path, minOut] = decodeAbiParameters(SWAP_EXIT_ABI, `0x${toHex(d)}`);
+  return { path, minOut };
 }
 
 // ---- reads

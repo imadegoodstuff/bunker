@@ -64,8 +64,19 @@ export function newNote(asset: bigint, value: bigint, gd: Point, pkd: Point, mem
   return { asset, value, gd, pkd, ...freshRandomness() };
 }
 
+/** `ownerHash = Poseidon(g_d.x, g_d.y, pk_d.x, pk_d.y)`: the owner half of a v2 commitment (circuits/src/note.circom OwnerHash). */
+export async function ownerHash(gd: Point, pkd: Point): Promise<bigint> {
+  return poseidon([gd[0], gd[1], pkd[0], pkd[1]]);
+}
+
+/** `cm = Poseidon(asset, value, ownerHash, rho, rcm)` (protocol v2; `ShieldedPool.openNoteCommitment` computes the same). */
 export async function noteCommitment(n: Note): Promise<bigint> {
-  return poseidon([n.asset, n.value, n.gd[0], n.gd[1], n.pkd[0], n.pkd[1], n.rho, n.rcm]);
+  return poseidon([n.asset, n.value, await ownerHash(n.gd, n.pkd), n.rho, n.rcm]);
+}
+
+/** Commitment of a note the pool minted on-chain: everything but the owner is public. */
+export async function openNoteCommitment(asset: bigint, shares: bigint, owner: bigint, rho: bigint, rcm: bigint): Promise<bigint> {
+  return poseidon([asset, shares, owner, rho, rcm]);
 }
 
 export async function nullifier(nk: bigint, rho: bigint, position: number | bigint): Promise<bigint> {

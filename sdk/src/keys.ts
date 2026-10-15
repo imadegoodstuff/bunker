@@ -267,6 +267,39 @@ export async function fullViewingKey(spend: SpendingKey): Promise<FullViewingKey
   return { ak, nk, ovk: spend.ovk, ivk };
 }
 
+const VIEWING_KEY_HRP = "bunkerview";
+
+/**
+ * Serialize a full viewing key for an auditor, accountant or watch-only
+ * device: `bunkerview1…` = bech32m(ak || nk || ovk). The holder sees every
+ * incoming note, every outgoing payment and which notes were spent, and can
+ * spend nothing. `ivk` is recomputed from ak and nk on import.
+ */
+export function encodeViewingKey(fvk: FullViewingKey): string {
+  const be = (x: bigint) => {
+    const out = new Uint8Array(32);
+    let v = x;
+    for (let i = 31; i >= 0; i--) {
+      out[i] = Number(v & 0xffn);
+      v >>= 8n;
+    }
+    return out;
+  };
+  return bech32m.encode(VIEWING_KEY_HRP, bech32m.toWords(concatBytes(be(fvk.ak), be(fvk.nk), fvk.ovk)), 200);
+}
+
+export async function decodeViewingKey(s: string): Promise<FullViewingKey> {
+  const { prefix, words } = bech32m.decode(s.trim(), 200);
+  if (prefix !== VIEWING_KEY_HRP) throw new Error("not a BUNKER viewing key");
+  const payload = new Uint8Array(bech32m.fromWords(words));
+  if (payload.length !== 96) throw new Error("malformed viewing key");
+  const be = (b: Uint8Array) => b.reduce((acc, x) => (acc << 8n) | BigInt(x), 0n);
+  const ak = be(payload.slice(0, 32));
+  const nk = be(payload.slice(32, 64));
+  const ivk = (await poseidon([ak, nk])) & SCALAR_MASK;
+  return { ak, nk, ovk: payload.slice(64, 96), ivk };
+}
+
 /** GroupHash_BJJ(d): deterministic diversifier to subgroup point, or null. */
 export function groupHash(bjj: BabyJub, d: Uint8Array): Point | null {
   if (d.length !== 11) throw new Error("diversifier must be 11 bytes");
@@ -314,11 +347,20 @@ export function encodeAddress(bjj: BabyJub, addr: Address, hrp: "bunker" | "tbun
 
 export function decodeAddress(bjj: BabyJub, s: string): { hrp: string; address: Address } {
   const { prefix, words } = bech32m.decode(s, 120);
-  const payload = new Uint8Array(bech32m.fromWords(words));
+  return { hrp: prefix, address: addressFromBytes(bjj, new Uint8Array(bech32m.fromWords(words))) };
+}
+
+/** The 43 raw bytes (d || compressed pk_d) a `bunker1…` string carries; what `ShieldedPool.register` stores. */
+export function addressToBytes(bjj: BabyJub, addr: Address): Uint8Array {
+  return concatBytes(addr.d, bjj.compress(addr.pkd));
+}
+
+export function addressFromBytes(bjj: BabyJub, payload: Uint8Array): Address {
   if (payload.length !== 43) throw new Error("bad address length");
   const d = payload.slice(0, 11);
+  if (!groupHash(bjj, d)) throw new Error("bad diversifier");
   const pkd = bjj.decompress(payload.slice(11));
   if (!pkd) throw new Error("bad address point");
   if (!bjj.inSubgroup(pkd)) throw new Error("address point not in subgroup");
-  return { hrp: prefix, address: { d, pkd } };
+  return { d, pkd };
 }

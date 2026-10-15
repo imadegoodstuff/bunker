@@ -7,14 +7,23 @@ export interface NetworkConfig {
   name: string;
   chainId: number;
   rpcUrl: string;
+  /** protocol version of the pool at `pool` */
+  protocolVersion: number;
   pool: EvmAddress;
   launchpad: EvmAddress;
+  /** the private-swap exit hook (PancakeSwap V2), or null */
+  swapExit: EvmAddress | null;
+  /** WBNB, what a swap path uses for BNB */
+  wbnb: EvmAddress;
   /** block the contracts were deployed at; the indexer scans from here */
   startBlock: number;
   indexerUrl: string;
+  /** the relayer used when `relayerUrls` is empty */
   relayerUrl: string;
+  /** every relayer the client may pick from (cheapest healthy one wins); anyone can run one and add theirs here */
+  relayerUrls?: string[];
   agentsUrl: string;
-  /** where `transact2x2.{wasm,zkey}` and `transact4x2.{wasm,zkey}` are served */
+  /** where `transact2x3.{wasm,zkey}` and `transact4x3.{wasm,zkey}` are served */
   artifactsUrl: string;
   explorerUrl: string;
 }
@@ -23,23 +32,38 @@ export const bsc: NetworkConfig = {
   name: "BNB Smart Chain",
   chainId: 56,
   rpcUrl: "https://bsc-dataseed.bnbchain.org",
-  pool: "0xD327D391Ba9f5924F4fD82AB0cd23A2b4F5812bF",
-  launchpad: "0x1A6b0e1Fc2CC10218a6d5e48b33442a1B9DFAaA6",
-  startBlock: 127738817,
+  protocolVersion: 2,
+  // filled in by the v2 mainnet deployment (contracts/deployments/56.json)
+  pool: "0x0000000000000000000000000000000000000000",
+  launchpad: "0x0000000000000000000000000000000000000000",
+  swapExit: null,
+  wbnb: "0xbb4CdB9CBd36B01bD1cBaEbF2De08d9173bc095c",
+  startBlock: 0,
   indexerUrl: "https://bunker-indexer.fly.dev",
   relayerUrl: "https://bunker-relayer.fly.dev",
+  relayerUrls: ["https://bunker-relayer.fly.dev"],
   agentsUrl: "https://bunker-agents.fly.dev",
   artifactsUrl: "https://bunkeronbnb.com/circuits",
   explorerUrl: "https://bscscan.com",
 };
 
+/** The protocol v1 deployment (two outputs, synchronous insertion, claim keys). Read-only from this SDK version. */
+export const bscV1 = {
+  pool: "0xD327D391Ba9f5924F4fD82AB0cd23A2b4F5812bF" as EvmAddress,
+  launchpad: "0x1A6b0e1Fc2CC10218a6d5e48b33442a1B9DFAaA6" as EvmAddress,
+  startBlock: 127738817,
+};
+
 /** A local Hardhat node with `npm run -w contracts deploy:local` and the three services on their default ports. */
-export const localhost = (addresses: { pool: EvmAddress; launchpad: EvmAddress; startBlock?: number }): NetworkConfig => ({
+export const localhost = (addresses: { pool: EvmAddress; launchpad: EvmAddress; swapExit?: EvmAddress; wbnb?: EvmAddress; startBlock?: number }): NetworkConfig => ({
   name: "Hardhat",
   chainId: 31337,
   rpcUrl: "http://127.0.0.1:8545",
+  protocolVersion: 2,
   pool: addresses.pool,
   launchpad: addresses.launchpad,
+  swapExit: addresses.swapExit ?? null,
+  wbnb: addresses.wbnb ?? "0x0000000000000000000000000000000000000000",
   startBlock: addresses.startBlock ?? 0,
   indexerUrl: "http://localhost:8788",
   relayerUrl: "http://localhost:8787",

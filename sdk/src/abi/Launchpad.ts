@@ -187,12 +187,6 @@ export const LaunchpadAbi = [
         "internalType": "uint256",
         "name": "virtualToken",
         "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "address",
-        "name": "claimKey",
-        "type": "address"
       }
     ],
     "name": "CurveBuy",
@@ -242,12 +236,6 @@ export const LaunchpadAbi = [
         "internalType": "uint256",
         "name": "virtualToken",
         "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "address",
-        "name": "claimKey",
-        "type": "address"
       }
     ],
     "name": "CurveSell",
@@ -1067,23 +1055,8 @@ export const LaunchpadAbi = [
             "type": "address"
           },
           {
-            "internalType": "address",
-            "name": "claimKey",
-            "type": "address"
-          },
-          {
             "internalType": "uint256",
             "name": "minOut",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "claimBudget",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "relayerTip",
             "type": "uint256"
           }
         ],
@@ -1350,7 +1323,7 @@ export const LaunchpadAbi = [
       },
       {
         "internalType": "address",
-        "name": "relayer",
+        "name": "",
         "type": "address"
       },
       {
@@ -1362,6 +1335,25 @@ export const LaunchpadAbi = [
     "name": "onExit",
     "outputs": [],
     "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "overshootSlack",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "slack",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "pure",
     "type": "function"
   },
   {

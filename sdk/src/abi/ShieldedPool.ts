@@ -4,12 +4,12 @@ export const ShieldedPoolAbi = [
     "inputs": [
       {
         "internalType": "address",
-        "name": "v2x2",
+        "name": "v2x3",
         "type": "address"
       },
       {
         "internalType": "address",
-        "name": "v4x2",
+        "name": "v4x3",
         "type": "address"
       },
       {
@@ -33,12 +33,17 @@ export const ShieldedPoolAbi = [
   },
   {
     "inputs": [],
-    "name": "AccountMismatch",
+    "name": "AlreadyInitialized",
     "type": "error"
   },
   {
     "inputs": [],
-    "name": "AlreadyInitialized",
+    "name": "AmountTooSmall",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "BadAddress",
     "type": "error"
   },
   {
@@ -53,11 +58,6 @@ export const ShieldedPoolAbi = [
   },
   {
     "inputs": [],
-    "name": "FeeExceedsAmount",
-    "type": "error"
-  },
-  {
-    "inputs": [],
     "name": "InvalidProof",
     "type": "error"
   },
@@ -68,7 +68,17 @@ export const ShieldedPoolAbi = [
   },
   {
     "inputs": [],
+    "name": "NotInTransact",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "NotInitialized",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NothingQueued",
     "type": "error"
   },
   {
@@ -183,6 +193,37 @@ export const ShieldedPoolAbi = [
     "anonymous": false,
     "inputs": [
       {
+        "indexed": true,
+        "internalType": "uint32",
+        "name": "fromIndex",
+        "type": "uint32"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint32",
+        "name": "count",
+        "type": "uint32"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "newRoot",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint32",
+        "name": "rootIndex",
+        "type": "uint32"
+      }
+    ],
+    "name": "Drain",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
         "indexed": false,
         "internalType": "address",
         "name": "guardian",
@@ -215,6 +256,49 @@ export const ShieldedPoolAbi = [
         "type": "address"
       },
       {
+        "indexed": true,
+        "internalType": "uint32",
+        "name": "index",
+        "type": "uint32"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "commitment",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "shares",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "ownerHash",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes",
+        "name": "ciphertext",
+        "type": "bytes"
+      }
+    ],
+    "name": "OpenNote",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
         "indexed": false,
         "internalType": "uint8",
         "name": "decimals",
@@ -234,6 +318,25 @@ export const ShieldedPoolAbi = [
       }
     ],
     "name": "PoolCreated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes",
+        "name": "shieldedAddress",
+        "type": "bytes"
+      }
+    ],
+    "name": "Registered",
     "type": "event"
   },
   {
@@ -285,15 +388,9 @@ export const ShieldedPoolAbi = [
       },
       {
         "indexed": false,
-        "internalType": "uint256",
-        "name": "commitment0",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "commitment1",
-        "type": "uint256"
+        "internalType": "uint256[3]",
+        "name": "commitments",
+        "type": "uint256[3]"
       },
       {
         "indexed": false,
@@ -310,14 +407,14 @@ export const ShieldedPoolAbi = [
       {
         "indexed": false,
         "internalType": "bytes",
-        "name": "outCiphertext",
+        "name": "ciphertext2",
         "type": "bytes"
       },
       {
         "indexed": false,
-        "internalType": "uint256",
-        "name": "newRoot",
-        "type": "uint256"
+        "internalType": "bytes",
+        "name": "outCiphertext",
+        "type": "bytes"
       }
     ],
     "name": "Transact",
@@ -363,6 +460,32 @@ export const ShieldedPoolAbi = [
   },
   {
     "inputs": [],
+    "name": "ADDRESS_BYTES",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "AUTO_DRAIN",
+    "outputs": [
+      {
+        "internalType": "uint32",
+        "name": "",
+        "type": "uint32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "FIELD",
     "outputs": [
       {
@@ -377,6 +500,19 @@ export const ShieldedPoolAbi = [
   {
     "inputs": [],
     "name": "LEVELS",
+    "outputs": [
+      {
+        "internalType": "uint32",
+        "name": "",
+        "type": "uint32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "MAX_DRAIN",
     "outputs": [
       {
         "internalType": "uint32",
@@ -421,6 +557,19 @@ export const ShieldedPoolAbi = [
         "internalType": "uint32",
         "name": "",
         "type": "uint32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "VERSION",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
       }
     ],
     "stateMutability": "view",
@@ -647,21 +796,24 @@ export const ShieldedPoolAbi = [
   {
     "inputs": [
       {
+        "internalType": "uint32",
+        "name": "max",
+        "type": "uint32"
+      }
+    ],
+    "name": "drain",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
         "components": [
           {
             "internalType": "address",
             "name": "recipient",
             "type": "address"
-          },
-          {
-            "internalType": "address",
-            "name": "relayer",
-            "type": "address"
-          },
-          {
-            "internalType": "uint256",
-            "name": "relayerFee",
-            "type": "uint256"
           },
           {
             "internalType": "address",
@@ -685,8 +837,45 @@ export const ShieldedPoolAbi = [
           },
           {
             "internalType": "bytes",
+            "name": "ciphertext2",
+            "type": "bytes"
+          },
+          {
+            "internalType": "bytes",
             "name": "outCiphertext",
             "type": "bytes"
+          },
+          {
+            "components": [
+              {
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "internalType": "uint256",
+                "name": "ownerHash",
+                "type": "uint256"
+              },
+              {
+                "internalType": "uint256",
+                "name": "rho",
+                "type": "uint256"
+              },
+              {
+                "internalType": "uint256",
+                "name": "rcm",
+                "type": "uint256"
+              },
+              {
+                "internalType": "bytes",
+                "name": "ciphertext",
+                "type": "bytes"
+              }
+            ],
+            "internalType": "struct ShieldedPool.Reshield",
+            "name": "reshield",
+            "type": "tuple"
           }
         ],
         "internalType": "struct ShieldedPool.ExtData",
@@ -745,6 +934,19 @@ export const ShieldedPoolAbi = [
         "internalType": "address",
         "name": "",
         "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "insertedIndex",
+    "outputs": [
+      {
+        "internalType": "uint32",
+        "name": "",
+        "type": "uint32"
       }
     ],
     "stateMutability": "view",
@@ -846,6 +1048,58 @@ export const ShieldedPoolAbi = [
   {
     "inputs": [
       {
+        "internalType": "uint256",
+        "name": "asset",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "shares",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "ownerHash",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "rho",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "rcm",
+        "type": "uint256"
+      }
+    ],
+    "name": "openNoteCommitment",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "pure",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "pendingCount",
+    "outputs": [
+      {
+        "internalType": "uint32",
+        "name": "",
+        "type": "uint32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
         "internalType": "address",
         "name": "token",
         "type": "address"
@@ -915,6 +1169,57 @@ export const ShieldedPoolAbi = [
     "name": "publishAspRoot",
     "outputs": [],
     "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint32",
+        "name": "index",
+        "type": "uint32"
+      }
+    ],
+    "name": "queued",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes",
+        "name": "shieldedAddress",
+        "type": "bytes"
+      }
+    ],
+    "name": "register",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "registry",
+    "outputs": [
+      {
+        "internalType": "bytes",
+        "name": "",
+        "type": "bytes"
+      }
+    ],
+    "stateMutability": "view",
     "type": "function"
   },
   {
@@ -1162,9 +1467,9 @@ export const ShieldedPoolAbi = [
         "type": "uint256[]"
       },
       {
-        "internalType": "uint256[2]",
+        "internalType": "uint256[3]",
         "name": "outCommitments",
-        "type": "uint256[2]"
+        "type": "uint256[3]"
       },
       {
         "components": [
@@ -1172,16 +1477,6 @@ export const ShieldedPoolAbi = [
             "internalType": "address",
             "name": "recipient",
             "type": "address"
-          },
-          {
-            "internalType": "address",
-            "name": "relayer",
-            "type": "address"
-          },
-          {
-            "internalType": "uint256",
-            "name": "relayerFee",
-            "type": "uint256"
           },
           {
             "internalType": "address",
@@ -1205,8 +1500,45 @@ export const ShieldedPoolAbi = [
           },
           {
             "internalType": "bytes",
+            "name": "ciphertext2",
+            "type": "bytes"
+          },
+          {
+            "internalType": "bytes",
             "name": "outCiphertext",
             "type": "bytes"
+          },
+          {
+            "components": [
+              {
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "internalType": "uint256",
+                "name": "ownerHash",
+                "type": "uint256"
+              },
+              {
+                "internalType": "uint256",
+                "name": "rho",
+                "type": "uint256"
+              },
+              {
+                "internalType": "uint256",
+                "name": "rcm",
+                "type": "uint256"
+              },
+              {
+                "internalType": "bytes",
+                "name": "ciphertext",
+                "type": "bytes"
+              }
+            ],
+            "internalType": "struct ShieldedPool.Reshield",
+            "name": "reshield",
+            "type": "tuple"
           }
         ],
         "internalType": "struct ShieldedPool.ExtData",
@@ -1221,10 +1553,10 @@ export const ShieldedPoolAbi = [
   },
   {
     "inputs": [],
-    "name": "verifier2x2",
+    "name": "verifier2x3",
     "outputs": [
       {
-        "internalType": "contract ITransact2x2Verifier",
+        "internalType": "contract ITransact2x3Verifier",
         "name": "",
         "type": "address"
       }
@@ -1234,10 +1566,10 @@ export const ShieldedPoolAbi = [
   },
   {
     "inputs": [],
-    "name": "verifier4x2",
+    "name": "verifier4x3",
     "outputs": [
       {
-        "internalType": "contract ITransact4x2Verifier",
+        "internalType": "contract ITransact4x3Verifier",
         "name": "",
         "type": "address"
       }
@@ -1263,5 +1595,9 @@ export const ShieldedPoolAbi = [
     ],
     "stateMutability": "view",
     "type": "function"
+  },
+  {
+    "stateMutability": "payable",
+    "type": "receive"
   }
 ] as const;

@@ -36,6 +36,17 @@ contract MockPair {
         balanceOf[to] += liq;
     }
 
+    /// @dev Move reserves for a swap of `amountIn` of `tokenIn` against `amountOut` of the other side.
+    function swapReserves(address tokenIn, uint256 amountIn, uint256 amountOut) external {
+        if (tokenIn == token0) {
+            r0 += uint112(amountIn);
+            r1 -= uint112(amountOut);
+        } else {
+            r1 += uint112(amountIn);
+            r0 -= uint112(amountOut);
+        }
+    }
+
     function _sqrt(uint256 y) internal pure returns (uint256 z) {
         if (y > 3) {
             z = y;
@@ -102,7 +113,8 @@ contract MockPancakeRouter {
                 (amountToken, amountETH) = (tokOptimal, msg.value);
             }
         }
-        require(IERC20(token).transferFrom(msg.sender, pairAddr, amountToken), "TRANSFER_FROM");
+        // the router keeps both sides of the liquidity (the pair only tracks reserves), so swaps can pay out
+        require(IERC20(token).transferFrom(msg.sender, address(this), amountToken), "TRANSFER_FROM");
         liquidity = pair.mint(to, amountToken, amountETH, token);
         if (msg.value > amountETH) {
             (bool ok,) = msg.sender.call{value: msg.value - amountETH}("");
@@ -110,7 +122,7 @@ contract MockPancakeRouter {
         }
     }
 
-    function getAmountsOut(uint256 amountIn, address[] calldata path) external view returns (uint256[] memory amounts) {
+    function getAmountsOut(uint256 amountIn, address[] memory path) public view returns (uint256[] memory amounts) {
         amounts = new uint256[](path.length);
         amounts[0] = amountIn;
         for (uint256 i = 0; i + 1 < path.length; i++) {
@@ -121,6 +133,43 @@ contract MockPancakeRouter {
             amounts[i + 1] = (inFee * rOut) / (rIn * 10_000 + inFee);
         }
     }
+
+    // ---- swaps (single hop is enough for tests; the router itself holds the token side of every pair's liquidity)
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(uint256 amountOutMin, address[] calldata path, address to, uint256) external payable {
+        require(path.length == 2 && path[0] == WETH, "PATH");
+        uint256[] memory amounts = getAmountsOut(msg.value, path);
+        require(amounts[1] >= amountOutMin, "SLIPPAGE");
+        MockPair(factoryC.getPair(path[0], path[1])).swapReserves(WETH, msg.value, amounts[1]);
+        require(IERC20(path[1]).transfer(to, amounts[1]), "OUT");
+    }
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256) external {
+        require(path.length == 2 && path[1] == WETH, "PATH");
+        uint256[] memory amounts = getAmountsOut(amountIn, path);
+        require(amounts[1] >= amountOutMin, "SLIPPAGE");
+        require(IERC20(path[0]).transferFrom(msg.sender, address(this), amountIn), "IN");
+        MockPair(factoryC.getPair(path[0], path[1])).swapReserves(path[0], amountIn, amounts[1]);
+        (bool ok,) = to.call{value: amounts[1]}("");
+        require(ok, "OUT");
+    }
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256) external {
+        require(path.length == 2, "PATH");
+        uint256[] memory amounts = getAmountsOut(amountIn, path);
+        require(amounts[1] >= amountOutMin, "SLIPPAGE");
+        require(IERC20(path[0]).transferFrom(msg.sender, address(this), amountIn), "IN");
+        MockPair(factoryC.getPair(path[0], path[1])).swapReserves(path[0], amountIn, amounts[1]);
+        require(IERC20(path[1]).transfer(to, amounts[1]), "OUT");
+    }
+
+    /// @dev Test helper: seed a token/WBNB pair with reserves (tokens pulled from the caller, BNB attached).
+    function seedPair(address token, uint256 tokenAmount) external payable {
+        address pairAddr = factoryC.getPair(token, WETH);
+        if (pairAddr == address(0)) pairAddr = factoryC.createPair(token, WETH);
+        require(IERC20(token).transferFrom(msg.sender, address(this), tokenAmount), "SEED");
+        MockPair(pairAddr).mint(msg.sender, tokenAmount, msg.value, token);
+    }
 }
 
 interface ILaunchpadExit {
@@ -130,6 +179,9 @@ interface ILaunchpadExit {
 /// Stands in for the shielded pool in launchpad unit tests: delivers funds and calls the exit hook.
 contract ExitHarness {
     event PoolCreatedStub(address token, uint8 unitExp, uint256 cap);
+
+    /// @dev proceeds of a sell / swap come back here, as they would to the pool
+    receive() external payable {}
 
     function createPool(address token, uint8 unitExp, uint256 tvlCap) external {
         emit PoolCreatedStub(token, unitExp, tvlCap);

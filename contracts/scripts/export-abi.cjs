@@ -9,6 +9,7 @@ mkdirSync(outDir, { recursive: true });
 const contracts = [
   ["ShieldedPool", "contracts/ShieldedPool.sol/ShieldedPool.json"],
   ["Launchpad", "contracts/Launchpad.sol/Launchpad.json"],
+  ["SwapExit", "contracts/SwapExit.sol/SwapExit.json"],
   ["LaunchToken", "contracts/LaunchToken.sol/LaunchToken.json"],
   ["IERC20Metadata", "contracts/interfaces.sol/IERC20Metadata.json"],
   ["IPancakeRouter02", "contracts/interfaces.sol/IPancakeRouter02.json"],

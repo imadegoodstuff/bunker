@@ -2,7 +2,7 @@ const { expect } = require("chai");
 const hre = require("hardhat");
 const { createHash } = require("node:crypto");
 const { buildPoseidon } = require("circomlibjs");
-const { deployAll, emptyLeaf, ensurePoseidonT3, FIELD } = require("../scripts/lib.cjs");
+const { deployAll, emptyLeaf, ensurePoseidon, ensurePoseidonT3, FIELD } = require("../scripts/lib.cjs");
 
 const { ethers } = hre;
 
@@ -91,13 +91,13 @@ describe("ShieldedPool", function () {
   it("refuses a donation nobody can receive and malformed transacts", async () => {
     await expect(d.pool.donate(ethers.ZeroAddress, 1n, { value: 10n ** 9n })).to.be.revertedWithCustomError(d.pool, "NotInitialized");
     const proof = { a: [0n, 0n], b: [[0n, 0n], [0n, 0n]], c: [0n, 0n] };
-    const ext = { recipient: ethers.ZeroAddress, relayer: ethers.ZeroAddress, relayerFee: 0n, exitTarget: ethers.ZeroAddress, exitData: "0x", ciphertext0: "0x", ciphertext1: "0x", outCiphertext: "0x" };
+    const ext = { recipient: ethers.ZeroAddress, exitTarget: ethers.ZeroAddress, exitData: "0x", ciphertext0: "0x", ciphertext1: "0x", ciphertext2: "0x", outCiphertext: "0x", reshield: { token: ethers.ZeroAddress, ownerHash: 0n, rho: 0n, rcm: 0n, ciphertext: "0x" } };
     const root = await d.pool.getLastRoot();
-    await expect(d.pool.transact(proof, ethers.ZeroAddress, 1n, 0n, 0n, ethers.ZeroAddress, [1n, 2n], [3n, 4n], ext)).to.be.revertedWithCustomError(d.pool, "UnknownRoot");
-    await expect(d.pool.transact(proof, ethers.ZeroAddress, root, 0n, 0n, ethers.ZeroAddress, [1n, 2n, 3n], [3n, 4n], ext)).to.be.revertedWithCustomError(d.pool, "MalformedProof");
-    await expect(d.pool.transact(proof, ethers.ZeroAddress, root, 1n << 64n, 0n, ethers.ZeroAddress, [1n, 2n], [3n, 4n], ext)).to.be.revertedWithCustomError(d.pool, "PublicAmountOutOfRange");
-    await expect(d.pool.transact(proof, ethers.ZeroAddress, root, 0n, 0n, ethers.ZeroAddress, [1n, 2n], [3n, 4n], ext)).to.be.revertedWithCustomError(d.pool, "InvalidProof");
-    await expect(d.pool.transact(proof, ethers.ZeroAddress, root, 0n, 7n, signers[0].address, [1n, 2n], [3n, 4n], ext)).to.be.revertedWithCustomError(d.pool, "UnknownAspRoot");
+    await expect(d.pool.transact(proof, ethers.ZeroAddress, 1n, 0n, 0n, ethers.ZeroAddress, [1n, 2n], [3n, 4n, 5n], ext)).to.be.revertedWithCustomError(d.pool, "UnknownRoot");
+    await expect(d.pool.transact(proof, ethers.ZeroAddress, root, 0n, 0n, ethers.ZeroAddress, [1n, 2n, 3n], [3n, 4n, 5n], ext)).to.be.revertedWithCustomError(d.pool, "MalformedProof");
+    await expect(d.pool.transact(proof, ethers.ZeroAddress, root, 1n << 64n, 0n, ethers.ZeroAddress, [1n, 2n], [3n, 4n, 5n], ext)).to.be.revertedWithCustomError(d.pool, "PublicAmountOutOfRange");
+    await expect(d.pool.transact(proof, ethers.ZeroAddress, root, 0n, 0n, ethers.ZeroAddress, [1n, 2n], [3n, 4n, 5n], ext)).to.be.revertedWithCustomError(d.pool, "InvalidProof");
+    await expect(d.pool.transact(proof, ethers.ZeroAddress, root, 0n, 7n, signers[0].address, [1n, 2n], [3n, 4n, 5n], ext)).to.be.revertedWithCustomError(d.pool, "UnknownAspRoot");
   });
 
   it("ASP roots are a 32-entry ring per provider", async () => {
@@ -112,19 +112,130 @@ describe("ShieldedPool", function () {
   it("extDataHash is sha256(abi.encode(ext)) mod p", async () => {
     const ext = {
       recipient: signers[1].address,
-      relayer: signers[2].address,
-      relayerFee: 12345n,
       exitTarget: ethers.ZeroAddress,
       exitData: "0x",
       ciphertext0: "0x" + "ab".repeat(100),
       ciphertext1: "0x" + "cd".repeat(100),
+      ciphertext2: "0x" + "12".repeat(100),
       outCiphertext: "0x" + "ef".repeat(40),
+      reshield: { token: signers[2].address, ownerHash: 7n, rho: 8n, rcm: 9n, ciphertext: "0x" + "77".repeat(100) },
     };
     const encoded = ethers.AbiCoder.defaultAbiCoder().encode(
-      ["tuple(address recipient,address relayer,uint256 relayerFee,address exitTarget,bytes exitData,bytes ciphertext0,bytes ciphertext1,bytes outCiphertext)"],
+      [
+        "tuple(address recipient,address exitTarget,bytes exitData,bytes ciphertext0,bytes ciphertext1,bytes ciphertext2,bytes outCiphertext,tuple(address token,uint256 ownerHash,uint256 rho,uint256 rcm,bytes ciphertext) reshield)",
+      ],
       [ext],
     );
     const h = createHash("sha256").update(Buffer.from(encoded.slice(2), "hex")).digest("hex");
     expect(await d.pool.extDataHash(ext)).to.equal(BigInt("0x" + h) % FIELD);
+  });
+
+  it("open-note commitments are Poseidon5(asset, shares, ownerHash, rho, rcm) as circomlibjs computes them", async () => {
+    const inputs = [await d.pool.assetId(ethers.ZeroAddress), 12345n, 777n, 888n, 999n];
+    expect(await d.pool.openNoteCommitment(...inputs)).to.equal(poseidon.F.toObject(poseidon(inputs)));
+  });
+
+  it("registry stores a 43-byte shielded address per EOA and can be cleared", async () => {
+    const addr = "0x" + "ab".repeat(43);
+    await expect(d.pool.connect(signers[8]).register("0x" + "ab".repeat(42))).to.be.revertedWithCustomError(d.pool, "BadAddress");
+    await expect(d.pool.connect(signers[8]).register(addr)).to.emit(d.pool, "Registered").withArgs(signers[8].address, addr);
+    expect(await d.pool.registry(signers[8].address)).to.equal(addr);
+    await d.pool.connect(signers[8]).register("0x");
+    expect(await d.pool.registry(signers[8].address)).to.equal("0x");
+    expect(await d.pool.registry(signers[9].address)).to.equal("0x");
+  });
+
+  it("BNB cannot be sent to the pool outside a transact", async () => {
+    await expect(signers[0].sendTransaction({ to: await d.pool.getAddress(), value: 1n })).to.be.revertedWithCustomError(d.pool, "NotInTransact");
+  });
+});
+
+describe("ShieldedPool batch insertion", function () {
+  // Uses a pool whose verifier accepts everything so transacts can queue arbitrary commitments.
+  let pool, poseidon, zeros;
+
+  before(async () => {
+    const signers = await ethers.getSigners();
+    poseidon = await buildPoseidon();
+    const poseidonT3 = await ensurePoseidonT3(ethers);
+    const poseidonT6 = await ensurePoseidon(ethers, "PoseidonT6");
+    const Yes = await ethers.getContractFactory("AlwaysVerifier");
+    const yes = await Yes.deploy();
+    const Pool = await ethers.getContractFactory("ShieldedPool", { libraries: { PoseidonT3: poseidonT3, PoseidonT6: poseidonT6 } });
+    const leaf = await emptyLeaf();
+    pool = await Pool.deploy(await yes.getAddress(), await yes.getAddress(), signers[0].address, leaf, ethers.MaxUint256);
+    zeros = [leaf];
+    for (let i = 1; i <= 26; i++) zeros.push(H(zeros[i - 1], zeros[i - 1]));
+  });
+
+  const H = (a, b) => poseidon.F.toObject(poseidon([a, b]));
+
+  /** Root of the plain append-only tree holding `leaves`. */
+  function rootOf(leaves) {
+    let layer = leaves.slice();
+    for (let lvl = 0; lvl < 26; lvl++) {
+      const next = [];
+      for (let i = 0; i < layer.length; i += 2) next.push(H(layer[i], i + 1 < layer.length ? layer[i + 1] : zeros[lvl]));
+      layer = next.length ? next : [];
+      if (layer.length === 0) return zeros[26];
+    }
+    return layer[0];
+  }
+
+  let nextNf = 1n;
+  async function queue3(cms) {
+    const ext = { recipient: ethers.ZeroAddress, exitTarget: ethers.ZeroAddress, exitData: "0x", ciphertext0: "0x", ciphertext1: "0x", ciphertext2: "0x", outCiphertext: "0x", reshield: { token: ethers.ZeroAddress, ownerHash: 0n, rho: 0n, rcm: 0n, ciphertext: "0x" } };
+    const proof = { a: [0n, 0n], b: [[0n, 0n], [0n, 0n]], c: [0n, 0n] };
+    const root = await pool.getLastRoot();
+    await pool.transact(proof, ethers.ZeroAddress, root, 0n, 0n, ethers.ZeroAddress, [nextNf++, nextNf++], cms, ext);
+  }
+
+  it("queues outputs without touching the root, then drains them into the same root a leaf-by-leaf tree reaches", async () => {
+    const all = [];
+    const root0 = await pool.getLastRoot();
+    // 7 transacts = 21 leaves, drained in uneven chunks so every boundary parity is exercised
+    for (let t = 0; t < 7; t++) {
+      const cms = [1n, 2n, 3n].map((k) => BigInt(t * 10 + Number(k)) * 1_000_003n);
+      await queue3(cms);
+      all.push(...cms);
+    }
+    expect(await pool.getLastRoot()).to.equal(root0);
+    expect(await pool.pendingCount()).to.equal(21);
+    expect(await pool.insertedIndex()).to.equal(0);
+    expect(await pool.nextIndex()).to.equal(21);
+
+    await expect(pool.drain(5)).to.emit(pool, "Drain").withArgs(0, 5, rootOf(all.slice(0, 5)), 1);
+    expect(await pool.getLastRoot()).to.equal(rootOf(all.slice(0, 5)));
+    await pool.drain(1);
+    expect(await pool.getLastRoot()).to.equal(rootOf(all.slice(0, 6)));
+    await pool.drain(8);
+    expect(await pool.getLastRoot()).to.equal(rootOf(all.slice(0, 14)));
+    await pool.drain(512);
+    expect(await pool.getLastRoot()).to.equal(rootOf(all));
+    expect(await pool.pendingCount()).to.equal(0);
+    expect(await pool.queued(3)).to.equal(0n);
+    await expect(pool.drain(1)).to.be.revertedWithCustomError(pool, "NothingQueued");
+    // every drain root stays in the ring
+    expect(await pool.isKnownRoot(rootOf(all.slice(0, 5)))).to.equal(true);
+    expect(await pool.isKnownRoot(root0)).to.equal(true);
+  });
+
+  it("a transact against a root the queue would produce drains first", async () => {
+    const all = [];
+    const seen = Number(await pool.nextIndex());
+    for (let i = 0; i < seen; i++) all.push(0n); // placeholder: we only need the new root below
+    // rebuild the full leaf list from events
+    const logs = await pool.queryFilter(pool.filters.Transact());
+    const leaves = [];
+    for (const l of logs) leaves.push(...l.args.commitments.map((x) => BigInt(x)));
+    const cms = [91n, 92n, 93n];
+    await queue3(cms); // queued, root unchanged
+    const target = rootOf([...leaves, ...cms]);
+    expect(await pool.isKnownRoot(target)).to.equal(false);
+    const ext = { recipient: ethers.ZeroAddress, exitTarget: ethers.ZeroAddress, exitData: "0x", ciphertext0: "0x", ciphertext1: "0x", ciphertext2: "0x", outCiphertext: "0x", reshield: { token: ethers.ZeroAddress, ownerHash: 0n, rho: 0n, rcm: 0n, ciphertext: "0x" } };
+    const proof = { a: [0n, 0n], b: [[0n, 0n], [0n, 0n]], c: [0n, 0n] };
+    await expect(pool.transact(proof, ethers.ZeroAddress, target, 0n, 0n, ethers.ZeroAddress, [nextNf++, nextNf++], [94n, 95n, 96n], ext)).to.emit(pool, "Drain");
+    expect(await pool.isKnownRoot(target)).to.equal(true);
+    expect(await pool.pendingCount()).to.equal(3);
   });
 });

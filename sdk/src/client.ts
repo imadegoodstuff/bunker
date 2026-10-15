@@ -1,29 +1,34 @@
-// One object that connects to a deployed BUNKER: chain, indexer, relayer,
+// One object that connects to a deployed BUNKER: chain, indexer, relayers,
 // agents and proving artifacts. Amounts cross this API in wei / token base
 // units; the pool's internal units and shares stay inside.
 //
 //   const bunker = await BunkerClient.connect({ seed });
 //   await bunker.sync();
-//   await bunker.shield(NATIVE_TOKEN, parseEther("0.01"), { account });
+//   await bunker.shield(NATIVE_TOKEN, parseEther("0.01"), { signer });
 //   await bunker.send(NATIVE_TOKEN, parseEther("0.005"), "bunker1…");
 //   await bunker.unshield(NATIVE_TOKEN, parseEther("0.004"), "0xRecipient");
+//   await bunker.launchpad.buy(token, parseEther("0.1"));       // one private tx, tokens land as a note
+//   await bunker.swap("BNB", parseEther("0.1"), usdt);          // private PancakeSwap swap
 import { createPublicClient, createWalletClient, defineChain, getAddress, http, parseEventLogs, type Account, type Hex, type PublicClient, type WalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { bsc as bscChain, bscTestnet, hardhat, type Chain } from "viem/chains";
 import { AgentsApi, ApiError, IndexerApi, RelayerApi, type LaunchRow, type RelayJob, type RelayerInfo } from "./api.js";
 import { STALE_ROOT_ERRORS } from "./errors.js";
 import type { EvmAddress } from "./extdata.js";
-import { decodeAddress, encodeAddress, seedFromBackup, seedFromSignature, seedToBackup, SPENDING_KEY_MESSAGE } from "./keys.js";
+import { addressAtIndex, addressFromBytes, addressToBytes, decodeAddress, decodeViewingKey, encodeAddress, encodeViewingKey, seedFromBackup, seedFromSignature, seedToBackup, SPENDING_KEY_MESSAGE, type Address } from "./keys.js";
 import {
-  EXIT_BUY, EXIT_SELL, claimKey, exitData, launchCall, quotePrivateBuy, quotePrivateSell, readCurve, readParams, rolled, worstFeeBps,
+  EXIT_BUY, EXIT_SELL, exitData, launchCall, quotePrivateBuy, quotePrivateSell, readCurve, readParams, rolled, swapExitData, worstFeeBps,
   LaunchpadAbi, type CurveState, type LaunchpadParams,
 } from "./launch.js";
-import { IERC20MetadataAbi, ShieldedPoolAbi } from "./abi/index.js";
+import { IERC20MetadataAbi, IPancakeRouter02Abi, ShieldedPoolAbi, SwapExitAbi } from "./abi/index.js";
 import { MerkleTree } from "./merkle.js";
 import { NATIVE_TOKEN, assetId } from "./note.js";
-import { amountForBurn, amountForMint, readLastRoot, readNextIndex, readPool, sharesForDeposit, sharesForWithdraw, toUnits, transactCallToJson, NATIVE_UNIT, type PoolState, type TransactCall } from "./pool.js";
+import {
+  amountForBurn, amountForMint, drainCall, readInsertedIndex, readLastRoot, readNextIndex, readPool, readRegistry, registerCall,
+  sharesForDeposit, sharesForWithdraw, toUnits, transactCallToJson, PROTOCOL_VERSION, type PoolState, type TransactCall,
+} from "./pool.js";
 import type { CircuitArtifacts, CircuitName } from "./prover.js";
-import { ShieldedWallet, type BuiltTransact } from "./wallet.js";
+import { ShieldedWallet, type BuiltTransact, type TransactKind } from "./wallet.js";
 import { bsc, type NetworkConfig, type NetworkName, networks } from "./networks.js";
 
 export type Token = EvmAddress | "BNB";
@@ -36,14 +41,16 @@ export interface ConnectOptions {
   network?: NetworkName | NetworkConfig;
   overrides?: Partial<NetworkConfig>;
   /** The 32-byte spending seed. Derive it with `BunkerClient.seedFromSignature` or restore it with `BunkerClient.seedFromBackup`. */
-  seed: Uint8Array;
+  seed?: Uint8Array;
+  /** A `bunkerview1…` full viewing key instead of a seed: a watch-only client that sees everything and spends nothing. */
+  viewingKey?: string;
   /** Proving artifacts, if the caller wants to supply them (bytes or URLs). Default: fetched from `network.artifactsUrl` and cached in memory. */
   artifacts?: Partial<Record<CircuitName, CircuitArtifacts>>;
   /** Progress callback while artifacts download. */
   onArtifactProgress?: (p: { circuit: CircuitName; loaded: number; total: number }) => void;
 }
 
-export type TxStage = "proving" | "relaying" | "confirming" | "done";
+export type TxStage = "proving" | "relaying" | "confirming" | "draining" | "done";
 export interface TxEvent { stage: TxStage; message?: string; txHash?: string; releaseAt?: number }
 
 export interface RelayOptions {
@@ -54,13 +61,10 @@ export interface RelayOptions {
   onEvent?: (e: TxEvent) => void;
 }
 
-export interface Balance { token: EvmAddress; shares: bigint; amount: bigint; decimals: number; notes: number }
+export interface Balance { token: EvmAddress; shares: bigint; amount: bigint; decimals: number; notes: number; /** wei of notes still queued for the next drain */ queued: bigint }
 
-export interface TradeResult { tradeTxHash: string; claimTxHash?: string; claimKey: EvmAddress; nonce: number; status: "claimed" | "empty" }
+export interface TradeResult { txHash: Hex }
 
-/** Wei a private buy leaves at the claim key for its own gas (the unused part stays there as dust). */
-export const DEFAULT_CLAIM_BUDGET = 3_000_000_000_000_000n; // 0.003 BNB
-const CLAIM_GAS = 1_500_000n;
 export const DEFAULT_SLIPPAGE_BPS = 100n;
 
 export class BunkerClient {
@@ -68,29 +72,33 @@ export class BunkerClient {
   readonly chain: Chain;
   readonly publicClient: PublicClient;
   readonly indexer: IndexerApi;
-  readonly relayer: RelayerApi;
   readonly agents: AgentsApi;
   readonly wallet: ShieldedWallet;
+  /** the tree of *inserted* leaves: what proofs are made against */
   readonly tree: MerkleTree;
   readonly launchpad: Launchpad;
+  /** every leaf the indexer has shown us, inserted or queued */
+  readonly leaves: bigint[] = [];
 
-  private readonly seed: Uint8Array;
+  private readonly seed?: Uint8Array;
   private syncedTo = 0;
   private syncing: Promise<void> | null = null;
   private pools = new Map<string, PoolState>();
   /** asset id (decimal string) -> token address, for every token that has a commitment */
   private seenTokens = new Map<string, EvmAddress>();
-  private relayerInfo?: RelayerInfo;
+  private relayers: { api: RelayerApi; info?: RelayerInfo; failedAt?: number }[];
+  private chosen?: { api: RelayerApi; info: RelayerInfo; at: number };
   private readonly artifacts: Partial<Record<CircuitName, CircuitArtifacts>>;
   private readonly artifactLoads: Partial<Record<CircuitName, Promise<CircuitArtifacts>>> = {};
   private readonly onArtifactProgress?: ConnectOptions["onArtifactProgress"];
 
-  private constructor(network: NetworkConfig, seed: Uint8Array, wallet: ShieldedWallet, tree: MerkleTree, o: ConnectOptions) {
+  private constructor(network: NetworkConfig, seed: Uint8Array | undefined, wallet: ShieldedWallet, tree: MerkleTree, o: ConnectOptions) {
     this.network = network;
     this.chain = chainFor(network);
     this.publicClient = createPublicClient({ chain: this.chain, transport: http(network.rpcUrl, { batch: true }) });
     this.indexer = new IndexerApi(network.indexerUrl);
-    this.relayer = new RelayerApi(network.relayerUrl);
+    const urls = Array.from(new Set([...(network.relayerUrls ?? []), network.relayerUrl].filter(Boolean)));
+    this.relayers = urls.map((u) => ({ api: new RelayerApi(u) }));
     this.agents = new AgentsApi(network.agentsUrl);
     this.wallet = wallet;
     this.tree = tree;
@@ -105,8 +113,14 @@ export class BunkerClient {
   static async connect(o: ConnectOptions): Promise<BunkerClient> {
     const base = typeof o.network === "string" ? networks[o.network] : (o.network ?? bsc);
     const network = { ...base, ...(o.overrides ?? {}) };
-    if (o.seed.length !== 32) throw new Error("seed must be 32 bytes");
-    const wallet = await ShieldedWallet.fromSeed(o.seed);
+    if (network.protocolVersion !== PROTOCOL_VERSION) throw new Error(`this SDK speaks protocol v${PROTOCOL_VERSION}; the network config is v${network.protocolVersion}`);
+    let wallet: ShieldedWallet;
+    if (o.seed) {
+      if (o.seed.length !== 32) throw new Error("seed must be 32 bytes");
+      wallet = await ShieldedWallet.fromSeed(o.seed);
+    } else if (o.viewingKey) {
+      wallet = await ShieldedWallet.fromViewingKey(await decodeViewingKey(o.viewingKey));
+    } else throw new Error("a seed or a viewing key is required");
     const tree = new MerkleTree(26);
     await tree.whenReady();
     return new BunkerClient(network, o.seed, wallet, tree, o);
@@ -124,15 +138,22 @@ export class BunkerClient {
   /** A fresh random seed (keep the backup string: it is the only way to see or spend these notes). */
   static randomSeed(): Uint8Array { return crypto.getRandomValues(new Uint8Array(32)); }
 
-  /** This wallet's shielded address (`bunker1…`). Hand it out to receive private payments. */
-  address(): string { return encodeAddress(this.wallet.bjj, this.wallet.address(), this.network.chainId === 56 ? "bunker" : "tbunker"); }
-  backup(): string { return seedToBackup(this.seed); }
+  private get hrp(): "bunker" | "tbunker" { return this.network.chainId === 56 ? "bunker" : "tbunker"; }
+  /** This wallet's stable shielded address (`bunker1…`, diversifier 0). Hand it out to receive private payments. */
+  address(): string { return encodeAddress(this.wallet.bjj, this.primaryAddress(), this.hrp); }
+  /** A fresh diversified address of the same wallet: unlinkable to the others, pays into the same balance. */
+  freshAddress(): string { return encodeAddress(this.wallet.bjj, this.wallet.address(), this.hrp); }
+  private primaryAddress(): Address { return addressAtIndex(this.wallet.bjj, this.wallet.fvk.ivk, 0); }
+  backup(): string { if (!this.seed) throw new Error("watch-only client has no seed"); return seedToBackup(this.seed); }
+  /** The full viewing key (`bunkerview1…`): lets an auditor or a watch-only device see every note and spend, and sign nothing. */
+  viewingKey(): string { return encodeViewingKey(this.wallet.fvk); }
+  get watchOnly(): boolean { return this.wallet.watchOnly; }
 
   // ---- state
 
   /**
-   * Pull every new commitment from the indexer, decrypt ours, rebuild the
-   * tree, drop spent notes. Safe to call repeatedly; concurrent calls share one pass.
+   * Pull every new leaf from the indexer, decrypt ours, rebuild the tree of
+   * inserted leaves, drop spent notes. Safe to call repeatedly; concurrent calls share one pass.
    */
   sync(): Promise<void> {
     if (!this.syncing) this.syncing = this.syncPass().finally(() => { this.syncing = null; });
@@ -152,8 +173,17 @@ export class BunkerClient {
       const page = await this.indexer.commitments(from, 1000);
       for (const row of page.items) {
         const cm = BigInt("0x" + row.commitment);
-        if (row.index === this.tree.size) await this.tree.insert(cm);
-        await this.wallet.scan({ index: row.index, commitment: cm, ciphertext: b64ToBytes(row.ciphertext) }, idFor(row.token));
+        if (row.index !== this.leaves.length) {
+          if (row.index < this.leaves.length) continue;
+          throw new Error(`indexer skipped leaf ${this.leaves.length}`);
+        }
+        this.leaves.push(cm);
+        const ct = b64ToBytes(row.ciphertext);
+        if (row.kind === "open" && row.shares != null && row.ownerHash != null) {
+          await this.wallet.scanOpenNote({ index: row.index, commitment: cm, shares: BigInt(row.shares), ownerHash: BigInt("0x" + row.ownerHash.replace(/^0x/, "")), ciphertext: ct }, idFor(row.token));
+        } else if (ct.length) {
+          await this.wallet.scan({ index: row.index, commitment: cm, ciphertext: ct }, idFor(row.token));
+        }
       }
       from = page.next;
       this.syncedTo = from;
@@ -161,17 +191,57 @@ export class BunkerClient {
     }
     const nfs = await this.indexer.nullifiers(0);
     this.wallet.markSpent(nfs.map((n) => BigInt("0x" + n.nullifier)));
-    const [next, chainRoot] = await Promise.all([readNextIndex(this.publicClient, this.network.pool), readLastRoot(this.publicClient, this.network.pool)]);
-    if (next === this.tree.size && chainRoot !== (await this.tree.root())) throw new Error("local tree root does not match the chain; the indexer may be lagging or corrupt");
+    const [inserted, chainRoot] = await Promise.all([readInsertedIndex(this.publicClient, this.network.pool), readLastRoot(this.publicClient, this.network.pool)]);
+    const upTo = Math.min(inserted, this.leaves.length);
+    for (let i = this.tree.size; i < upTo; i++) await this.tree.insert(this.leaves[i]);
+    this.wallet.markInserted(this.tree.size);
+    if (this.tree.size === inserted && chainRoot !== (await this.tree.root())) throw new Error("local tree root does not match the chain; the indexer may be lagging or corrupt");
   }
 
-  /** Keep syncing until the local tree has every leaf the chain has (the indexer trails the chain by a few seconds). */
+  /** Keep syncing until the local view has every leaf the chain has (the indexer trails the chain by a few seconds). */
   async syncUntilCaughtUp(timeoutMs = 60_000): Promise<void> {
     const t0 = Date.now();
     for (;;) {
       await this.sync();
       const next = await readNextIndex(this.publicClient, this.network.pool);
-      if (this.tree.size >= next || Date.now() - t0 > timeoutMs) return;
+      if (this.leaves.length >= next || Date.now() - t0 > timeoutMs) return;
+      await sleep(2000);
+    }
+  }
+
+  /** Leaves the chain has queued but not yet hashed into the tree. */
+  async pendingCount(): Promise<number> {
+    const [next, inserted] = await Promise.all([readNextIndex(this.publicClient, this.network.pool), readInsertedIndex(this.publicClient, this.network.pool)]);
+    return next - inserted;
+  }
+
+  /** The `drain(max)` call: anyone may send it to fold queued leaves into the tree. */
+  drainCall(max?: number) { return drainCall(this.network.pool, max); }
+
+  /**
+   * Make sure every leaf below `index` (default: all of them) is in the tree, so
+   * notes there are spendable. Asks the relayer to drain; with a `signer`, drains
+   * directly when no relayer does it within `waitMs`.
+   */
+  async ensureInserted(index?: number, o: { signer?: Signer; waitMs?: number; onEvent?: (e: TxEvent) => void } = {}): Promise<void> {
+    const target = index ?? (await readNextIndex(this.publicClient, this.network.pool));
+    const t0 = Date.now();
+    let asked = false;
+    for (;;) {
+      const inserted = await readInsertedIndex(this.publicClient, this.network.pool);
+      if (inserted >= target) { await this.sync(); return; }
+      if (!asked) {
+        asked = true;
+        o.onEvent?.({ stage: "draining", message: "folding queued notes into the tree" });
+        const r = await this.relayerApi().catch(() => undefined);
+        await r?.drain().catch(() => undefined);
+      }
+      if (o.signer && Date.now() - t0 > (o.waitMs ?? 20_000)) {
+        const h = await this.write(o.signer, this.drainCall());
+        await this.waitOk(h);
+        continue;
+      }
+      if (Date.now() - t0 > 180_000) throw new Error("the queue is not being drained; call drain() yourself");
       await sleep(2000);
     }
   }
@@ -191,13 +261,14 @@ export class BunkerClient {
   async balance(token: Token = "BNB"): Promise<Balance> {
     const t = norm(token);
     const pool = await this.pool(t, true);
-    const shares = this.wallet.balance(assetId(t.toLowerCase()));
-    return { token: t, shares, amount: amountForBurn(pool, shares) * pool.unit, decimals: pool.decimals, notes: this.wallet.spendable(assetId(t.toLowerCase())).length };
+    const id = assetId(t.toLowerCase());
+    const shares = this.wallet.balance(id);
+    const queued = this.wallet.queuedBalance(id);
+    return { token: t, shares, amount: amountForBurn(pool, shares) * pool.unit, decimals: pool.decimals, notes: this.wallet.spendable(id).length, queued: amountForBurn(pool, queued) * pool.unit };
   }
 
   /** Balances for every token this wallet holds notes of. */
   async balances(): Promise<Balance[]> {
-    // asset ids are hashes; every token with a commitment was seen during sync
     const held = new Set<string>();
     for (const n of this.wallet.notes.values()) held.add(n.asset.toString());
     const out: Balance[] = [];
@@ -205,12 +276,36 @@ export class BunkerClient {
     return out;
   }
 
+  // ---- relayers
+
+  /**
+   * The relayer in use: the cheapest healthy one of `network.relayerUrls` (by
+   * its BNB fee), re-evaluated every minute or on `refresh`.
+   */
   async relayerInfoCached(refresh = false): Promise<RelayerInfo> {
-    if (!this.relayerInfo || refresh) this.relayerInfo = await this.relayer.info();
-    return this.relayerInfo;
+    return (await this.pickRelayer(refresh)).info;
+  }
+  /** @internal */
+  async relayerApi(): Promise<RelayerApi> { return (await this.pickRelayer(false)).api; }
+  get relayer(): RelayerApi { return this.chosen?.api ?? this.relayers[0].api; }
+
+  private async pickRelayer(refresh: boolean): Promise<{ api: RelayerApi; info: RelayerInfo }> {
+    if (this.chosen && !refresh && Date.now() - this.chosen.at < 60_000) return this.chosen;
+    const now = Date.now();
+    const results = await Promise.all(this.relayers.map(async (r) => {
+      if (r.failedAt && now - r.failedAt < 120_000 && this.relayers.length > 1) return r;
+      try { r.info = await r.api.info(); r.failedAt = undefined; } catch { r.failedAt = now; r.info = undefined; }
+      return r;
+    }));
+    const live = results.filter((r) => r.info && !r.failedAt && r.info.pool.toLowerCase() === this.network.pool.toLowerCase() && r.info.shieldedAddress);
+    if (!live.length) throw new Error("no relayer is reachable for this pool");
+    const cost = (i: RelayerInfo) => { const f = i.fees.find((x) => x.token.toLowerCase() === NATIVE_TOKEN); return f ? BigInt(f.bps) * 1_000_000n + BigInt(f.min) : (1n << 64n); };
+    live.sort((a, b) => (cost(a.info!) < cost(b.info!) ? -1 : cost(a.info!) > cost(b.info!) ? 1 : a.info!.queued - b.info!.queued));
+    this.chosen = { api: live[0].api, info: live[0].info!, at: now };
+    return this.chosen;
   }
 
-  /** The relayer fee (in wei / base units of `token`) for moving `amount` out of the pool, per the relayer's published policy. */
+  /** The relayer fee (in wei / base units of `token`) for a relayed transact of `amount`, per the relayer's published policy. */
   async relayerFee(token: Token, amount: bigint): Promise<bigint> {
     const t = norm(token);
     const pool = await this.pool(t);
@@ -220,15 +315,45 @@ export class BunkerClient {
 
   /** @internal relayer fee in pool units */
   async feeUnits(token: EvmAddress, units: bigint): Promise<bigint> {
-    const info = await this.relayerInfoCached();
+    const { api, info } = await this.pickRelayer(false);
     let policy = info.fees.find((f) => f.token.toLowerCase() === token.toLowerCase());
     if (!policy) {
-      const q = await this.relayer.asset(token);
+      const q = await api.asset(token);
       if (!q.supported || !q.fee) throw new Error(q.reason ?? "relayer does not support this asset");
       policy = { token, min: q.fee.min, bps: q.fee.bps };
     }
     const pct = (units * BigInt(policy.bps)) / 10_000n;
     return pct > BigInt(policy.min) ? pct : BigInt(policy.min);
+  }
+
+  // ---- registry
+
+  /** Publish this wallet's shielded address under the signer's EOA, so anyone can pay the EOA privately. */
+  async register(signer: Signer): Promise<Hex> {
+    const h = await this.write(signer, registerCall(this.network.pool, addressToBytes(this.wallet.bjj, this.primaryAddress())));
+    await this.waitOk(h);
+    return h;
+  }
+  /** Remove the signer's registry entry. */
+  async unregister(signer: Signer): Promise<Hex> {
+    const h = await this.write(signer, registerCall(this.network.pool, new Uint8Array(0)));
+    await this.waitOk(h);
+    return h;
+  }
+  /** The shielded address an EOA registered on-chain, or null. Read from the chain, never trusted from the indexer. */
+  async resolve(owner: EvmAddress): Promise<string | null> {
+    const raw = await readRegistry(this.publicClient, this.network.pool, getAddress(owner));
+    if (!raw) return null;
+    return encodeAddress(this.wallet.bjj, addressFromBytes(this.wallet.bjj, raw), this.hrp);
+  }
+  /** Accepts a `bunker1…` address or a registered `0x…` EOA. */
+  async toShieldedAddress(to: string): Promise<Address> {
+    if (/^0x[0-9a-fA-F]{40}$/.test(to)) {
+      const raw = await readRegistry(this.publicClient, this.network.pool, getAddress(to as EvmAddress));
+      if (!raw) throw new Error(`${to} has not registered a shielded address`);
+      return addressFromBytes(this.wallet.bjj, raw);
+    }
+    return decodeAddress(this.wallet.bjj, to).address;
   }
 
   // ---- proving
@@ -253,17 +378,18 @@ export class BunkerClient {
   }
 
   private async allArtifacts(): Promise<Record<CircuitName, CircuitArtifacts>> {
-    const [a, b] = await Promise.all([this.loadArtifacts("transact2x2"), this.loadArtifacts("transact4x2")]);
-    return { transact2x2: a, transact4x2: b };
+    const [a, b] = await Promise.all([this.loadArtifacts("transact2x3"), this.loadArtifacts("transact4x3")]);
+    return { transact2x3: a, transact4x3: b };
   }
 
   // ---- shield (public tx, paid by the depositor)
 
   /**
    * Build the `transact` call that deposits `amount` (wei / base units) into
-   * your own shielded address. ERC-20s must be approved to the pool first.
+   * your own shielded address (or `to`: a `bunker1…` address or a registered EOA).
+   * ERC-20s must be approved to the pool first.
    */
-  async buildShield(token: Token, amount: bigint, o: { to?: string; sender: EvmAddress }): Promise<BuiltTransact> {
+  async buildShield(token: Token, amount: bigint, o: { to?: string } = {}): Promise<BuiltTransact> {
     const t = norm(token);
     const pool = await this.pool(t, true);
     const units = toUnits(amount, pool.unit);
@@ -271,9 +397,7 @@ export class BunkerClient {
     await this.sync();
     return this.wallet.buildTransact({
       asset: assetId(t.toLowerCase()), poolAddress: this.network.pool, token: t, pool, tree: this.tree, artifacts: await this.allArtifacts(),
-      kind: "shield", amount: units, to: o.to ? decodeAddress(this.wallet.bjj, o.to).address : undefined,
-      // a shield pays its own gas; the sender stands in as "relayer" with a zero fee
-      relayer: o.sender, relayerFee: 0n,
+      kind: "shield", amount: units, to: o.to ? await this.toShieldedAddress(o.to) : undefined,
     });
   }
 
@@ -290,10 +414,8 @@ export class BunkerClient {
     let pool = await readPool(this.publicClient, this.network.pool, t);
     if (!pool.exists) {
       if (t === NATIVE_TOKEN) throw new Error("BNB pool not found on chain");
-      const decimals = await this.publicClient.readContract({ address: t, abi: IERC20MetadataAbi, functionName: "decimals" });
       o.onEvent?.({ stage: "confirming", message: "opening the pool (one-time)" });
-      const h = await this.write(wc, { address: this.network.pool, abi: ShieldedPoolAbi, functionName: "createPool", args: [t, Math.max(0, Number(decimals) - 9), (1n << 256n) - 1n] });
-      await this.waitOk(h);
+      await this.openPool(t, wc);
       pool = await this.pool(t, true);
     }
     if (t !== NATIVE_TOKEN) {
@@ -306,7 +428,7 @@ export class BunkerClient {
       }
     }
     o.onEvent?.({ stage: "proving", message: "generating proof" });
-    const built = await this.buildShield(t, amount, { to: o.to, sender });
+    const built = await this.buildShield(t, amount, { to: o.to });
     try {
       o.onEvent?.({ stage: "confirming", message: "sending transaction" });
       const hash = await this.write(wc, built.call);
@@ -320,49 +442,69 @@ export class BunkerClient {
     }
   }
 
-  // ---- private send / unshield (through the relayer)
+  /** Open the shielded pool of an ERC-20 (permissionless, one-time per token). */
+  async openPool(token: EvmAddress, signer: Signer): Promise<Hex | null> {
+    const t = getAddress(token);
+    if ((await readPool(this.publicClient, this.network.pool, t)).exists) return null;
+    const decimals = await this.publicClient.readContract({ address: t, abi: IERC20MetadataAbi, functionName: "decimals" });
+    const h = await this.write(signer, { address: this.network.pool, abi: ShieldedPoolAbi, functionName: "createPool", args: [t, Math.max(0, Number(decimals) - 9), (1n << 256n) - 1n] });
+    await this.waitOk(h);
+    this.pools.delete(t.toLowerCase());
+    return h;
+  }
 
-  /** Pay `amount` to another shielded address. Nothing public links sender and recipient. */
+  // ---- private send / unshield / exit (through a relayer, paid with a private fee note)
+
+  /** Pay `amount` to another shielded address (or a registered EOA). Nothing public links sender and recipient. */
   send(token: Token, amount: bigint, to: string, o: RelayOptions = {}): Promise<Hex> {
     return this.relayed(norm(token), amount, "send", { ...o, to });
   }
 
-  /** Withdraw `amount` to a public address. The relayer pays gas and takes its fee from the amount. */
+  /** Withdraw `amount` to a public address. The relayer pays gas; its fee is a private note, so the recipient receives exactly `amount`. */
   unshield(token: Token, amount: bigint, recipient: EvmAddress, o: RelayOptions = {}): Promise<Hex> {
     return this.relayed(norm(token), amount, "unshield", { ...o, recipient: getAddress(recipient) });
   }
 
-  /** Withdraw into a contract that implements `IBunkerExit` (what the launchpad trades use). */
-  exit(token: Token, amount: bigint, target: EvmAddress, data: Uint8Array, o: RelayOptions = {}): Promise<Hex> {
-    return this.relayed(norm(token), amount, "unshield", { ...o, recipient: getAddress(target), exit: { target: getAddress(target), data } });
+  /**
+   * Withdraw `amount` into a contract that implements `IBunkerExit`. With
+   * `reshield`, whatever the hook sends back to the pool in that token becomes
+   * a fresh note of yours in the same transaction (an atomic private call).
+   */
+  exit(token: Token, amount: bigint, target: EvmAddress, data: Uint8Array, o: RelayOptions & { reshield?: Token } = {}): Promise<Hex> {
+    return this.relayed(norm(token), amount, "exit", { ...o, exit: { target: getAddress(target), data }, reshield: o.reshield ? norm(o.reshield) : undefined });
   }
 
-  private async relayed(token: EvmAddress, amount: bigint, kind: "send" | "unshield", o: RelayOptions & { to?: string; recipient?: EvmAddress; exit?: { target: EvmAddress; data: Uint8Array } }): Promise<Hex> {
-    const info = await this.relayerInfoCached(true);
-    if (o.exit && !info.launchpad) throw new Error("this relayer does not forward exits");
+  private async relayed(token: EvmAddress, amount: bigint, kind: Exclude<TransactKind, "shield">, o: RelayOptions & { to?: string; recipient?: EvmAddress; exit?: { target: EvmAddress; data: Uint8Array }; reshield?: EvmAddress }): Promise<Hex> {
+    const { api, info } = await this.pickRelayer(true);
+    if (o.exit && !info.launchpad && !info.swapExit) throw new Error("this relayer does not forward exits");
+    if (o.reshield) await this.pool(o.reshield, true); // the proceeds need a pool to land in
     const pool = await this.pool(token, true);
     const units = toUnits(amount, pool.unit);
     if (units <= 0n) throw new Error("amount too small for this pool's unit");
     const fee = o.fee ?? (await this.feeUnits(token, units));
-    const relayerKey = getAddress(info.relayer);
+    const relayerAddress = decodeAddress(this.wallet.bjj, info.shieldedAddress!).address;
+    const to = o.to ? await this.toShieldedAddress(o.to) : undefined;
     await this.sync();
+    // if the spendable notes fall short but queued ones would cover it, get the queue drained first
+    const asset = assetId(token.toLowerCase());
+    const need = sharesForWithdraw(pool, units + fee);
+    if (this.wallet.balance(asset) < need && this.wallet.balance(asset) + this.wallet.queuedBalance(asset) >= need) await this.ensureInserted(undefined, { onEvent: o.onEvent });
     let consumed: bigint[] = [];
     let accepted = false;
     try {
       const build = async () => {
         o.onEvent?.({ stage: "proving", message: "generating proof" });
         const built = await this.wallet.buildTransact({
-          asset: assetId(token.toLowerCase()), poolAddress: this.network.pool, token, pool, tree: this.tree, artifacts: await this.allArtifacts(),
-          kind, amount: units,
-          to: o.to ? decodeAddress(this.wallet.bjj, o.to).address : undefined,
-          recipient: o.recipient,
-          relayer: relayerKey, relayerFee: fee,
+          asset, poolAddress: this.network.pool, token, pool, tree: this.tree, artifacts: await this.allArtifacts(),
+          kind, amount: units, to, recipient: o.recipient,
+          relayerAddress, relayerFee: fee,
           memo: o.memo ? new TextEncoder().encode(o.memo) : undefined,
           exitTarget: o.exit?.target, exitData: o.exit?.data,
+          reshield: o.reshield ? { token: o.reshield } : undefined,
         });
         consumed = built.consumed;
         o.onEvent?.({ stage: "relaying", message: "handing the proof to the relayer" });
-        return this.relayer.relay(transactCallToJson(built.call));
+        return api.relay(transactCallToJson(built.call));
       };
       let job: { id: string; releaseAt: number };
       try {
@@ -377,7 +519,7 @@ export class BunkerClient {
       }
       accepted = true;
       o.onEvent?.({ stage: "confirming", message: "queued at the relayer", releaseAt: job.releaseAt });
-      const txHash = await this.waitForJob(job.id);
+      const txHash = await this.waitForJob(job.id, api);
       o.onEvent?.({ stage: "done", txHash });
       await this.syncUntilCaughtUp().catch(() => undefined);
       return txHash;
@@ -391,12 +533,13 @@ export class BunkerClient {
   }
 
   /** Poll a relayer job until it confirms; resolves with the tx hash, rejects on failure. */
-  async waitForJob(id: string, pollMs = 2500): Promise<Hex> {
+  async waitForJob(id: string, api?: RelayerApi, pollMs = 2500): Promise<Hex> {
+    const r = api ?? (await this.relayerApi());
     let errors = 0;
     for (;;) {
       await sleep(pollMs);
       let st: RelayJob;
-      try { st = await this.relayer.job(id); errors = 0; } catch (e) {
+      try { st = await r.job(id); errors = 0; } catch (e) {
         if (++errors < 48) continue;
         throw new Error(`lost contact with the relayer: ${(e as Error).message}`);
       }
@@ -411,7 +554,38 @@ export class BunkerClient {
     }
   }
 
-  // ---- helpers used by the launchpad
+  // ---- private swaps (PancakeSwap V2 through SwapExit)
+
+  /** Quote a private swap of `amountIn` of `tokenIn` for `tokenOut` on PancakeSwap, after the relayer's fee note. */
+  async quoteSwap(tokenIn: Token, amountIn: bigint, tokenOut: Token): Promise<{ out: bigint; path: EvmAddress[]; relayerFee: bigint }> {
+    if (!this.network.swapExit) throw new Error("no SwapExit on this network");
+    const path = this.swapPath(tokenIn, tokenOut);
+    const router = await this.publicClient.readContract({ address: this.network.swapExit, abi: SwapExitAbi, functionName: "router" });
+    const amounts = await this.publicClient.readContract({ address: router, abi: IPancakeRouter02Abi, functionName: "getAmountsOut", args: [amountIn, path] });
+    return { out: amounts[amounts.length - 1], path, relayerFee: await this.relayerFee(tokenIn, amountIn) };
+  }
+
+  /**
+   * Swap privately: the pool pays `amountIn` to `SwapExit`, which trades on
+   * PancakeSwap and hands the output back to the pool as a note of yours. One
+   * transaction, no public account involved.
+   */
+  async swap(tokenIn: Token, amountIn: bigint, tokenOut: Token, o: RelayOptions & { slippageBps?: bigint; minOut?: bigint } = {}): Promise<Hex> {
+    if (!this.network.swapExit) throw new Error("no SwapExit on this network");
+    const q = await this.quoteSwap(tokenIn, amountIn, tokenOut);
+    const minOut = o.minOut ?? q.out - (q.out * (o.slippageBps ?? DEFAULT_SLIPPAGE_BPS)) / 10_000n;
+    return this.exit(tokenIn, amountIn, this.network.swapExit, swapExitData(q.path, minOut), { ...o, reshield: tokenOut });
+  }
+
+  private swapPath(tokenIn: Token, tokenOut: Token): EvmAddress[] {
+    const a = tokenIn === "BNB" ? this.network.wbnb : getAddress(tokenIn);
+    const b = tokenOut === "BNB" ? this.network.wbnb : getAddress(tokenOut);
+    if (a.toLowerCase() === b.toLowerCase()) throw new Error("same token");
+    if (tokenIn === "BNB" || tokenOut === "BNB") return [a, b];
+    return [a, this.network.wbnb, b];
+  }
+
+  // ---- helpers
 
   /** @internal */
   async write(signer: Signer, call: TransactCall | { address: EvmAddress; abi: any; functionName: string; args: readonly unknown[]; value?: bigint }, extra: { gas?: bigint; gasPrice?: bigint } = {}): Promise<Hex> {
@@ -433,18 +607,13 @@ export class BunkerClient {
     if ("writeContract" in signer) return signer as WalletClient;
     return createWalletClient({ account: signer as Account, chain: this.chain, transport: http(this.network.rpcUrl) });
   }
-
-  /** @internal */
-  get spendingSeed(): Uint8Array { return this.seed; }
 }
 
 // ---- launchpad
 
-export interface BuyOptions { claimBudget?: bigint; slippageBps?: bigint; onEvent?: (e: TxEvent) => void; /** claim-key nonce; defaults to the next unused one */ nonce?: number }
-export interface SellOptions { slippageBps?: bigint; onEvent?: (e: TxEvent) => void; nonce?: number }
+export interface TradeOptions { slippageBps?: bigint; onEvent?: (e: TxEvent) => void }
 
 export class Launchpad {
-  private nextNonce = 0;
   constructor(private readonly c: BunkerClient) {}
 
   get address(): EvmAddress { return this.c.network.launchpad; }
@@ -461,24 +630,27 @@ export class Launchpad {
     return { ...rolled(stored, block), block, worstFeeBps: worstFeeBps(stored, block) };
   }
 
-  /** Quote a private buy: tokens received for `bnbWei` spent from the shielded BNB balance. */
-  async quoteBuy(token: EvmAddress, bnbWei: bigint, claimBudget = DEFAULT_CLAIM_BUDGET) {
+  /**
+   * Quote a private buy: tokens received for `bnbWei` of shielded BNB. The
+   * relayer's fee is a separate private note (`relayerFeeWei`), so the whole
+   * `bnbWei` reaches the curve. `maxIn` is the most the curve still accepts.
+   */
+  async quoteBuy(token: EvmAddress, bnbWei: bigint) {
     const [curve, pool] = await Promise.all([this.curve(token), this.c.pool("BNB", true)]);
     const units = toUnits(bnbWei, pool.unit);
     const fee = await this.c.feeUnits(NATIVE_TOKEN, units);
-    const delivered = deliveredFor(pool, units) - fee * pool.unit;
-    return { ...quotePrivateBuy({ ...curve, tradeFeeBps: curve.worstFeeBps }, delivered, claimBudget, 0n), relayerFeeWei: fee * pool.unit, curve };
+    const delivered = deliveredFor(pool, units);
+    return { ...quotePrivateBuy({ ...curve, tradeFeeBps: curve.worstFeeBps }, delivered), relayerFeeWei: fee * pool.unit, curve };
   }
 
-  /** Quote a private sell: BNB received for `tokens` (base units) spent from the shielded token balance. */
+  /** Quote a private sell: BNB received for `tokens` (base units) of the shielded token balance. */
   async quoteSell(token: EvmAddress, tokens: bigint) {
     const t = getAddress(token);
-    const [curve, pool, info] = await Promise.all([this.curve(t), this.c.pool(t, true), this.c.relayerInfoCached()]);
-    const bnbPolicy = info.fees.find((f) => f.token.toLowerCase() === NATIVE_TOKEN);
-    if (!bnbPolicy) throw new Error("relayer has no BNB policy");
-    const tip = BigInt(bnbPolicy.min) * NATIVE_UNIT;
-    const delivered = deliveredFor(pool, toUnits(tokens, pool.unit));
-    return { ...quotePrivateSell({ ...curve, tradeFeeBps: curve.worstFeeBps }, delivered, tip), relayerTipWei: tip, curve };
+    const [curve, pool] = await Promise.all([this.curve(t), this.c.pool(t, true)]);
+    const units = toUnits(tokens, pool.unit);
+    const fee = await this.c.feeUnits(t, units);
+    const delivered = deliveredFor(pool, units);
+    return { ...quotePrivateSell({ ...curve, tradeFeeBps: curve.worstFeeBps }, delivered), relayerFeeTokens: fee * pool.unit, curve };
   }
 
   /**
@@ -496,97 +668,33 @@ export class Launchpad {
   }
 
   /**
-   * Buy `token` privately with `bnbWei` of shielded BNB. The pool pays the
-   * launchpad through its exit hook, the tokens land on a throwaway claim key
-   * derived from your seed, and `claim` shields them back to you.
+   * Buy `token` privately with `bnbWei` of shielded BNB: the pool pays the
+   * curve through its exit hook and the tokens come straight back as a note
+   * of yours, in one transaction. A buy larger than the curve has left is
+   * refused on-chain; size it to `quoteBuy().maxIn`.
    */
-  async buy(token: EvmAddress, bnbWei: bigint, o: BuyOptions = {}): Promise<TradeResult> {
+  async buy(token: EvmAddress, bnbWei: bigint, o: TradeOptions = {}): Promise<TradeResult> {
     const t = getAddress(token);
-    const budget = o.claimBudget ?? DEFAULT_CLAIM_BUDGET;
-    const q = await this.quoteBuy(t, bnbWei, budget);
+    const q = await this.quoteBuy(t, bnbWei);
     if (q.curve.graduated) throw new Error("this curve has graduated; it trades on PancakeSwap now");
+    if (q.overshoots) throw new Error(`the curve only has room for ${q.maxIn} wei more; buy at most that`);
     const minOut = q.out - (q.out * (o.slippageBps ?? DEFAULT_SLIPPAGE_BPS)) / 10_000n;
-    const nonce = o.nonce ?? this.nextNonce++;
-    const ck = claimKey(this.c.spendingSeed, BigInt(nonce));
-    const tradeTxHash = await this.c.exit("BNB", bnbWei, this.address, exitData(EXIT_BUY, t, ck.address, minOut, budget, 0n), { onEvent: o.onEvent });
-    const claim = await this.claim(nonce, t, "buy");
-    return { tradeTxHash, ...claim, claimKey: ck.address, nonce };
+    const txHash = await this.c.exit("BNB", bnbWei, this.address, exitData(EXIT_BUY, t, minOut), { onEvent: o.onEvent, reshield: t });
+    return { txHash };
   }
 
-  /** Sell `tokens` (base units) of shielded `token` back to the curve; the BNB is claimed back into the pool. */
-  async sell(token: EvmAddress, tokens: bigint, o: SellOptions = {}): Promise<TradeResult> {
+  /** Sell `tokens` (base units) of shielded `token` back to the curve; the BNB comes back as a note of yours in the same transaction. */
+  async sell(token: EvmAddress, tokens: bigint, o: TradeOptions = {}): Promise<TradeResult> {
     const t = getAddress(token);
     const q = await this.quoteSell(t, tokens);
     if (q.curve.graduated) throw new Error("this curve has graduated; it trades on PancakeSwap now");
     const minOut = q.out - (q.out * (o.slippageBps ?? DEFAULT_SLIPPAGE_BPS)) / 10_000n;
-    const nonce = o.nonce ?? this.nextNonce++;
-    const ck = claimKey(this.c.spendingSeed, BigInt(nonce));
-    const tradeTxHash = await this.c.exit(t, tokens, this.address, exitData(EXIT_SELL, t, ck.address, minOut, 0n, q.relayerTipWei), { fee: 0n, onEvent: o.onEvent });
-    const claim = await this.claim(nonce, t, "sell");
-    return { tradeTxHash, ...claim, claimKey: ck.address, nonce };
-  }
-
-  /**
-   * Shield whatever a trade left on claim key `nonce` back into your wallet.
-   * Idempotent: returns `"empty"` when there is nothing to claim. Use it to
-   * recover after a crash between the trade and its claim.
-   */
-  async claim(nonce: number, token: EvmAddress, kind: "buy" | "sell"): Promise<{ status: "claimed" | "empty"; claimTxHash?: Hex }> {
-    const ck = claimKey(this.c.spendingSeed, BigInt(nonce));
-    const account = privateKeyToAccount(ck.privateKey);
-    const pc = this.c.publicClient;
-    const gasPrice = await pc.getGasPrice();
-    await this.c.sync();
-    let built: BuiltTransact;
-    if (kind === "buy") {
-      const t = getAddress(token);
-      const bal = await pc.readContract({ address: t, abi: IERC20MetadataAbi, functionName: "balanceOf", args: [account.address] });
-      if (bal === 0n) return { status: "empty" };
-      // the launchpad pre-approves the pool for the claim key, so no approve is needed here
-      built = await this.c.buildShield(t, bal, { sender: account.address });
-    } else {
-      const wei = await pc.getBalance({ address: account.address });
-      const keep = (CLAIM_GAS * gasPrice * 12n) / 10n;
-      if (wei <= keep + NATIVE_UNIT) return { status: "empty" };
-      built = await this.c.buildShield("BNB", wei - keep, { sender: account.address });
-    }
-    try {
-      const hash = await this.c.write(account, built.call, { gas: CLAIM_GAS, gasPrice });
-      await this.c.waitOk(hash);
-      await this.c.syncUntilCaughtUp().catch(() => undefined);
-      return { status: "claimed", claimTxHash: hash };
-    } catch (e) {
-      this.c.wallet.release(built.consumed);
-      throw e;
-    }
-  }
-
-  /** Sweep every claim key from nonce 0 to `upTo` that still holds something. */
-  async recover(upTo = 32): Promise<TradeResult[]> {
-    const out: TradeResult[] = [];
-    const tokens = await this.list(200);
-    for (let nonce = 0; nonce < upTo; nonce++) {
-      const ck = claimKey(this.c.spendingSeed, BigInt(nonce));
-      const wei = await this.c.publicClient.getBalance({ address: ck.address });
-      if (wei > NATIVE_UNIT * 2n) {
-        const r = await this.claim(nonce, NATIVE_TOKEN, "sell");
-        if (r.status === "claimed") out.push({ tradeTxHash: "", claimTxHash: r.claimTxHash, claimKey: ck.address, nonce, status: "claimed" });
-      }
-      for (const l of tokens) {
-        const bal = await this.c.publicClient.readContract({ address: getAddress(l.token), abi: IERC20MetadataAbi, functionName: "balanceOf", args: [ck.address] });
-        if (bal === 0n) continue;
-        const r = await this.claim(nonce, getAddress(l.token), "buy");
-        if (r.status === "claimed") out.push({ tradeTxHash: "", claimTxHash: r.claimTxHash, claimKey: ck.address, nonce, status: "claimed" });
-      }
-    }
-    if (upTo > this.nextNonce) this.nextNonce = upTo;
-    return out;
+    const txHash = await this.c.exit(t, tokens, this.address, exitData(EXIT_SELL, t, minOut), { onEvent: o.onEvent, reshield: "BNB" });
+    return { txHash };
   }
 }
 
 // ---- internals
-
-const ZERO: EvmAddress = "0x0000000000000000000000000000000000000000";
 
 function norm(token: Token): EvmAddress { return token === "BNB" ? NATIVE_TOKEN : getAddress(token); }
 
@@ -615,6 +723,7 @@ function hexToBytes(h: Hex): Uint8Array {
 }
 
 function b64ToBytes(s: string): Uint8Array {
+  if (!s) return new Uint8Array(0);
   if (typeof Buffer !== "undefined") return new Uint8Array(Buffer.from(s, "base64"));
   const bin = atob(s);
   const out = new Uint8Array(bin.length);

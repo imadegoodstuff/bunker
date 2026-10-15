@@ -7,7 +7,9 @@ import type { Note, SpendableNote } from "./note.js";
 import { noteCommitment, nullifier } from "./note.js";
 import type { SpendingKey, FullViewingKey } from "./keys.js";
 
-export type CircuitName = "transact2x2" | "transact4x2";
+export type CircuitName = "transact2x3" | "transact4x3";
+/** Every transact has exactly this many outputs: payment, change, relayer fee. */
+export const N_OUTPUTS = 3;
 
 export interface CircuitArtifacts {
   wasm: string | Uint8Array;
@@ -29,7 +31,7 @@ export interface TransactParams {
   extDataHash: bigint;
   aspRoot?: bigint;
   inputs: SpendInput[]; // length 2 or 4 (pad with dummies)
-  outputs: Note[]; // length 2
+  outputs: Note[]; // length 3: payment, change, relayer fee
   dummyPath: MerklePath;
   /** An address owned by the prover (g_d, pk_d); dummy spends are formed on it. */
   self: { gd: [bigint, bigint]; pkd: [bigint, bigint] };
@@ -50,15 +52,15 @@ export interface TransactProof {
 }
 
 export function circuitFor(nIns: number): CircuitName {
-  if (nIns <= 2) return "transact2x2";
-  if (nIns <= 4) return "transact4x2";
+  if (nIns <= 2) return "transact2x3";
+  if (nIns <= 4) return "transact4x3";
   throw new Error("too many inputs");
 }
 
 export async function buildWitnessInput(p: TransactParams) {
   const nIns = p.inputs.length <= 2 ? 2 : 4;
   if (p.inputs.length > nIns) throw new Error("too many inputs");
-  if (p.outputs.length !== 2) throw new Error("exactly two outputs required");
+  if (p.outputs.length !== N_OUTPUTS) throw new Error("exactly three outputs required");
 
   const nullifiers: bigint[] = [];
   const inValue: bigint[] = [];

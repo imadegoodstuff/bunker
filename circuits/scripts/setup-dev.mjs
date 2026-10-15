@@ -16,7 +16,7 @@ const build = join(root, "build");
 const ptauDir = join(root, "ptau");
 mkdirSync(ptauDir, { recursive: true });
 
-const circuits = process.argv.slice(2).length ? process.argv.slice(2) : ["transact2x2", "transact4x2"];
+const circuits = process.argv.slice(2).length ? process.argv.slice(2) : ["transact2x3", "transact4x3"];
 
 // A single, pinned Powers of Tau file. The dev VK compiled into the program is
 // derived from (r1cs, ptau, fixed entropy); if any of the three changes the
@@ -26,6 +26,10 @@ const PTAU = {
   16: {
     url: "https://pse-trusted-setup-ppot.s3.eu-central-1.amazonaws.com/pot28_0080/ppot_0080_16.ptau",
     sha256: "ed3622a7c79b0b49aadd134ebbc5b77df8c8c59bccebdfd0d9bf2c1a51561cf9",
+  },
+  17: {
+    url: "https://pse-trusted-setup-ppot.s3.eu-central-1.amazonaws.com/pot28_0080/ppot_0080_17.ptau",
+    sha256: "f807e065fde53f72f4bf4d57140fab85b26daa6cc95bdfec7cce93622b3a367c",
   },
 };
 

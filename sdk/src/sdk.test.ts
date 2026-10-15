@@ -2,18 +2,18 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { encodeAbiParameters, encodeErrorResult } from "viem";
-import { POOL_ERRORS, LAUNCH_ERRORS, contractErrorFromData, isStaleRootRejection } from "./errors.js";
-import { ShieldedPoolAbi, LaunchpadAbi } from "./abi/index.js";
+import { POOL_ERRORS, LAUNCH_ERRORS, SWAP_EXIT_ERRORS, contractErrorFromData, isStaleRootRejection } from "./errors.js";
+import { ShieldedPoolAbi, LaunchpadAbi, SwapExitAbi } from "./abi/index.js";
 import { BabyJub, poseidon } from "./crypto.js";
-import { spendingKeyFromSeed, fullViewingKey, newAddress, encodeAddress, decodeAddress, groupHash, seedFromSignature, seedToBackup, seedFromBackup, SPENDING_KEY_MESSAGE, SCALAR_MASK, passphraseStrength, expectedSecondsToCrack, PASSPHRASE_MIN_BITS } from "./keys.js";
-import { encryptNote, tryDecryptNote, encryptOutgoing, decryptOutgoing, decryptNoteAsSender, NOTE_CIPHERTEXT_LEN, NOTE_CIPHERTEXT_LEN_NO_MEMO, MEMO_MAX } from "./encryption.js";
-import { noteCommitment, nullifier, assetId, freshRandomness, noteRandomness, NATIVE_TOKEN, addressToBytes32 } from "./note.js";
+import { spendingKeyFromSeed, fullViewingKey, newAddress, encodeAddress, decodeAddress, addressToBytes, addressFromBytes, encodeViewingKey, decodeViewingKey, groupHash, seedFromSignature, seedToBackup, seedFromBackup, SPENDING_KEY_MESSAGE, SCALAR_MASK, passphraseStrength, expectedSecondsToCrack, PASSPHRASE_MIN_BITS } from "./keys.js";
+import { encryptNote, tryDecryptNote, encryptOutgoing, decryptOutgoing, decryptNoteAsSender, NOTE_CIPHERTEXT_LEN, NOTE_CIPHERTEXT_LEN_NO_MEMO, NOTE_VERSION, MEMO_MAX } from "./encryption.js";
+import { noteCommitment, openNoteCommitment, ownerHash, nullifier, assetId, freshRandomness, noteRandomness, NATIVE_TOKEN, addressToBytes32 } from "./note.js";
 import { MerkleTree, verifyPath, EMPTY_LEAF_PREIMAGE } from "./merkle.js";
 import { ShieldedWallet } from "./wallet.js";
-import { extDataHash, serializeExtData, deserializeExtData, NO_EXIT, ZERO_ADDRESS, EXT_DATA_ABI, extDataArg } from "./extdata.js";
+import { extDataHash, serializeExtData, deserializeExtData, NO_EXIT, NO_RESHIELD, ZERO_ADDRESS, EXT_DATA_ABI, extDataArg } from "./extdata.js";
 import { encodePublicAmount, decodePublicAmount, P, BJJ_SUBGROUP_ORDER, toHex } from "./field.js";
-import { proofArg, sharesForDeposit, amountForMint, amountForBurn, sharesForWithdraw, VIRTUAL_OFFSET, type PoolState } from "./pool.js";
-import { claimKey, exitData, decodeExitData, EXIT_BUY, EXIT_SELL, rolled, policy, worstFeeBps, voteInBounds, curveBuy, curveBuyCapped, curveSell, quotePrivateBuy, quotePrivateSell, feeOf, feeOnNet, type CurveState } from "./launch.js";
+import { proofArg, sharesForDeposit, amountForMint, amountForBurn, sharesForWithdraw, VIRTUAL_OFFSET, PROTOCOL_VERSION, type PoolState } from "./pool.js";
+import { exitData, decodeExitData, swapExitData, decodeSwapExitData, EXIT_BUY, EXIT_SELL, rolled, policy, worstFeeBps, voteInBounds, curveBuy, curveBuyCapped, curveSell, quotePrivateBuy, quotePrivateSell, quoteBuyExactOut, feeOf, feeOnNet, type CurveState } from "./launch.js";
 
 const seed = new Uint8Array(32).fill(7);
 const A1 = "0x1111111111111111111111111111111111111111" as const;
@@ -100,6 +100,95 @@ test("note encryption: receiver decrypts with ivk, strangers cannot, sender reco
   const small = encryptNote(bjj, to, note, undefined, false);
   assert.equal(small.ciphertext.length, NOTE_CIPHERTEXT_LEN_NO_MEMO);
   assert.ok(tryDecryptNote(bjj, receiver.ivk, small.ciphertext));
+
+  // ciphertexts carry a version byte: an unknown version (a future PQ hybrid) is skipped, not misparsed
+  assert.equal(PROTOCOL_VERSION, 2);
+  assert.equal(small.ciphertext[0], NOTE_VERSION);
+  const other = new Uint8Array(small.ciphertext);
+  other[0] = 0x03;
+  assert.equal(tryDecryptNote(bjj, receiver.ivk, other), null);
+  assert.equal(decryptNoteAsSender(bjj, rec!.pkd, rec!.esk, other), null);
+});
+
+test("open notes: commitment = Poseidon(asset, shares, ownerHash, rho, rcm); only the owner recognises it", async () => {
+  const bjj = await BabyJub.load();
+  const w = await ShieldedWallet.fromSeed(new Uint8Array(32).fill(31));
+  const other = await ShieldedWallet.fromSeed(new Uint8Array(32).fill(32));
+  const to = w.address();
+  const gd = groupHash(bjj, to.d)!;
+  const asset = assetId(NATIVE_TOKEN);
+  const oh = await ownerHash(gd, to.pkd);
+  assert.equal(oh, await poseidon([gd[0], gd[1], to.pkd[0], to.pkd[1]]));
+  const rnd = freshRandomness();
+  const shares = 4321n;
+  const cm = await openNoteCommitment(asset, shares, oh, rnd.rho, rnd.rcm);
+  // the same note, seen as an ordinary note, has the same commitment: the contract and the circuit agree
+  assert.equal(cm, await noteCommitment({ asset, value: shares, gd, pkd: to.pkd, ...rnd }));
+  // the ciphertext the exit sender attached carries no amount of its own (value 0); the chain fills it in
+  const ct = encryptNote(bjj, to, { asset, value: 0n, gd, pkd: to.pkd, ...rnd }, undefined, false).ciphertext;
+  const got = await w.scanOpenNote({ index: 5, commitment: cm, shares, ownerHash: oh, ciphertext: ct }, asset);
+  assert.ok(got);
+  assert.equal(got!.value, shares);
+  assert.equal(got!.position, 5);
+  assert.equal(await other.scanOpenNote({ index: 5, commitment: cm, shares, ownerHash: oh, ciphertext: ct }, asset), null);
+  // a wrong public amount does not match the commitment
+  const w2 = await ShieldedWallet.fromSeed(new Uint8Array(32).fill(31));
+  assert.equal(await w2.scanOpenNote({ index: 5, commitment: cm, shares: shares + 1n, ownerHash: oh, ciphertext: ct }, asset), null);
+});
+
+test("queued notes count toward queuedBalance, not spendable, until markInserted passes them", async () => {
+  const bjj = await BabyJub.load();
+  const w = await ShieldedWallet.fromSeed(new Uint8Array(32).fill(41));
+  const to = w.address();
+  const asset = assetId(NATIVE_TOKEN);
+  for (let i = 0; i < 3; i++) {
+    const n = { asset, value: 10n, gd: groupHash(bjj, to.d)!, pkd: to.pkd, ...freshRandomness() };
+    await w.scan({ index: i, commitment: await noteCommitment(n), ciphertext: encryptNote(bjj, to, n, undefined, false).ciphertext }, asset);
+  }
+  w.markInserted(1);
+  assert.equal(w.balance(asset), 10n);
+  assert.equal(w.queuedBalance(asset), 20n);
+  assert.throws(() => w.selectInputs(asset, 20n), /queued/);
+  w.markInserted(3);
+  assert.equal(w.balance(asset), 30n);
+  assert.equal(w.queuedBalance(asset), 0n);
+});
+
+test("full viewing key: bunkerview1… round-trips and a watch-only wallet sees notes but cannot spend", async () => {
+  const bjj = await BabyJub.load();
+  const spend = spendingKeyFromSeed(new Uint8Array(32).fill(51));
+  const fvk = await fullViewingKey(spend);
+  const s = encodeViewingKey(fvk);
+  assert.ok(s.startsWith("bunkerview1"));
+  const back = await decodeViewingKey(s);
+  assert.equal(back.ak, fvk.ak);
+  assert.equal(back.nk, fvk.nk);
+  assert.equal(back.ivk, fvk.ivk);
+  assert.deepEqual(back.ovk, fvk.ovk);
+  const watch = await ShieldedWallet.fromViewingKey(back);
+  assert.ok(watch.watchOnly);
+  const to = watch.address();
+  const asset = assetId(NATIVE_TOKEN);
+  const n = { asset, value: 77n, gd: groupHash(bjj, to.d)!, pkd: to.pkd, ...freshRandomness() };
+  assert.ok(await watch.scan({ index: 0, commitment: await noteCommitment(n), ciphertext: encryptNote(bjj, to, n, undefined, false).ciphertext }, asset));
+  watch.markInserted(1);
+  assert.equal(watch.balance(asset), 77n);
+  const t = new MerkleTree(26); await t.whenReady();
+  await assert.rejects(watch.buildTransact({ asset, poolAddress: A1, token: NATIVE_TOKEN, pool: { exists: true, decimals: 18, unit: 1n, totalShares: 0n, totalAssets: 0n, totalIn: 0n, totalOut: 0n, tvlCap: 0n }, tree: t, artifacts: {} as never, kind: "unshield", amount: 1n, recipient: A1 }), /watch-only/);
+});
+
+test("address bytes: 43 raw bytes, what the registry stores", async () => {
+  const bjj = await BabyJub.load();
+  const fvk = await fullViewingKey(spendingKeyFromSeed(seed));
+  const a = newAddress(bjj, fvk.ivk);
+  const raw = addressToBytes(bjj, a);
+  assert.equal(raw.length, 43);
+  const back = addressFromBytes(bjj, raw);
+  assert.deepEqual(back.d, a.d);
+  assert.deepEqual(back.pkd, a.pkd);
+  assert.throws(() => addressFromBytes(bjj, raw.slice(1)), /length/);
+  const bad = new Uint8Array(raw); bad[42] ^= 1;
+  assert.throws(() => addressFromBytes(bjj, bad));
 });
 
 test("a g_d with a torsion component passes the circuit's small-order check but is never credited by the receiver", async () => {
@@ -164,23 +253,30 @@ test("merkle tree paths verify; empty leaf is Poseidon('bunker_empty')", async (
 test("ext data is abi.encode(tuple) and hashes like ShieldedPool.extDataHash", () => {
   const ext = {
     recipient: A1,
-    relayer: A2,
-    relayerFee: 12345n,
     exitTarget: NO_EXIT,
     exitData: new Uint8Array(0),
     ciphertext0: new Uint8Array(100).fill(0xab),
     ciphertext1: new Uint8Array(100).fill(0xcd),
+    ciphertext2: new Uint8Array(100).fill(0x12),
     outCiphertext: new Uint8Array(40).fill(0xef),
+    reshield: NO_RESHIELD,
   };
   const bytes = serializeExtData(ext);
   assert.equal("0x" + toHex(bytes), encodeAbiParameters(EXT_DATA_ABI, [extDataArg(ext)]));
   const back = deserializeExtData(bytes);
-  assert.equal(back.relayerFee, 12345n);
   assert.deepEqual(back.ciphertext0, ext.ciphertext0);
+  assert.deepEqual(back.ciphertext2, ext.ciphertext2);
   assert.equal(back.exitTarget, ZERO_ADDRESS);
+  assert.equal(back.reshield.token, ZERO_ADDRESS);
   const h = createHash("sha256").update(Buffer.from(bytes)).digest("hex");
   assert.equal(extDataHash(ext), BigInt("0x" + h) % P);
   assert.ok(extDataHash(ext) < P);
+  const withReshield = { ...ext, exitTarget: A2, reshield: { token: A1, ownerHash: 5n, rho: 6n, rcm: 7n, ciphertext: new Uint8Array(100).fill(0x34) } };
+  const rb = deserializeExtData(serializeExtData(withReshield));
+  assert.equal(rb.reshield.token, A1);
+  assert.equal(rb.reshield.ownerHash, 5n);
+  assert.deepEqual(rb.reshield.ciphertext, withReshield.reshield.ciphertext);
+  assert.notEqual(extDataHash(withReshield), extDataHash(ext));
 });
 
 test("share math mirrors the contract", () => {
@@ -263,8 +359,11 @@ test("error tables list every custom error in the ABIs and decode revert data", 
   const abiErrors = (abi: readonly { type: string; name?: string }[]) => abi.filter((x) => x.type === "error").map((x) => x.name!).sort();
   assert.deepEqual([...POOL_ERRORS].sort(), abiErrors(ShieldedPoolAbi));
   assert.deepEqual([...LAUNCH_ERRORS].sort(), abiErrors(LaunchpadAbi));
+  assert.deepEqual([...SWAP_EXIT_ERRORS].sort(), abiErrors(SwapExitAbi));
   assert.equal(contractErrorFromData(encodeErrorResult({ abi: ShieldedPoolAbi, errorName: "UnknownRoot" })), "UnknownRoot");
+  assert.equal(contractErrorFromData(encodeErrorResult({ abi: ShieldedPoolAbi, errorName: "NothingQueued" })), "NothingQueued");
   assert.equal(contractErrorFromData(encodeErrorResult({ abi: LaunchpadAbi, errorName: "Slippage" })), "Slippage");
+  assert.equal(contractErrorFromData(encodeErrorResult({ abi: SwapExitAbi, errorName: "BadPath" })), "BadPath");
   assert.equal(contractErrorFromData("0x12345678"), undefined);
   assert.equal(contractErrorFromData("0x"), undefined);
   assert.equal(contractErrorFromData(undefined), undefined);
@@ -274,24 +373,14 @@ test("error tables list every custom error in the ABIs and decode revert data", 
   assert.equal(isStaleRootRejection(undefined), false);
 });
 
-test("claim keys are deterministic secp256k1 accounts, distinct per nonce and seed", () => {
-  const k1 = claimKey(seed, 0n);
-  const k2 = claimKey(seed, 0n);
-  const k3 = claimKey(seed, 1n);
-  const k4 = claimKey(new Uint8Array(32).fill(8), 0n);
-  assert.equal(k1.privateKey, k2.privateKey);
-  assert.equal(k1.address, k2.address);
-  assert.notEqual(k1.address, k3.address);
-  assert.notEqual(k1.address, k4.address);
-  assert.match(k1.privateKey, /^0x[0-9a-f]{64}$/);
-  assert.match(k1.address, /^0x[0-9a-fA-F]{40}$/);
-});
-
-test("exit data round-trips through abi encoding", () => {
-  const d = exitData(EXIT_BUY, A1, A2, 123n, 2_000_000_000_000_000n, 500_000_000_000_000n);
-  assert.equal(d.length, 6 * 32);
-  assert.deepEqual(decodeExitData(d), { kind: 1, token: A1, claimKey: A2, minOut: 123n, claimBudget: 2_000_000_000_000_000n, relayerTip: 500_000_000_000_000n });
-  assert.equal(decodeExitData(exitData(EXIT_SELL, A1, A2, 0n, 0n)).kind, 2);
+test("exit data round-trips through abi encoding (launchpad and swap)", () => {
+  const d = exitData(EXIT_BUY, A1, 123n);
+  assert.equal(d.length, 3 * 32);
+  assert.deepEqual(decodeExitData(d), { kind: 1, token: A1, minOut: 123n });
+  assert.equal(decodeExitData(exitData(EXIT_SELL, A1, 0n)).kind, 2);
+  const s = swapExitData([A1, A2], 999n);
+  assert.deepEqual(decodeSwapExitData(s), { path: [A1, A2], minOut: 999n });
+  assert.throws(() => swapExitData([A1], 1n), /two tokens/);
 });
 
 test("fee policy mirror: median, quorum, one bounded step per epoch, votes count from the next epoch and expire", () => {
@@ -356,20 +445,28 @@ test("curve math: k never decreases, capped buy sells out at graduation, quotes 
   const cap = curveBuyCapped(fresh(), 25n * 10n ** 18n);
   assert.equal(cap.out, curveSupply);
   assert.ok(cap.used > graduation - 10n ** 15n && cap.used < graduation + 10n ** 15n);
-  const q = quotePrivateBuy(fresh(), 10n ** 18n, 2n * 10n ** 15n, 5n * 10n ** 14n);
-  assert.equal(q.reserve, 25n * 10n ** 14n);
-  assert.equal(q.fee, feeOf(10n ** 18n - q.reserve, 100));
-  assert.equal(q.net, 10n ** 18n - q.reserve - q.fee);
-  assert.equal(q.refund, 0n);
-  const big = quotePrivateBuy(fresh(), 30n * 10n ** 18n, 0n, 0n);
+  const q = quotePrivateBuy(fresh(), 10n ** 18n);
+  assert.equal(q.fee, feeOf(10n ** 18n, 100));
+  assert.equal(q.net, 10n ** 18n - q.fee);
+  assert.equal(q.overshoots, false);
+  // the last buy: maxIn empties the curve exactly and nothing beyond it is accepted
+  const big = quotePrivateBuy(fresh(), 30n * 10n ** 18n);
   assert.equal(big.out, curveSupply);
-  assert.ok(big.refund > 23n * 10n ** 18n);
-  assert.equal(big.fee, feeOnNet(big.net, 100));
+  assert.equal(big.overshoots, true);
+  const lastNet = quoteBuyExactOut(fresh(), curveSupply);
+  assert.equal(big.maxIn, lastNet + feeOnNet(lastNet, 100));
+  const exact = quotePrivateBuy(fresh(), big.maxIn);
+  assert.equal(exact.overshoots, false);
+  assert.equal(exact.out, curveSupply);
+  // a hair over (unit rounding) is kept by the curve; clearly over is refused
+  assert.equal(quotePrivateBuy(fresh(), big.maxIn + 10n ** 9n).overshoots, false);
+  assert.equal(quotePrivateBuy(fresh(), big.maxIn + 10n ** 9n).net, big.maxIn + 10n ** 9n - feeOf(big.maxIn + 10n ** 9n, 100));
+  assert.equal(quotePrivateBuy(fresh(), big.maxIn + 10n ** 15n).overshoots, true);
   const after = { ...fresh(), realBnb: q.net, virtualToken: curveBuy(fresh(), q.net).virtualToken, realToken: curveSupply - q.out };
-  const sq = quotePrivateSell(after, q.out / 2n, 10n ** 14n);
-  assert.equal(sq.out, sq.gross - sq.fee - 10n ** 14n);
+  const sq = quotePrivateSell(after, q.out / 2n);
+  assert.equal(sq.out, sq.gross - sq.fee);
   assert.ok(sq.gross < q.net);
-  assert.throws(() => quotePrivateBuy(fresh(), 10n ** 15n, 10n ** 15n, 0n), /too small/);
+  assert.throws(() => quotePrivateBuy(fresh(), 0n), /nothing/);
 });
 
 test("passphrase strength: the time-to-crack arithmetic is 2^(b-1)/rate", () => {
@@ -412,9 +509,11 @@ test("networks.bsc mirrors contracts/deployments/56.json and services answer the
   const here = dirname(fileURLToPath(import.meta.url));
   const file = resolve(here, "../../contracts/deployments/56.json");
   if (!existsSync(file)) return; // published package: no repo around it
-  const dep = JSON.parse(readFileSync(file, "utf8")) as { pool: string; launchpad: string; startBlock: number };
+  const dep = JSON.parse(readFileSync(file, "utf8")) as { protocolVersion?: number; pool: string; launchpad: string; swapExit?: string; startBlock: number };
+  assert.equal(dep.protocolVersion ?? 1, networks.bsc.protocolVersion);
   assert.equal(networks.bsc.pool.toLowerCase(), dep.pool.toLowerCase());
   assert.equal(networks.bsc.launchpad.toLowerCase(), dep.launchpad.toLowerCase());
+  assert.equal((networks.bsc.swapExit ?? "").toLowerCase(), (dep.swapExit ?? "").toLowerCase());
   assert.equal(networks.bsc.startBlock, dep.startBlock);
   assert.equal(networks.bsc.chainId, 56);
   for (const u of [networks.bsc.indexerUrl, networks.bsc.relayerUrl, networks.bsc.agentsUrl, networks.bsc.artifactsUrl]) assert.match(u, /^https:\/\//);

@@ -1,5 +1,5 @@
 // ExtData: everything a transact binds to its proof besides the circuit's own
-// public inputs (SPEC §7). Hashed exactly as `ShieldedPool.extDataHash` does:
+// public inputs (SPEC A7). Hashed exactly as `ShieldedPool.extDataHash` does:
 // `uint256(sha256(abi.encode(ext))) % p`.
 import { sha256 } from "@noble/hashes/sha2.js";
 import { encodeAbiParameters, decodeAbiParameters, type Hex } from "viem";
@@ -7,34 +7,56 @@ import { mod, bytesToBigIntBE, fromHex, toHex } from "./field.js";
 
 export type EvmAddress = `0x${string}`;
 
+/** Where an exit hook's proceeds go: a note for `token` to the owner behind `ownerHash`. `ownerHash = 0` = no reshield. */
+export interface Reshield {
+  token: EvmAddress;
+  ownerHash: bigint;
+  rho: bigint;
+  rcm: bigint;
+  /** note ciphertext to the owner (value field ignored; the pool publishes the amount) */
+  ciphertext: Uint8Array;
+}
+
 export interface ExtData {
+  /** public recipient of an unshield (the exit target itself when `exitTarget` is set) */
   recipient: EvmAddress;
-  relayer: EvmAddress;
-  /** internal pool units, taken from a negative publicAmount */
-  relayerFee: bigint;
   /** address(0) = plain unshield */
   exitTarget: EvmAddress;
   exitData: Uint8Array;
   ciphertext0: Uint8Array;
   ciphertext1: Uint8Array;
+  /** the relayer's fee note */
+  ciphertext2: Uint8Array;
   outCiphertext: Uint8Array;
+  reshield: Reshield;
 }
 
 export const ZERO_ADDRESS: EvmAddress = "0x0000000000000000000000000000000000000000";
 export const NO_EXIT = ZERO_ADDRESS;
+export const NO_RESHIELD: Reshield = { token: ZERO_ADDRESS, ownerHash: 0n, rho: 0n, rcm: 0n, ciphertext: new Uint8Array(0) };
 
 export const EXT_DATA_ABI = [
   {
     type: "tuple",
     components: [
       { name: "recipient", type: "address" },
-      { name: "relayer", type: "address" },
-      { name: "relayerFee", type: "uint256" },
       { name: "exitTarget", type: "address" },
       { name: "exitData", type: "bytes" },
       { name: "ciphertext0", type: "bytes" },
       { name: "ciphertext1", type: "bytes" },
+      { name: "ciphertext2", type: "bytes" },
       { name: "outCiphertext", type: "bytes" },
+      {
+        name: "reshield",
+        type: "tuple",
+        components: [
+          { name: "token", type: "address" },
+          { name: "ownerHash", type: "uint256" },
+          { name: "rho", type: "uint256" },
+          { name: "rcm", type: "uint256" },
+          { name: "ciphertext", type: "bytes" },
+        ],
+      },
     ],
   },
 ] as const;
@@ -45,13 +67,13 @@ const hex = (b: Uint8Array): Hex => `0x${toHex(b)}`;
 export function extDataArg(e: ExtData) {
   return {
     recipient: e.recipient,
-    relayer: e.relayer,
-    relayerFee: e.relayerFee,
     exitTarget: e.exitTarget,
     exitData: hex(e.exitData),
     ciphertext0: hex(e.ciphertext0),
     ciphertext1: hex(e.ciphertext1),
+    ciphertext2: hex(e.ciphertext2),
     outCiphertext: hex(e.outCiphertext),
+    reshield: { token: e.reshield.token, ownerHash: e.reshield.ownerHash, rho: e.reshield.rho, rcm: e.reshield.rcm, ciphertext: hex(e.reshield.ciphertext) },
   } as const;
 }
 
@@ -68,12 +90,12 @@ export function deserializeExtData(b: Uint8Array): ExtData {
   const [d] = decodeAbiParameters(EXT_DATA_ABI, hex(b));
   return {
     recipient: d.recipient,
-    relayer: d.relayer,
-    relayerFee: d.relayerFee,
     exitTarget: d.exitTarget,
     exitData: fromHex(d.exitData),
     ciphertext0: fromHex(d.ciphertext0),
     ciphertext1: fromHex(d.ciphertext1),
+    ciphertext2: fromHex(d.ciphertext2),
     outCiphertext: fromHex(d.outCiphertext),
+    reshield: { token: d.reshield.token, ownerHash: d.reshield.ownerHash, rho: d.reshield.rho, rcm: d.reshield.rcm, ciphertext: fromHex(d.reshield.ciphertext) },
   };
 }

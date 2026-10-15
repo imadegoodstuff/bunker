@@ -1,4 +1,4 @@
-// Adversarial witness tests for transact2x2.
+// Adversarial witness tests for transact2x3.
 //
 // Each case starts from a witness that proves fine, applies exactly one
 // tampering, and asserts that the circuit refuses to produce a witness
@@ -17,17 +17,17 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { groth16 } from "snarkjs";
 import {
-  BabyJub, MerkleTree, ShieldedWallet, assetId, extDataHash, NO_EXIT, NATIVE_TOKEN, ZERO_ADDRESS,
+  BabyJub, MerkleTree, ShieldedWallet, assetId, extDataHash, NO_EXIT, NO_RESHIELD, NATIVE_TOKEN, ZERO_ADDRESS,
   groupHash, noteCommitment, freshRandomness, encryptNote, buildWitnessInput, P,
 } from "../../sdk/dist/index.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const wasm = join(root, "build", "transact2x2", "transact2x2_js", "transact2x2.wasm");
-const zkey = join(root, "build", "transact2x2", "transact2x2_dev.zkey");
+const wasm = join(root, "build", "transact2x3", "transact2x3_js", "transact2x3.wasm");
+const zkey = join(root, "build", "transact2x3", "transact2x3_dev.zkey");
 
 const ORDER_TWO = [0n, P - 1n]; // (0, -1): the unique point of order 2 on a twisted Edwards curve
 
-let honest; // { input, outputs, ... } for a 1-in / 2-out unshield
+let honest; // { input, outputs, ... } for a 1-in / 3-out unshield
 let bjj;
 
 /** Commitment of output `j` with a different value, so value tamperings fail on balance/range, not on cm. */
@@ -60,27 +60,28 @@ before(async () => {
   const cm0 = await noteCommitment(n0);
   const pos0 = await tree.insert(cm0);
 
-  // unshield 400 to the public (the 10 relayer fee is taken from it on-chain), 600 change to self
-  const change = { asset, value: 600n, gd: selfGd, pkd: self.pkd, ...freshRandomness() };
+  // unshield 400 to the public, 590 change to self, a 10 fee note to the relayer (the stranger here)
+  const change = { asset, value: 590n, gd: selfGd, pkd: self.pkd, ...freshRandomness() };
   const zero = { asset, value: 0n, gd: selfGd, pkd: self.pkd, ...freshRandomness() };
+  const fee = { asset, value: 10n, gd: otherGd, pkd: other.pkd, ...freshRandomness() };
   const c0 = encryptNote(bjj, self, change, undefined, false);
-  const c1 = encryptNote(bjj, self, zero, undefined, false);
+  const c2 = encryptNote(bjj, other, fee, undefined, false);
   const ext = {
-    recipient: ZERO_ADDRESS, relayer: ZERO_ADDRESS, relayerFee: 10n, exitTarget: NO_EXIT,
-    exitData: new Uint8Array(0), ciphertext0: c0.ciphertext, ciphertext1: c1.ciphertext, outCiphertext: new Uint8Array(0),
+    recipient: ZERO_ADDRESS, exitTarget: NO_EXIT, exitData: new Uint8Array(0),
+    ciphertext0: c0.ciphertext, ciphertext1: new Uint8Array(0), ciphertext2: c2.ciphertext, outCiphertext: new Uint8Array(0), reshield: NO_RESHIELD,
   };
   const params = {
     spend: wallet.spend, fvk: wallet.fvk, root: await tree.root(), asset, publicAmount: -400n,
     extDataHash: extDataHash(ext), aspRoot: 0n,
     inputs: [{ note: { ...n0, commitment: cm0, position: pos0 }, path: await tree.path(pos0) }],
-    outputs: [change, zero], dummyPath: tree.dummyPath(), self: { gd: selfGd, pkd: self.pkd },
+    outputs: [change, zero, fee], dummyPath: tree.dummyPath(), self: { gd: selfGd, pkd: self.pkd },
   };
   const built = await buildWitnessInput(params);
   honest = { ...built, params, other, otherGd, stranger, tree, n0, pos0 };
 
   // the honest witness must prove
   const { publicSignals } = await groth16.fullProve(honest.input, wasm, zkey);
-  assert.equal(publicSignals.length, 9);
+  assert.equal(publicSignals.length, 10);
 });
 
 // ---- outputs ---------------------------------------------------------------
@@ -117,9 +118,9 @@ test("output commitment that does not match the output note is rejected", async 
 });
 
 test("output value of 2^64 or more is rejected", async () => {
-  // Balance holds in the field (600 + 2^64 and -2^64 mod p sum to 600) and
+  // Balance holds in the field (590 + 2^64 and -2^64 mod p sum to 590) and
   // the commitments are recomputed, so only the 64-bit range check can fire.
-  const v0 = 600n + (1n << 64n);
+  const v0 = 590n + (1n << 64n);
   const v1 = P - (1n << 64n);
   const [c0, c1] = await Promise.all([cmWith(0, v0), cmWith(1, v1)]);
   await rejects((w) => {
@@ -133,8 +134,8 @@ test("output value of 2^64 or more is rejected", async () => {
 // ---- balance ---------------------------------------------------------------
 
 test("creating value out of nothing is rejected", async () => {
-  const c0 = await cmWith(0, 601n);
-  await rejects((w) => { w.outValue[0] = "601"; w.outCommitments[0] = c0; }, "mint 1 unit");
+  const c0 = await cmWith(0, 591n);
+  await rejects((w) => { w.outValue[0] = "591"; w.outCommitments[0] = c0; }, "mint 1 unit");
 });
 
 test("changing the public amount without changing the notes is rejected", async () => {
@@ -165,7 +166,7 @@ test("a nullifier that does not match (nk, rho, position) is rejected", async ()
 test("spending the same note twice in one transaction is rejected", async () => {
   // Input 1 becomes a copy of input 0 (valid path, valid ownership, valid
   // nullifier), and output 1 is rebuilt so the balance and commitment hold:
-  // 1000 + 1000 - 400 = 600 + 1000. The only violated constraint left is
+  // 1000 + 1000 - 400 = 590 + 1000 + 10. The only violated constraint left is
   // nullifier distinctness.
   const out1 = { ...honest.params.outputs[1], value: 1000n };
   const cm1 = (await noteCommitment(out1)).toString();
@@ -182,10 +183,10 @@ test("a dummy (zero-value) input cannot carry value", async () => {
   // Input 1 is the dummy with a zero path. Give it value, balance the
   // outputs and recompute the commitment: the Merkle check that is skipped
   // for zero-value inputs must now be enforced and fail.
-  const c0 = await cmWith(0, 605n);
+  const c0 = await cmWith(0, 595n);
   await rejects((w) => {
     w.inValue[1] = "5";
-    w.outValue[0] = "605";
+    w.outValue[0] = "595";
     w.outCommitments[0] = c0;
   }, "dummy with value");
 });

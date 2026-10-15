@@ -6,6 +6,7 @@
 import { BaseError, ContractFunctionRevertedError, decodeErrorResult, type Hex } from "viem";
 import { ShieldedPoolAbi } from "./abi/ShieldedPool.js";
 import { LaunchpadAbi } from "./abi/Launchpad.js";
+import { SwapExitAbi } from "./abi/SwapExit.js";
 
 export const POOL_ERRORS = [
   "UnknownRoot",
@@ -17,11 +18,9 @@ export const POOL_ERRORS = [
   "ShieldPausedError",
   "TvlCapExceeded",
   "Turnstile",
-  "FeeExceedsAmount",
   "Unauthorized",
   "TreeFull",
   "Overflow",
-  "AccountMismatch",
   "CapNotLower",
   "AlreadyInitialized",
   "NotInitialized",
@@ -30,8 +29,15 @@ export const POOL_ERRORS = [
   "TransferFailed",
   "Reentrancy",
   "ValueMismatch",
+  "NotInTransact",
+  "BadAddress",
+  "AmountTooSmall",
+  "NothingQueued",
 ] as const;
 export type PoolErrorName = (typeof POOL_ERRORS)[number];
+
+export const SWAP_EXIT_ERRORS = ["NotFromPool", "BadPath", "TransferFailed"] as const;
+export type SwapExitErrorName = (typeof SWAP_EXIT_ERRORS)[number];
 
 export const LAUNCH_ERRORS = [
   "BadParams",
@@ -52,12 +58,13 @@ export const LAUNCH_ERRORS = [
 ] as const;
 export type LaunchErrorName = (typeof LAUNCH_ERRORS)[number];
 
-export type ContractErrorName = PoolErrorName | LaunchErrorName;
+export type ContractErrorName = PoolErrorName | LaunchErrorName | SwapExitErrorName;
 
 /** Errors that mean "the tree moved under you": a fresh sync and a new proof against the current root are the right response. */
 export const STALE_ROOT_ERRORS: readonly ContractErrorName[] = ["UnknownRoot", "InvalidProof"];
 
-const ABIS = [...ShieldedPoolAbi, ...LaunchpadAbi];
+const ABIS = [...ShieldedPoolAbi, ...LaunchpadAbi, ...SwapExitAbi];
+const KNOWN: readonly string[] = [...POOL_ERRORS, ...LAUNCH_ERRORS, ...SWAP_EXIT_ERRORS];
 
 /** Decode a revert's raw data into a known custom error name (undefined for anything else: out of gas, plain `require`, …). */
 export function contractErrorFromData(data: Hex | undefined): ContractErrorName | undefined {
@@ -65,7 +72,7 @@ export function contractErrorFromData(data: Hex | undefined): ContractErrorName 
   try {
     const d = decodeErrorResult({ abi: ABIS, data });
     const name = d.errorName as ContractErrorName;
-    if ((POOL_ERRORS as readonly string[]).includes(name) || (LAUNCH_ERRORS as readonly string[]).includes(name)) return name;
+    if (KNOWN.includes(name)) return name;
   } catch {
     /* not ours */
   }
@@ -78,7 +85,7 @@ export function contractErrorName(err: unknown): ContractErrorName | undefined {
   const reverted = err.walk((e) => e instanceof ContractFunctionRevertedError) as ContractFunctionRevertedError | null;
   if (reverted?.data?.errorName) {
     const name = reverted.data.errorName as ContractErrorName;
-    if ((POOL_ERRORS as readonly string[]).includes(name) || (LAUNCH_ERRORS as readonly string[]).includes(name)) return name;
+    if (KNOWN.includes(name)) return name;
   }
   if (reverted?.raw) return contractErrorFromData(reverted.raw);
   // raw RPC error payloads

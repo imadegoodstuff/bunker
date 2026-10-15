@@ -14,16 +14,17 @@ async function emptyLeaf() {
 }
 
 /**
- * Deploy PoseidonT3 through the deterministic deployment proxy so it lands at
- * the same address on every EVM (0x3333333C0A88F9BE4fd23ed0536F9B6c427e3B93).
- * No-op if it is already there (it is, on most chains).
+ * Deploy a poseidon-solidity library through the deterministic deployment
+ * proxy so it lands at the same address on every EVM (PoseidonT3 is
+ * 0x3333333C0A88F9BE4fd23ed0536F9B6c427e3B93). No-op if it is already there.
  */
-async function ensurePoseidonT3(ethers, log = () => {}) {
-  const { proxy, PoseidonT3 } = poseidonPkg;
+async function ensurePoseidon(ethers, name, log = () => {}) {
+  const { proxy } = poseidonPkg;
+  const lib = poseidonPkg[name];
   const provider = ethers.provider;
-  if ((await provider.getCode(PoseidonT3.address)) !== "0x") {
-    log(`PoseidonT3 already at ${PoseidonT3.address}`);
-    return PoseidonT3.address;
+  if ((await provider.getCode(lib.address)) !== "0x") {
+    log(`${name} already at ${lib.address}`);
+    return lib.address;
   }
   const [sender] = await ethers.getSigners();
   if ((await provider.getCode(proxy.address)) === "0x") {
@@ -34,29 +35,31 @@ async function ensurePoseidonT3(ethers, log = () => {}) {
     }
     await (await provider.broadcastTransaction(proxy.tx)).wait();
   }
-  log("deploying PoseidonT3");
-  await (await sender.sendTransaction({ to: proxy.address, data: PoseidonT3.data, gasLimit: 6_000_000 })).wait();
-  if ((await provider.getCode(PoseidonT3.address)) === "0x") throw new Error("PoseidonT3 deploy failed");
-  return PoseidonT3.address;
+  log(`deploying ${name}`);
+  await (await sender.sendTransaction({ to: proxy.address, data: lib.data, gasLimit: 6_000_000 })).wait();
+  if ((await provider.getCode(lib.address)) === "0x") throw new Error(`${name} deploy failed`);
+  return lib.address;
 }
+const ensurePoseidonT3 = (ethers, log) => ensurePoseidon(ethers, "PoseidonT3", log);
 
 /** Deploy the whole protocol. `opts.router` defaults to a MockPancakeRouter on local chains. */
 async function deployAll(ethers, opts = {}) {
   const log = opts.log || (() => {});
   const [deployer] = await ethers.getSigners();
   const poseidon = await ensurePoseidonT3(ethers, log);
+  const poseidonT6 = await ensurePoseidon(ethers, "PoseidonT6", log);
 
-  const V2 = await ethers.getContractFactory("Transact2x2Verifier");
+  const V2 = await ethers.getContractFactory("Transact2x3Verifier");
   const v2 = await V2.deploy();
   await v2.waitForDeployment();
-  log(`Transact2x2Verifier ${await v2.getAddress()}`);
-  const V4 = await ethers.getContractFactory("Transact4x2Verifier");
+  log(`Transact2x3Verifier ${await v2.getAddress()}`);
+  const V4 = await ethers.getContractFactory("Transact4x3Verifier");
   const v4 = await V4.deploy();
   await v4.waitForDeployment();
-  log(`Transact4x2Verifier ${await v4.getAddress()}`);
+  log(`Transact4x3Verifier ${await v4.getAddress()}`);
 
   const leaf = await emptyLeaf();
-  const Pool = await ethers.getContractFactory("ShieldedPool", { libraries: { PoseidonT3: poseidon } });
+  const Pool = await ethers.getContractFactory("ShieldedPool", { libraries: { PoseidonT3: poseidon, PoseidonT6: poseidonT6 } });
   const guardian = opts.guardian || deployer.address;
   const nativeCap = opts.nativeTvlCap ?? ethers.MaxUint256;
   const pool = await Pool.deploy(await v2.getAddress(), await v4.getAddress(), guardian, leaf, nativeCap);
@@ -76,8 +79,12 @@ async function deployAll(ethers, opts = {}) {
   const launchpad = await LP.deploy(await pool.getAddress(), params);
   await launchpad.waitForDeployment();
   log(`Launchpad ${await launchpad.getAddress()}`);
+  const SE = await ethers.getContractFactory("SwapExit");
+  const swapExit = await SE.deploy(await pool.getAddress(), router);
+  await swapExit.waitForDeployment();
+  log(`SwapExit ${await swapExit.getAddress()}`);
 
-  return { poseidon, verifier2x2: await v2.getAddress(), verifier4x2: await v4.getAddress(), pool, launchpad, router, params, emptyLeaf: leaf };
+  return { poseidon, poseidonT6, verifier2x3: await v2.getAddress(), verifier4x3: await v4.getAddress(), pool, launchpad, swapExit, router, params, emptyLeaf: leaf };
 }
 
 /**
@@ -107,4 +114,4 @@ function defaultParams(opts = {}) {
   };
 }
 
-module.exports = { FIELD, emptyLeaf, ensurePoseidonT3, deployAll, defaultParams };
+module.exports = { FIELD, emptyLeaf, ensurePoseidon, ensurePoseidonT3, deployAll, defaultParams };

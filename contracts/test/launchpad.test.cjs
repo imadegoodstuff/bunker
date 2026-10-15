@@ -27,8 +27,8 @@ function sell(r, tokenIn) {
   return [out, y2];
 }
 
-function exitData(kind, token, claimKey, minOut, claimBudget, relayerTip) {
-  return abi.encode(["uint8", "address", "address", "uint256", "uint256", "uint256"], [kind, token, claimKey, minOut, claimBudget, relayerTip]);
+function exitData(kind, token, minOut) {
+  return abi.encode(["uint8", "address", "uint256"], [kind, token, minOut]);
 }
 
 describe("Launchpad", function () {
@@ -117,44 +117,46 @@ describe("Launchpad", function () {
     }
   });
 
-  it("buys and sells through the exit hook pay the claim key and the relayer", async () => {
+  it("buys and sells through the exit hook hand the proceeds back to the pool", async () => {
     const token = await launch("Two", "TWO");
     const t = await ethers.getContractAt("LaunchToken", token);
-    const claim = ethers.Wallet.createRandom().connect(ethers.provider);
-    const budget = ethers.parseEther("0.002");
-    const tip = ethers.parseEther("0.0005");
+    const poolAddr = await harness.getAddress();
     const amount = ethers.parseEther("0.5");
-    const gross = amount - budget - tip;
-    const fee = (gross * 100n) / 10_000n;
-    const [expOut] = buy({ virtualBnb: params.virtualBnb, realBnb: 0n, virtualToken: params.virtualToken, realToken: params.curveSupply }, gross - fee);
+    const fee = (amount * 100n) / 10_000n;
+    const [expOut] = buy({ virtualBnb: params.virtualBnb, realBnb: 0n, virtualToken: params.virtualToken, realToken: params.curveSupply }, amount - fee);
 
-    await expect(launchpad.onExit(ethers.ZeroAddress, amount, relayer.address, exitData(1, token, claim.address, 0, budget, tip))).to.be.revertedWithCustomError(launchpad, "NotFromPool");
-    await expect(harness.connect(relayer).exitBnb(await launchpad.getAddress(), exitData(1, token, claim.address, expOut + 1n, budget, tip), { value: amount })).to.be.revertedWithCustomError(launchpad, "Slippage");
+    await expect(launchpad.onExit(ethers.ZeroAddress, amount, relayer.address, exitData(1, token, 0))).to.be.revertedWithCustomError(launchpad, "NotFromPool");
+    await expect(harness.connect(relayer).exitBnb(await launchpad.getAddress(), exitData(1, token, expOut + 1n), { value: amount })).to.be.revertedWithCustomError(launchpad, "Slippage");
     const relBefore = await ethers.provider.getBalance(relayer.address);
-    const tx = await harness.connect(relayer).exitBnb(await launchpad.getAddress(), exitData(1, token, claim.address, expOut, budget, tip), { value: amount });
+    const tx = await harness.connect(relayer).exitBnb(await launchpad.getAddress(), exitData(1, token, expOut), { value: amount });
     const rc = await tx.wait();
-    expect(await t.balanceOf(claim.address)).to.equal(expOut);
-    expect(await ethers.provider.getBalance(claim.address)).to.equal(budget);
-    const relAfter = await ethers.provider.getBalance(relayer.address);
-    expect(relAfter).to.equal(relBefore - amount - rc.gasUsed * rc.gasPrice + tip);
+    expect(await t.balanceOf(poolAddr)).to.equal(expOut);
+    // the relayer only paid gas: nothing leaks to it or to any public key
+    expect(await ethers.provider.getBalance(relayer.address)).to.equal(relBefore - amount - rc.gasUsed * rc.gasPrice);
     let c = await launchpad.curves(token);
-    expect(c.realBnb).to.equal(gross - fee);
+    expect(c.realBnb).to.equal(amount - fee);
     expect(c.feesAccrued).to.equal(fee);
     expect(c.buys).to.equal(1n);
 
-    // sell half back through a fresh claim key
-    const claim2 = ethers.Wallet.createRandom();
+    // sell half back: BNB returns to the pool
     const half = expOut / 2n;
     const [grossOut] = sell({ virtualBnb: c.virtualBnb, realBnb: c.realBnb, virtualToken: c.virtualToken, realToken: c.realToken }, half);
     const fee2 = (grossOut * 100n) / 10_000n;
-    const out2 = grossOut - fee2 - tip;
-    const impersonated = await ethers.getImpersonatedSigner(claim.address);
-    await signers[9].sendTransaction({ to: claim.address, value: ethers.parseEther("1") });
-    await expect(harness.connect(impersonated).exitToken(await launchpad.getAddress(), token, half, exitData(2, token, claim2.address, 0, out2, tip))).to.be.revertedWithCustomError(launchpad, "AmountTooSmall");
-    await harness.connect(impersonated).exitToken(await launchpad.getAddress(), token, half, exitData(2, token, claim2.address, out2, budget, tip));
-    expect(await ethers.provider.getBalance(claim2.address)).to.equal(out2);
+    const out2 = grossOut - fee2;
+    const asPool = await ethers.getImpersonatedSigner(poolAddr);
+    await signers[9].sendTransaction({ to: poolAddr, value: ethers.parseEther("1") });
+    const curveBnbBefore = await ethers.provider.getBalance(await launchpad.getAddress());
+    await expect(harness.connect(asPool).exitToken(await launchpad.getAddress(), token, half, exitData(2, token, out2 + 1n))).to.be.revertedWithCustomError(launchpad, "Slippage");
+    const tx2 = await harness.connect(asPool).exitToken(await launchpad.getAddress(), token, half, exitData(2, token, out2));
+    const rc2 = await tx2.wait();
+    const sellEv = rc2.logs.map((l) => { try { return launchpad.interface.parseLog(l); } catch { return null; } }).find((e) => e && e.name === "CurveSell");
+    expect(sellEv.args.bnbOut).to.equal(grossOut);
+    expect(sellEv.args.fee).to.equal(fee2);
+    // the curve paid exactly `out2` and nothing else left it (the pool's own balance also moves by gas, so measure here)
+    expect(curveBnbBefore - (await ethers.provider.getBalance(await launchpad.getAddress()))).to.equal(out2);
+    expect(await t.balanceOf(poolAddr)).to.equal(expOut - half);
     c = await launchpad.curves(token);
-    expect(c.realBnb).to.equal(gross - fee - grossOut);
+    expect(c.realBnb).to.equal(amount - fee - grossOut);
     expect(c.feesAccrued).to.equal(fee + fee2);
     expect(c.sells).to.equal(1n);
 
@@ -211,23 +213,31 @@ describe("Launchpad", function () {
   it("graduates when sold out and migrates to the AMM with LP burned", async () => {
     const token = await launch("Grad", "GRAD");
     const t = await ethers.getContractAt("LaunchToken", token);
-    const claim = ethers.Wallet.createRandom();
-    const amount = params.graduationWei + ethers.parseEther("1");
-    const budget = ethers.parseEther("0.002");
+    const poolAddr = await harness.getAddress();
+    const poolTokensBefore = await t.balanceOf(poolAddr);
     await expect(launchpad.migrate(token)).to.be.revertedWithCustomError(launchpad, "NotMigratable");
-    const tx = await harness.connect(relayer).exitBnb(await launchpad.getAddress(), exitData(1, token, claim.address, 0, budget, 0), { value: amount });
+    // overshooting the last tokens is refused: proceeds come back as one note, so there is no refund path
+    await expect(harness.connect(relayer).exitBnb(await launchpad.getAddress(), exitData(1, token, 0), { value: params.graduationWei + ethers.parseEther("1") })).to.be.revertedWithCustomError(launchpad, "SoldOut");
+    // size the buy to exactly the remaining supply (what the SDK does near the end of a curve)
+    const c0raw = await launchpad.curves(token);
+    const c0 = { creator: c0raw.creator, createdBlock: c0raw.createdBlock, virtualBnb: c0raw.virtualBnb, virtualToken: c0raw.virtualToken, realBnb: c0raw.realBnb, realToken: c0raw.realToken, feesAccrued: c0raw.feesAccrued, graduated: c0raw.graduated, tradeFeeBps: c0raw.tradeFeeBps, settledEpoch: c0raw.settledEpoch, votes: [[0, 0], [0, 0], [0, 0], [0, 0]], ammPair: c0raw.ammPair, buys: c0raw.buys, sells: c0raw.sells, bnbVolume: c0raw.bnbVolume };
+    const net = await launchpad.quoteBuyExactOut(c0, c0.realToken);
+    const exact = await launchpad.feeOnNet(net, c0.tradeFeeBps) + net;
+    // the pool pays in whole gwei, so the SDK rounds up: a hair over the exact size is kept, not refused
+    const slack = await launchpad.overshootSlack(exact);
+    expect(slack).to.equal(exact / 10_000n);
+    await expect(harness.connect(relayer).exitBnb(await launchpad.getAddress(), exitData(1, token, 0), { value: exact + slack * 2n })).to.be.revertedWithCustomError(launchpad, "SoldOut");
+    const amount = (exact / 10n ** 9n + 1n) * 10n ** 9n;
+    const tx = await harness.connect(relayer).exitBnb(await launchpad.getAddress(), exitData(1, token, 0), { value: amount });
     const rc = await tx.wait();
     const names = rc.logs.map((l) => { try { return launchpad.interface.parseLog(l)?.name; } catch { return null; } });
     expect(names).to.include("Graduate");
     const c = await launchpad.curves(token);
     expect(c.graduated).to.equal(true);
     expect(c.realToken).to.equal(0n);
-    expect(await t.balanceOf(claim.address)).to.equal(params.curveSupply);
-    // the buyer got back what the curve did not need
-    const refund = await ethers.provider.getBalance(claim.address);
-    expect(refund).to.be.gt(budget + ethers.parseEther("0.9"));
+    expect((await t.balanceOf(poolAddr)) - poolTokensBefore).to.equal(params.curveSupply);
     // frozen
-    await expect(harness.connect(relayer).exitBnb(await launchpad.getAddress(), exitData(1, token, claim.address, 0, budget, 0), { value: 10n ** 16n })).to.be.revertedWithCustomError(launchpad, "Migrated");
+    await expect(harness.connect(relayer).exitBnb(await launchpad.getAddress(), exitData(1, token, 0), { value: 10n ** 16n })).to.be.revertedWithCustomError(launchpad, "Migrated");
     await expect(launchpad.connect(agents[0]).vote(token, 100)).to.be.revertedWithCustomError(launchpad, "Migrated");
     await expect(launchpad.harvest(token)).to.be.revertedWithCustomError(launchpad, "Migrated");
     // migrate
@@ -243,8 +253,8 @@ describe("Launchpad", function () {
     const pair = await ethers.getContractAt("MockPair", c2.ammPair);
     expect(await pair.balanceOf(DEAD)).to.be.gt(0n);
     expect(await pair.balanceOf(await launchpad.getAddress())).to.equal(0n);
-    expect(await t.balanceOf(c2.ammPair)).to.equal(tokensLeft);
-    expect(await ethers.provider.getBalance(c2.ammPair)).to.equal(0n); // mock keeps BNB in the router
+    expect(await t.balanceOf(await router.getAddress())).to.equal(tokensLeft); // mock keeps both sides in the router
+    expect(await ethers.provider.getBalance(c2.ammPair)).to.equal(0n);
     expect(await ethers.provider.getBalance(treasury.address)).to.equal(tb + fees);
     expect(c2.realBnb).to.equal(0n);
     expect(await ethers.provider.getBalance(await launchpad.getAddress())).to.equal(lpBefore - bnbIn - fees);

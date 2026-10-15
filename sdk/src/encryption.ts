@@ -20,8 +20,16 @@ const NONCE = new Uint8Array(12);
 export const MEMO_MAX = 64;
 /** Memos are padded to a multiple of this so lengths leak only a bucket. */
 export const MEMO_BUCKET = 64;
-/** epk(32) + tag(16) + d(11) + value(8) + rseed(32) [+ memo bucket] */
-export const NOTE_CIPHERTEXT_LEN_NO_MEMO = 32 + 16 + 11 + 8 + 32;
+/**
+ * Leading byte of every note ciphertext. v2 = Baby Jubjub ECDH + ChaCha20-Poly1305.
+ * The byte is the switch for a post-quantum key encapsulation (a hybrid
+ * ECDH + ML-KEM envelope under a new version number): a purely off-chain
+ * change that touches neither the circuits nor the contracts. Wallets refuse
+ * versions they do not know rather than guessing.
+ */
+export const NOTE_VERSION = 0x02;
+/** version(1) + epk(32) + tag(16) + d(11) + value(8) + rseed(32) [+ memo bucket] */
+export const NOTE_CIPHERTEXT_LEN_NO_MEMO = 1 + 32 + 16 + 11 + 8 + 32;
 export const NOTE_CIPHERTEXT_LEN = NOTE_CIPHERTEXT_LEN_NO_MEMO + MEMO_MAX;
 
 export function memoBucketLen(memoLen: number): number {
@@ -79,20 +87,21 @@ export function encryptNote(
   if (includeMemo) memoBuf.set(memo.slice(0, MEMO_MAX));
   const pt = concatBytes(to.d, bigIntToBytesLE(note.value, 8), note.rseed, memoBuf);
   const ct = chacha20poly1305(key, NONCE).encrypt(pt);
-  return { ciphertext: concatBytes(bjj.compress(epk), ct), esk, epk };
+  return { ciphertext: concatBytes(new Uint8Array([NOTE_VERSION]), bjj.compress(epk), ct), esk, epk };
 }
 
-/** Trial-decrypt with an incoming viewing key. Returns null if not ours. */
+/** Trial-decrypt with an incoming viewing key. Returns null if not ours (or not a version we speak). */
 export function tryDecryptNote(bjj: BabyJub, ivk: bigint, ciphertext: Uint8Array): { plaintext: NotePlaintext; epk: Point } | null {
   const extra = ciphertext.length - NOTE_CIPHERTEXT_LEN_NO_MEMO;
   if (extra < 0 || extra > MEMO_MAX || extra % MEMO_BUCKET !== 0) return null;
-  const epk = bjj.decompress(ciphertext.slice(0, 32));
+  if (ciphertext[0] !== NOTE_VERSION) return null;
+  const epk = bjj.decompress(ciphertext.slice(1, 33));
   if (!epk || !bjj.inCurve(epk)) return null;
   const shared = agree(bjj, epk, ivk);
   const key = encKey(bjj, shared, epk);
   let pt: Uint8Array;
   try {
-    pt = chacha20poly1305(key, NONCE).decrypt(ciphertext.slice(32));
+    pt = chacha20poly1305(key, NONCE).decrypt(ciphertext.slice(33));
   } catch {
     return null;
   }
@@ -129,12 +138,13 @@ export function decryptOutgoing(bjj: BabyJub, ovk: Uint8Array, cm: bigint, ct: U
 
 /** With ovk, recover the note plaintext of an outgoing ciphertext we produced. */
 export function decryptNoteAsSender(bjj: BabyJub, pkd: Point, esk: bigint, ciphertext: Uint8Array): NotePlaintext | null {
-  const epk = bjj.decompress(ciphertext.slice(0, 32));
+  if (ciphertext[0] !== NOTE_VERSION) return null;
+  const epk = bjj.decompress(ciphertext.slice(1, 33));
   if (!epk) return null;
   const shared = agree(bjj, pkd, esk);
   const key = encKey(bjj, shared, epk);
   try {
-    return parsePlaintext(chacha20poly1305(key, NONCE).decrypt(ciphertext.slice(32)));
+    return parsePlaintext(chacha20poly1305(key, NONCE).decrypt(ciphertext.slice(33)));
   } catch {
     return null;
   }
