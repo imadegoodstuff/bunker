@@ -30,8 +30,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: select xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.2.app || sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | tail -1)"
+      - name: xcode and iOS platform
+        run: |
+          xcodebuild -version
+          # the runner's default Xcode; device builds need the iOS platform, which some images ship without
+          if ! xcrun simctl runtime list 2>/dev/null | grep -q "iOS"; then sudo xcodebuild -downloadPlatform iOS; fi
+          xcodebuild -showsdks | grep iphoneos
 
       - name: capacitor sync (pod install)
         working-directory: mobile
@@ -40,10 +44,9 @@ jobs:
       - name: compile (unsigned)
         working-directory: mobile/ios/App
         run: |
-          set -o pipefail
           xcodebuild -workspace App.xcworkspace -scheme App -configuration Release -sdk iphoneos \
             -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            -derivedDataPath "$RUNNER_TEMP/dd" build | xcpretty || xcodebuild -workspace App.xcworkspace -scheme App -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -derivedDataPath "$RUNNER_TEMP/dd" build
+            -derivedDataPath "$RUNNER_TEMP/dd" build
 
       - name: are Apple secrets configured?
         id: gate
