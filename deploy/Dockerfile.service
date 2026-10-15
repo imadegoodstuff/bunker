@@ -27,6 +27,8 @@ COPY --from=build --chown=app:app /repo/node_modules node_modules
 COPY --from=build --chown=app:app /repo/package.json package.json
 COPY --from=build --chown=app:app /repo/sdk/package.json sdk/package.json
 COPY --from=build --chown=app:app /repo/sdk/dist sdk/dist
+# the sdk pins its own versions of a few packages (bech32 v2, @noble); npm nests them under sdk/node_modules
+COPY --from=build --chown=app:app /repo/sdk/node_modules sdk/node_modules
 COPY --from=build --chown=app:app /repo/relayer/package.json relayer/package.json
 COPY --from=build --chown=app:app /repo/relayer/dist relayer/dist
 COPY --from=build --chown=app:app /repo/indexer/package.json indexer/package.json
