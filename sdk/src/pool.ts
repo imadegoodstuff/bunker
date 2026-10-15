@@ -107,6 +107,55 @@ export function transactCall(
   };
 }
 
+// ---- wire format (what a client posts to the relayer's /relay)
+
+export interface TransactCallJson {
+  token: EvmAddress;
+  root: string;
+  publicAmount: string;
+  aspRoot: string;
+  aspProvider: EvmAddress;
+  nullifiers: string[];
+  outCommitments: [string, string];
+  proof: { a: [string, string]; b: [[string, string], [string, string]]; c: [string, string] };
+  ext: { recipient: EvmAddress; relayer: EvmAddress; relayerFee: string; exitTarget: EvmAddress; exitData: `0x${string}`; ciphertext0: `0x${string}`; ciphertext1: `0x${string}`; outCiphertext: `0x${string}` };
+  value: string;
+}
+
+export function transactCallToJson(c: TransactCall): TransactCallJson {
+  const [proof, token, root, publicAmount, aspRoot, aspProvider, nullifiers, outCommitments, ext] = c.args;
+  const s = (x: bigint) => x.toString();
+  return {
+    token,
+    root: s(root),
+    publicAmount: s(publicAmount),
+    aspRoot: s(aspRoot),
+    aspProvider,
+    nullifiers: nullifiers.map(s),
+    outCommitments: [s(outCommitments[0]), s(outCommitments[1])],
+    proof: { a: [s(proof.a[0]), s(proof.a[1])], b: [[s(proof.b[0][0]), s(proof.b[0][1])], [s(proof.b[1][0]), s(proof.b[1][1])]], c: [s(proof.c[0]), s(proof.c[1])] },
+    ext: { ...ext, relayerFee: s(ext.relayerFee) },
+    value: s(c.value),
+  };
+}
+
+export function transactCallFromJson(pool: EvmAddress, j: TransactCallJson): TransactCall {
+  const b = (x: string) => BigInt(x);
+  if (j.nullifiers.length !== 2 && j.nullifiers.length !== 4) throw new Error("2 or 4 nullifiers");
+  const proof = {
+    a: [b(j.proof.a[0]), b(j.proof.a[1])] as const,
+    b: [[b(j.proof.b[0][0]), b(j.proof.b[0][1])], [b(j.proof.b[1][0]), b(j.proof.b[1][1])]] as const,
+    c: [b(j.proof.c[0]), b(j.proof.c[1])] as const,
+  };
+  return {
+    address: pool,
+    abi: ShieldedPoolAbi,
+    functionName: "transact",
+    args: [proof, j.token, b(j.root), b(j.publicAmount), b(j.aspRoot), j.aspProvider, j.nullifiers.map(b), [b(j.outCommitments[0]), b(j.outCommitments[1])], { ...j.ext, relayerFee: b(j.ext.relayerFee) }],
+    value: b(j.value),
+  };
+}
+
 // ---- reads
 
 export async function readPool(client: PublicClient, pool: EvmAddress, token: EvmAddress): Promise<PoolState> {

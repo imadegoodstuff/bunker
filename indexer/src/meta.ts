@@ -1,5 +1,5 @@
 // Token metadata hosting for the launchpad. A launch needs an image; the app
-// uploads it here together with name/symbol/description, and the mint's URI
+// uploads it here together with name/symbol/description, and the token's URI
 // points at the JSON this writes. Files are content-addressed (sha256) and
 // immutable, so a URI always resolves to exactly what the creator uploaded,
 // and uploading the same thing twice costs nothing.

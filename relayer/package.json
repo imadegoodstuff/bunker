@@ -1,9 +1,9 @@
 {
-  "name": "@scash/relayer",
+  "name": "@bunker/relayer",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Fee-paying relayer for scash: validates and simulates transact instructions, pays fees, delays and batches submission.",
+  "description": "Fee-paying relayer for BUNKER: validates and simulates ShieldedPool.transact calls, pays gas, delays and shuffles submission.",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json && node dist/index.js",
@@ -11,8 +11,8 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@scash/sdk": "*",
-    "@solana/web3.js": "^1.98.4",
+    "@bunker/sdk": "*",
+    "viem": "^2.38.0",
     "fastify": "^5.3.0",
     "@fastify/cors": "^11.0.0",
     "@fastify/rate-limit": "^10.2.0"
