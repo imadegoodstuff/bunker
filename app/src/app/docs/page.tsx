@@ -34,7 +34,7 @@ const SECTIONS: { h: string; p: React.ReactNode }[] = [
       <>
         An Android app is available as a direct download at{" "}
         <a className="text-steel hover:text-fg" href="/android">bunkeronbnb.com/android</a>{" "}
-        (<a className="text-steel hover:text-fg" href="/download/bunker-android.apk">bunker-android.apk</a>, <a className="text-steel hover:text-fg" href="/download/bunker-android.apk.sha256">sha256</a>). It needs no wallet app: on first launch it creates a vault on the phone with a built-in BNB account to shield from, proves on the device, and never backs the key up to the cloud. One backup string restores everything. The same “This device” flow works in any mobile browser, and this site installs as a web app from the browser menu.
+        (<a className="text-steel hover:text-fg" href="/download/bunker-android.apk">bunker-android.apk</a>, <a className="text-steel hover:text-fg" href="/download/bunker-android.apk.sha256">sha256</a>). It needs no wallet app: on first launch it creates a vault on the phone with a built-in BNB account to shield from, proves on the device, and never backs the key up to the cloud. One backup string restores everything. On iPhone, install from Safari with Share → Add to Home Screen (<a className="text-steel hover:text-fg" href="/ios">bunkeronbnb.com/ios</a>): the same vault and proving, no App Store needed; the App Store build is in preparation.
       </>
     ),
   },

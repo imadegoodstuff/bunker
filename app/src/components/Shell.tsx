@@ -15,6 +15,7 @@ const NAV = [
   { href: "/agents", label: "Agents", code: "03" },
   { href: "/docs", label: "Docs", code: "04" },
   { href: "/android", label: "Android", code: "05" },
+  { href: "/ios", label: "iPhone", code: "06" },
 ];
 
 type Health = "ok" | "down" | "unknown";
