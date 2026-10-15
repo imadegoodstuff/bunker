@@ -22,8 +22,11 @@ function log(address: `0x${string}`, abi: typeof ShieldedPoolAbi | typeof Launch
   const data = encodeAbiParameters(item.inputs.filter((i) => !i.indexed) as never, item.inputs.filter((i) => !i.indexed).map((i) => args[i.name]) as never);
   return { address, topics, data, blockNumber: BigInt(block), transactionHash: txHash as Hex, logIndex, blockHash: toHex(block, { size: 32 }), transactionIndex: 0, removed: false } as unknown as Log;
 }
+/** A v2 transact: three leaves, no root (roots come from Drain events). */
 const transact = (first: number, block: number, tx: string, token: `0x${string}` = NATIVE) =>
-  log(POOL, ShieldedPoolAbi, "Transact", { token, firstIndex: first, commitment0: BigInt(first + 1), commitment1: BigInt(first + 2), ciphertext0: "0xa0", ciphertext1: "0xa1", outCiphertext: "0xb0", newRoot: BigInt(first + 9) }, block, tx);
+  log(POOL, ShieldedPoolAbi, "Transact", { token, firstIndex: first, commitments: [BigInt(first + 1), BigInt(first + 2), BigInt(first + 3)], ciphertext0: "0xa0", ciphertext1: "0xa1", ciphertext2: "0xa2", outCiphertext: "0xb0" }, block, tx);
+const drain = (from: number, count: number, block: number, tx: string, logIndex = 1) =>
+  log(POOL, ShieldedPoolAbi, "Drain", { fromIndex: from, count, newRoot: BigInt(from + count + 1000), rootIndex: 1 }, block, tx, logIndex);
 
 /** Fake RPC: a fixed log set, a head, and a set of block ranges on which getLogs throws. */
 function fakeReader(logs: Log[], head: number, failing: Set<string> = new Set(), opts: { down?: boolean } = {}) {
@@ -44,53 +47,79 @@ const opts = { pool: POOL, launchpad: LAUNCHPAD, startBlock: 100, chunk: 2, conf
 
 test("scans from startBlock to head − confirmations in chunks, commits each range, and resumes from last_block", async () => {
   const db = new Db(":memory:");
-  const logs = [transact(0, 101, "0xs1"), transact(2, 102, "0xs2"), transact(4, 105, "0xs3"), transact(6, 106, "0xs4")];
+  const logs = [transact(0, 101, "0xs1"), transact(3, 102, "0xs2"), drain(0, 6, 103, "0xd1"), transact(6, 105, "0xs3"), transact(9, 106, "0xs4"), drain(6, 6, 106, "0xd2")];
   const { reader, calls } = fakeReader(logs, 106);
   const scanner = new Scanner(reader, db, opts);
   await scanner.tick();
   assert.equal(scanner.lastBlock(), 105, "head 106 − 1 confirmation");
   assert.equal(calls.getLogs, 3, "100-101, 102-103, 104-105");
-  assert.equal(db.count(), 6, "leaves 0-5; block 106 is not final yet");
-  assert.deepEqual(contiguousPrefix(db.commitments(0, 100), 0).map((r) => r.idx), [0, 1, 2, 3, 4, 5]);
+  assert.equal(db.count(), 9, "leaves 0-8; block 106 is not final yet");
+  assert.deepEqual(contiguousPrefix(db.commitments(0, 100), 0).map((r) => r.idx), [0, 1, 2, 3, 4, 5, 6, 7, 8]);
   assert.equal(db.commitments(0, 1)[0].block_time, 1_700_000_101);
+  assert.equal(db.commitments(0, 1)[0].kind, "note");
+  assert.equal(db.insertedIndex(), 6, "the first drain folded leaves 0-5");
   // restart on the same database: picks up where it left off
   const { reader: r2, calls: c2 } = fakeReader(logs, 107);
   const second = new Scanner(r2, db, opts);
   await second.tick();
   assert.equal(c2.getLogs, 1, "only 106-106");
-  assert.equal(db.count(), 8);
+  assert.equal(db.count(), 12);
+  assert.equal(db.insertedIndex(), 12);
   await second.tick();
-  assert.equal(db.count(), 8, "replay is idempotent");
+  assert.equal(db.count(), 12, "replay is idempotent");
   assert.ok(db.db.prepare("SELECT 1 FROM out_ciphertexts WHERE tx_hash = '0xs2'").get());
-  assert.equal((db.db.prepare("SELECT COUNT(*) AS n FROM roots").get() as { n: number }).n, 4);
+  assert.equal((db.db.prepare("SELECT COUNT(*) AS n FROM roots").get() as { n: number }).n, 2, "one root per drain");
+  assert.equal(db.latestRoots(1)[0].next_index, 12);
+});
+
+test("open notes and the registry are indexed", async () => {
+  const db = new Db(":memory:");
+  const scanner = new Scanner(fakeReader([], 0).reader, db, opts);
+  await scanner.ingest([
+    transact(0, 101, "0xs1"),
+    log(POOL, ShieldedPoolAbi, "OpenNote", { token: TOKEN, index: 3, commitment: 99n, shares: 12345n, ownerHash: 777n, ciphertext: "0xcc" }, 101, "0xs1", 1),
+    log(POOL, ShieldedPoolAbi, "Registered", { owner: CLAIM, shieldedAddress: "0x" + "ab".repeat(43) }, 102, "0xr1"),
+  ]);
+  const rows = contiguousPrefix(db.commitments(0, 10), 0);
+  assert.equal(rows.length, 4);
+  assert.equal(rows[3].kind, "open");
+  assert.equal(rows[3].shares, "12345");
+  assert.equal(rows[3].owner_hash, hex32(777n));
+  assert.equal(rows[3].token, TOKEN);
+  assert.equal(db.registry(CLAIM)?.shielded_address, "ab".repeat(43));
+  // a later clear wins; an older event does not overwrite it
+  await scanner.ingest([log(POOL, ShieldedPoolAbi, "Registered", { owner: CLAIM, shieldedAddress: "0x" }, 105, "0xr2")]);
+  assert.equal(db.registry(CLAIM)?.shielded_address, null);
+  await scanner.ingest([log(POOL, ShieldedPoolAbi, "Registered", { owner: CLAIM, shieldedAddress: "0x" + "cd".repeat(43) }, 103, "0xr3")]);
+  assert.equal(db.registry(CLAIM)?.shielded_address, null);
 });
 
 test("a failing range stops the scan at the last committed block and is retried next tick; nothing is skipped", async () => {
   const db = new Db(":memory:");
-  const logs = [transact(0, 101, "0xs1"), transact(2, 103, "0xs2"), transact(4, 105, "0xs3")];
+  const logs = [transact(0, 101, "0xs1"), transact(3, 103, "0xs2"), transact(6, 105, "0xs3")];
   const failing = new Set(["102-103"]);
   const { reader } = fakeReader(logs, 106, failing);
   const scanner = new Scanner(reader, db, opts);
   await assert.rejects(scanner.tick(), /limit exceeded/);
   assert.equal(scanner.lastBlock(), 101, "the committed position is before the failed range");
-  assert.equal(db.count(), 2);
+  assert.equal(db.count(), 3);
   assert.equal(scanner.degraded(), false);
   assert.equal(scanner.degraded(Date.now() + DEGRADED_AFTER_MS + 1), true, "stuck long enough flips the health flag");
   failing.clear();
   await scanner.tick();
-  assert.equal(db.count(), 6);
-  assert.deepEqual(contiguousPrefix(db.commitments(0, 100), 0).map((r) => r.idx), [0, 1, 2, 3, 4, 5]);
+  assert.equal(db.count(), 9);
+  assert.deepEqual(contiguousPrefix(db.commitments(0, 100), 0).map((r) => r.idx), [0, 1, 2, 3, 4, 5, 6, 7, 8]);
   assert.equal(scanner.degraded(Date.now() + DEGRADED_AFTER_MS + 1), false, "a successful tick clears it");
 });
 
 test("a fallback endpoint supplies the range the primary cannot, in the same tick", async () => {
   const db = new Db(":memory:");
-  const logs = [transact(0, 101, "0xs1"), transact(2, 103, "0xs2")];
+  const logs = [transact(0, 101, "0xs1"), transact(3, 103, "0xs2")];
   const primary = fakeReader(logs, 104, new Set(["102-103"]));
   const fallback = fakeReader(logs, 104);
   const scanner = new Scanner([primary.reader, fallback.reader], db, opts);
   await scanner.tick();
-  assert.equal(db.count(), 4);
+  assert.equal(db.count(), 6);
   assert.equal(fallback.calls.getLogs, 1, "the fallback is only asked for the range the primary failed");
   assert.deepEqual(scanner.recoveredVia, [0, 1]);
 });
@@ -102,7 +131,7 @@ test("an endpoint that is completely down is skipped: head and logs come from th
   const fallback = fakeReader(logs, 102);
   const scanner = new Scanner([down.reader, fallback.reader], db, opts);
   await scanner.tick();
-  assert.equal(db.count(), 2);
+  assert.equal(db.count(), 3);
   assert.equal(scanner.lastBlock(), 101);
 });
 
@@ -132,9 +161,9 @@ test("launchpad events: a launch row is created and every trade/harvest/graduate
   const db = new Db(":memory:");
   const scanner = new Scanner(fakeReader([], 0).reader, db, opts);
   const launch = log(LAUNCHPAD, LaunchpadAbi, "Launch", { token: TOKEN, creator: CLAIM, name: "Bunker Test", symbol: "BKT", uri: "https://x/y.json", virtualBnb: 2n * 10n ** 18n, virtualToken: 1_073_000_000_000_000n, curveSupply: 793_100_000_000_000n, totalSupply: 10n ** 15n, graduationWei: 6n * 10n ** 18n }, 10, "0xL");
-  const buy = log(LAUNCHPAD, LaunchpadAbi, "CurveBuy", { token: TOKEN, bnbIn: 10n ** 18n, fee: 10n ** 16n, tokensOut: 60_000_000_000_000n, realBnb: 10n ** 18n, realToken: 733_100_000_000_000n, virtualToken: 1_013_000_000_000_000n, claimKey: CLAIM }, 11, "0xB");
+  const buy = log(LAUNCHPAD, LaunchpadAbi, "CurveBuy", { token: TOKEN, bnbIn: 10n ** 18n, fee: 10n ** 16n, tokensOut: 60_000_000_000_000n, realBnb: 10n ** 18n, realToken: 733_100_000_000_000n, virtualToken: 1_013_000_000_000_000n }, 11, "0xB");
   const harvest = log(LAUNCHPAD, LaunchpadAbi, "Harvest", { token: TOKEN, amount: 10n ** 16n }, 12, "0xH");
-  const sell = log(LAUNCHPAD, LaunchpadAbi, "CurveSell", { token: TOKEN, bnbOut: 5n * 10n ** 17n, fee: 5n * 10n ** 15n, tokensIn: 30_000_000_000_000n, realBnb: 5n * 10n ** 17n, realToken: 763_100_000_000_000n, virtualToken: 1_043_000_000_000_000n, claimKey: CLAIM }, 13, "0xS");
+  const sell = log(LAUNCHPAD, LaunchpadAbi, "CurveSell", { token: TOKEN, bnbOut: 5n * 10n ** 17n, fee: 5n * 10n ** 15n, tokensIn: 30_000_000_000_000n, realBnb: 5n * 10n ** 17n, realToken: 763_100_000_000_000n, virtualToken: 1_043_000_000_000_000n }, 13, "0xS");
   const grad = log(LAUNCHPAD, LaunchpadAbi, "Graduate", { token: TOKEN, realBnb: 6n * 10n ** 18n, realToken: 0n }, 14, "0xG");
   await scanner.ingest([launch, buy, harvest, sell, buy]); // buy replayed: no double counting
   let l = db.launch(TOKEN)!;
@@ -161,7 +190,6 @@ test("launchpad events: a launch row is created and every trade/harvest/graduate
   assert.equal(l.real_bnb, "0");
   const trades = db.trades(TOKEN, 10);
   assert.deepEqual(trades.map((t) => t.side), ["sell", "buy"]);
-  assert.equal(trades[0].claim_key, CLAIM);
   assert.equal(db.launches(10, 0).length, 1);
 });
 

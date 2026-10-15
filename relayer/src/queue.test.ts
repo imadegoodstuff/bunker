@@ -20,3 +20,17 @@ test("a second /relay carrying a nullifier of a live job resolves to that job; a
   assert.equal(q.findByNullifiers(["aa"])?.id, b.id);
   assert.equal(q.size(), 1);
 });
+
+test("keeper jobs: one live drain at a time, immediate release, not counted as queued transacts", () => {
+  const q = new SubmitQueue(undefined, opts);
+  const drainCall = { address: opts.pool, abi: [], functionName: "drain", args: [512] };
+  const d1 = q.enqueueKeeper("drain", drainCall, 5n);
+  const d2 = q.enqueueKeeper("drain", drainCall, 5n);
+  assert.equal(d1.id, d2.id, "a second drain request joins the live one");
+  assert.ok(d1.releaseAt <= Date.now());
+  assert.equal(q.size(), 0);
+  assert.equal(q.liveKeeper("drain")?.id, d1.id);
+  d1.status = "confirmed";
+  const d3 = q.enqueueKeeper("drain", drainCall, 5n);
+  assert.notEqual(d3.id, d1.id);
+});

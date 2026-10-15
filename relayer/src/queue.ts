@@ -1,21 +1,27 @@
-// Submission queue with randomized delay. Jobs are held for
+// Submission queue with randomized delay. Transact jobs are held for
 // `minDelayMs..maxDelayMs` (uniform) so that submission time is decorrelated
 // from the request time, then signed and sent one at a time (one EOA, one
-// nonce stream).
+// nonce stream). Keeper jobs (drain, createPool) share the same stream and go
+// out as soon as they are due.
 import { randomInt, randomUUID } from "node:crypto";
 import type { PublicClient, WalletClient, Account, Chain, Transport, Hex } from "viem";
 import { contractErrorName, ShieldedPoolAbi, type TransactCall, type EvmAddress } from "@bunker/sdk";
 
 export type JobStatus = "queued" | "submitting" | "confirmed" | "failed";
+export type JobKind = "transact" | "drain" | "keeper";
+export interface AnyCall { address: EvmAddress; abi: any; functionName: string; args: readonly unknown[]; value?: bigint }
 export interface Job {
   id: string;
-  call: TransactCall;
+  kind: JobKind;
+  call: TransactCall | AnyCall;
   createdAt: number;
   releaseAt: number;
   status: JobStatus;
   txHash?: Hex;
   error?: string;
   attempts: number;
+  /** gas limit for this job (estimate with headroom, capped) */
+  gas: bigint;
   /** hex nullifiers this job spends; the idempotency key for /relay */
   nullifiers: string[];
 }
@@ -31,6 +37,8 @@ export class SubmitQueue {
   private byNullifier = new Map<string, string>();
   private timer?: NodeJS.Timeout;
   private busy = false;
+  /** called after every confirmed job */
+  onConfirmed?: (job: Job) => void;
 
   constructor(
     readonly chain: Chain_ | undefined,
@@ -60,15 +68,17 @@ export class SubmitQueue {
     return undefined;
   }
 
-  enqueue(call: TransactCall, nullifiers: string[] = []): Job {
+  enqueue(call: TransactCall, nullifiers: string[] = [], gas = this.opts.gasLimit): Job {
     const now = Date.now();
     const job: Job = {
       id: randomUUID(),
+      kind: "transact",
       call,
       createdAt: now,
       releaseAt: now + randomInt(this.opts.minDelayMs, this.opts.maxDelayMs + 1),
       status: "queued",
       attempts: 0,
+      gas,
       nullifiers,
     };
     this.jobs.set(job.id, job);
@@ -76,12 +86,29 @@ export class SubmitQueue {
     return job;
   }
 
+  /** A keeper call (drain, createPool): no delay, no idempotency key, one live at a time per kind+target. */
+  enqueueKeeper(kind: Exclude<JobKind, "transact">, call: AnyCall, gas: bigint): Job {
+    const live = this.liveKeeper(kind, call.functionName);
+    if (live) return live;
+    const now = Date.now();
+    const job: Job = { id: randomUUID(), kind, call, createdAt: now, releaseAt: now, status: "queued", attempts: 0, gas, nullifiers: [] };
+    this.jobs.set(job.id, job);
+    return job;
+  }
+
+  liveKeeper(kind: JobKind, functionName?: string): Job | undefined {
+    for (const j of this.jobs.values()) {
+      if (j.kind === kind && (j.status === "queued" || j.status === "submitting") && (!functionName || j.call.functionName === functionName)) return j;
+    }
+    return undefined;
+  }
+
   get(id: string) {
     return this.jobs.get(id);
   }
 
   size() {
-    return [...this.jobs.values()].filter((j) => j.status === "queued").length;
+    return [...this.jobs.values()].filter((j) => j.status === "queued" && j.kind === "transact").length;
   }
 
   start() {
@@ -128,7 +155,8 @@ export class SubmitQueue {
         const rc = await this.chain.publicClient.getTransactionReceipt({ hash: job.txHash }).catch(() => null);
         if (rc) return rc.status === "success";
       }
-      const nf = job.call.args[6][0];
+      if (job.kind !== "transact") return false;
+      const nf = (job.call as TransactCall).args[6][0];
       return await this.chain.publicClient.readContract({ address: this.opts.pool, abi: ShieldedPoolAbi, functionName: "nullifierSpent", args: [nf] });
     } catch {
       return false;
@@ -140,20 +168,23 @@ export class SubmitQueue {
     job.status = "submitting";
     job.attempts++;
     try {
-      if (job.attempts > 1 && (await this.landed(job))) { job.status = "confirmed"; return; }
+      if (job.attempts > 1 && (await this.landed(job))) { job.status = "confirmed"; this.onConfirmed?.(job); return; }
       const { publicClient, walletClient } = this.chain;
       const account = walletClient.account;
       // simulate again right before sending: the tree may have moved, a note may be spent
-      await publicClient.simulateContract({ ...job.call, account });
-      const hash = await walletClient.writeContract({ ...job.call, account, chain: walletClient.chain, gas: this.opts.gasLimit, gasPrice: this.opts.gasPrice() });
+      await publicClient.simulateContract({ ...(job.call as AnyCall), account });
+      const hash = await walletClient.writeContract({ ...(job.call as AnyCall), account, chain: walletClient.chain, gas: job.gas, gasPrice: this.opts.gasPrice() });
       job.txHash = hash;
       const rc = await publicClient.waitForTransactionReceipt({ hash, timeout: 180_000 });
       if (rc.status !== "success") throw new Error("on-chain error: reverted");
       job.status = "confirmed";
+      this.onConfirmed?.(job);
     } catch (e) {
       const name = contractErrorName(e);
       const msg = name ? `simulation failed: ${name}` : (e as Error).message;
-      if (name === "NullifierSpent" && (await this.landed(job))) { job.status = "confirmed"; return; }
+      if (name === "NullifierSpent" && (await this.landed(job))) { job.status = "confirmed"; this.onConfirmed?.(job); return; }
+      // someone else drained first: nothing to do
+      if (job.kind === "drain" && name === "NothingQueued") { job.status = "confirmed"; return; }
       // a stale root or spent nullifier will never succeed; anything else gets retried
       const permanent = !!name || /on-chain error/i.test(msg);
       if (!permanent && job.attempts < this.opts.maxAttempts) {
@@ -161,6 +192,7 @@ export class SubmitQueue {
         job.releaseAt = Date.now() + 5000;
       } else if (await this.landed(job)) {
         job.status = "confirmed";
+        this.onConfirmed?.(job);
       } else {
         job.status = "failed";
         job.error = msg;

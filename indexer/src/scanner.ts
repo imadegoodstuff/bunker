@@ -153,10 +153,24 @@ export class Scanner {
         case "Transact": {
           const first = Number(a.firstIndex);
           const token = addr(a.token);
-          this.db.insertCommitment(first, hex32(a.commitment0 as bigint), token, bytesOf(a.ciphertext0 as Hex), txHash, block, bt);
-          this.db.insertCommitment(first + 1, hex32(a.commitment1 as bigint), token, bytesOf(a.ciphertext1 as Hex), txHash, block, bt);
+          const cms = a.commitments as readonly bigint[];
+          const cts = [a.ciphertext0, a.ciphertext1, a.ciphertext2] as Hex[];
+          for (let i = 0; i < 3; i++) this.db.insertCommitment(first + i, hex32(cms[i]), token, bytesOf(cts[i]), txHash, block, bt);
           this.db.insertOutCiphertext(txHash, first, bytesOf(a.outCiphertext as Hex));
-          this.db.insertRoot(hex32(a.newRoot as bigint), first + 2, txHash, block);
+          break;
+        }
+        case "OpenNote":
+          this.db.insertOpenNote(Number(a.index), hex32(a.commitment as bigint), addr(a.token), big(a.shares), hex32(a.ownerHash as bigint), bytesOf(a.ciphertext as Hex), txHash, block, bt);
+          break;
+        case "Drain": {
+          const from = Number(a.fromIndex), count = Number(a.count);
+          this.db.insertDrain(txHash, logIndex, from, count, hex32(a.newRoot as bigint), block, bt);
+          this.db.insertRoot(hex32(a.newRoot as bigint), from + count, txHash, block);
+          break;
+        }
+        case "Registered": {
+          const raw = a.shieldedAddress as Hex;
+          this.db.setRegistry(addr(a.owner), raw && raw !== "0x" ? raw.slice(2).toLowerCase() : null, txHash, block);
           break;
         }
         case "Nullified":
@@ -180,7 +194,7 @@ export class Scanner {
           const buy = ev.eventName === "CurveBuy";
           this.db.insertTrade({
             txHash, logIndex, token: addr(a.token), side: buy ? "buy" : "sell", bnb: big(buy ? a.bnbIn : a.bnbOut), fee: big(a.fee), tokens: big(buy ? a.tokensOut : a.tokensIn),
-            claimKey: addr(a.claimKey), realBnb: big(a.realBnb), realToken: big(a.realToken), virtualToken: big(a.virtualToken), block, blockTime: bt,
+            realBnb: big(a.realBnb), realToken: big(a.realToken), virtualToken: big(a.virtualToken), block, blockTime: bt,
           });
           break;
         }

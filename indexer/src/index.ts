@@ -4,7 +4,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createPublicClient, http, getAddress, defineChain } from "viem";
 import { bsc, bscTestnet, hardhat } from "viem/chains";
-import { readParams } from "@bunker/sdk";
+import { readParams, PROTOCOL_VERSION } from "@bunker/sdk";
 import { Db } from "./db.js";
 import { Scanner } from "./scanner.js";
 import { contiguousPrefix } from "./paging.js";
@@ -14,6 +14,7 @@ import { buildMeta, MAX_IMAGE_BYTES, MetaError, MetaStore, RateLimit } from "./m
 const RPC = process.env.RPC_URL ?? "https://bsc-dataseed.bnbchain.org";
 const CHAIN_ID = Number(process.env.CHAIN_ID ?? 56);
 const deployments = loadDeployments(CHAIN_ID);
+if (deployments && (deployments.protocolVersion ?? 1) !== PROTOCOL_VERSION) throw new Error(`deployments file is protocol v${deployments.protocolVersion ?? 1}; this indexer speaks v${PROTOCOL_VERSION}`);
 const POOL = getAddress(process.env.POOL_ADDRESS ?? deployments?.pool ?? fail("POOL_ADDRESS"));
 // The launchpad; its own logs carry launches, trades and the agents' fee votes. "" disables.
 const LAUNCHPAD = process.env.LAUNCHPAD_ADDRESS === "" ? undefined : getAddress(process.env.LAUNCHPAD_ADDRESS ?? deployments?.launchpad ?? fail("LAUNCHPAD_ADDRESS"));
@@ -28,7 +29,7 @@ const META_UPLOADS_PER_HOUR = Number(process.env.META_UPLOADS_PER_HOUR ?? 20);
 function fail(name: string): never {
   throw new Error(`${name} not set and no deployments file for chain ${CHAIN_ID}`);
 }
-function loadDeployments(chainId: number): { pool?: string; launchpad?: string; startBlock?: number } | undefined {
+function loadDeployments(chainId: number): { protocolVersion?: number; pool?: string; launchpad?: string; startBlock?: number } | undefined {
   const p = process.env.DEPLOYMENTS ?? `contracts/deployments/${chainId}.json`;
   return existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : undefined;
 }
@@ -90,7 +91,9 @@ app.get("/health", async (_req, reply) => {
     pool: POOL,
     launchpad: LAUNCHPAD ?? null,
     onChain,
+    protocolVersion: PROTOCOL_VERSION,
     commitments: db.count(),
+    insertedIndex: db.insertedIndex(),
     scan: { ...scanner.status(), head: head === null ? null : Number(head) },
     rpc: redact(RPC),
     rpcs: RPC_LIST.map((u, i) => ({ url: redact(u), recovered: scanner.recoveredVia[i] })),
@@ -107,8 +110,18 @@ app.get<{ Querystring: { from?: string; limit?: string } }>("/commitments", asyn
     from,
     next: rows.length ? rows[rows.length - 1].idx + 1 : from,
     total: db.count(),
-    items: rows.map((r) => ({ index: r.idx, commitment: r.commitment, token: r.token, ciphertext: b64(r.ciphertext), txHash: r.tx_hash, block: r.block, blockTime: r.block_time })),
+    items: rows.map((r) => ({
+      index: r.idx, commitment: r.commitment, token: r.token, ciphertext: b64(r.ciphertext), txHash: r.tx_hash, block: r.block, blockTime: r.block_time,
+      kind: r.kind, shares: r.shares, ownerHash: r.owner_hash,
+    })),
   };
+});
+
+/** The shielded address an EOA registered on-chain (`ShieldedPool.register`), as the raw 43 bytes in hex; null if cleared or unknown. */
+app.get<{ Params: { owner: string } }>("/registry/:owner", async (req, reply) => {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(req.params.owner)) return reply.code(400).send({ error: "bad address" });
+  const r = db.registry(req.params.owner.toLowerCase());
+  return { owner: req.params.owner.toLowerCase(), shieldedAddress: r?.shielded_address ?? null, block: r?.block ?? null };
 });
 
 /** Outgoing ciphertexts (sender-side recovery with ovk). */
@@ -140,7 +153,8 @@ app.get<{ Querystring: { sinceBlock?: string; days?: string } }>("/stats", async
 /**
  * Launchpad: tokens launched through the shielded curve. Everything here is
  * public on-chain already (curve reserves, trade sizes, fee flows); what is
- * absent is who traded — a private trade's only wallet is a throwaway claim key.
+ * absent is who traded: a private trade's proceeds come back into the pool as
+ * an open note whose owner is a hash.
  */
 type Images = { image: string | null; header: string | null };
 const imageCache = new Map<string, Images>();

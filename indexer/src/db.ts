@@ -8,6 +8,7 @@ export class Db {
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+      -- one row per leaf; kind 'open' = a note the pool minted for exit proceeds (shares and owner hash public)
       CREATE TABLE IF NOT EXISTS commitments (
         idx INTEGER PRIMARY KEY,
         commitment TEXT NOT NULL,
@@ -15,7 +16,28 @@ export class Db {
         ciphertext BLOB NOT NULL,
         tx_hash TEXT NOT NULL,
         block INTEGER NOT NULL,
-        block_time INTEGER
+        block_time INTEGER,
+        kind TEXT NOT NULL DEFAULT 'note',
+        shares TEXT,
+        owner_hash TEXT
+      );
+      -- drains: the tree's inserted prefix after each batch
+      CREATE TABLE IF NOT EXISTS drains (
+        tx_hash TEXT NOT NULL,
+        log_index INTEGER NOT NULL,
+        from_idx INTEGER NOT NULL,
+        count INTEGER NOT NULL,
+        root TEXT NOT NULL,
+        block INTEGER NOT NULL,
+        block_time INTEGER,
+        PRIMARY KEY (tx_hash, log_index)
+      );
+      -- EOA -> shielded address registry (latest value per owner; empty = cleared)
+      CREATE TABLE IF NOT EXISTS registry (
+        owner TEXT PRIMARY KEY,
+        shielded_address TEXT,
+        tx_hash TEXT NOT NULL,
+        block INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS out_ciphertexts (
         tx_hash TEXT NOT NULL,
@@ -82,7 +104,6 @@ export class Db {
         bnb TEXT NOT NULL,
         fee TEXT NOT NULL,
         tokens TEXT NOT NULL,
-        claim_key TEXT NOT NULL,
         block INTEGER NOT NULL,
         block_time INTEGER,
         PRIMARY KEY (tx_hash, log_index)
@@ -120,6 +141,27 @@ export class Db {
       .prepare("INSERT OR IGNORE INTO commitments(idx, commitment, token, ciphertext, tx_hash, block, block_time) VALUES(?,?,?,?,?,?,?)")
       .run(idx, commitment, token, ciphertext, txHash, block, blockTime);
   }
+  insertOpenNote(idx: number, commitment: string, token: string, shares: string, ownerHash: string, ciphertext: Uint8Array, txHash: string, block: number, blockTime: number | null) {
+    this.db
+      .prepare("INSERT OR IGNORE INTO commitments(idx, commitment, token, ciphertext, tx_hash, block, block_time, kind, shares, owner_hash) VALUES(?,?,?,?,?,?,?,'open',?,?)")
+      .run(idx, commitment, token, ciphertext, txHash, block, blockTime, shares, ownerHash);
+  }
+  insertDrain(txHash: string, logIndex: number, fromIdx: number, count: number, root: string, block: number, blockTime: number | null) {
+    this.db.prepare("INSERT OR IGNORE INTO drains(tx_hash, log_index, from_idx, count, root, block, block_time) VALUES(?,?,?,?,?,?,?)").run(txHash, logIndex, fromIdx, count, root, block, blockTime);
+  }
+  /** Latest drain = the chain's inserted prefix as far as we have scanned. */
+  insertedIndex(): number {
+    const r = this.db.prepare("SELECT from_idx + count AS n FROM drains ORDER BY block DESC, log_index DESC LIMIT 1").get() as { n: number } | undefined;
+    return r?.n ?? 0;
+  }
+  setRegistry(owner: string, shieldedAddress: string | null, txHash: string, block: number) {
+    this.db
+      .prepare("INSERT INTO registry(owner, shielded_address, tx_hash, block) VALUES(?,?,?,?) ON CONFLICT(owner) DO UPDATE SET shielded_address = CASE WHEN excluded.block >= registry.block THEN excluded.shielded_address ELSE registry.shielded_address END, tx_hash = excluded.tx_hash, block = MAX(registry.block, excluded.block)")
+      .run(owner, shieldedAddress, txHash, block);
+  }
+  registry(owner: string) {
+    return this.db.prepare("SELECT owner, shielded_address, block FROM registry WHERE owner = ?").get(owner) as { owner: string; shielded_address: string | null; block: number } | undefined;
+  }
   insertOutCiphertext(txHash: string, firstIdx: number, ciphertext: Uint8Array) {
     if (ciphertext.length === 0) return;
     this.db.prepare("INSERT OR IGNORE INTO out_ciphertexts(tx_hash, first_idx, ciphertext) VALUES(?,?,?)").run(txHash, firstIdx, ciphertext);
@@ -136,8 +178,8 @@ export class Db {
 
   commitments(from: number, limit: number) {
     return this.db
-      .prepare("SELECT idx, commitment, token, ciphertext, tx_hash, block, block_time FROM commitments WHERE idx >= ? ORDER BY idx LIMIT ?")
-      .all(from, limit) as { idx: number; commitment: string; token: string; ciphertext: Uint8Array; tx_hash: string; block: number; block_time: number | null }[];
+      .prepare("SELECT idx, commitment, token, ciphertext, tx_hash, block, block_time, kind, shares, owner_hash FROM commitments WHERE idx >= ? ORDER BY idx LIMIT ?")
+      .all(from, limit) as { idx: number; commitment: string; token: string; ciphertext: Uint8Array; tx_hash: string; block: number; block_time: number | null; kind: string; shares: string | null; owner_hash: string | null }[];
   }
   outCiphertexts(fromIdx: number, limit: number) {
     return this.db
@@ -189,10 +231,10 @@ export class Db {
       .run(l.token, l.creator, l.name, l.symbol, l.uri, l.decimals, l.virtualBnb, l.virtualToken, l.curveSupply, l.totalSupply, l.graduationWei, l.curveSupply, l.virtualToken, l.txHash, l.block, l.blockTime, l.block);
   }
   /** A buy or sell: records the trade and, if it is newer than what we have, the curve state it left behind. */
-  insertTrade(t: { txHash: string; logIndex: number; token: string; side: "buy" | "sell"; bnb: string; fee: string; tokens: string; claimKey: string; realBnb: string; realToken: string; virtualToken: string; block: number; blockTime: number | null }) {
+  insertTrade(t: { txHash: string; logIndex: number; token: string; side: "buy" | "sell"; bnb: string; fee: string; tokens: string; realBnb: string; realToken: string; virtualToken: string; block: number; blockTime: number | null }) {
     const r = this.db
-      .prepare("INSERT OR IGNORE INTO trades(tx_hash, log_index, token, side, bnb, fee, tokens, claim_key, block, block_time) VALUES(?,?,?,?,?,?,?,?,?,?)")
-      .run(t.txHash, t.logIndex, t.token, t.side, t.bnb, t.fee, t.tokens, t.claimKey, t.block, t.blockTime);
+      .prepare("INSERT OR IGNORE INTO trades(tx_hash, log_index, token, side, bnb, fee, tokens, block, block_time) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run(t.txHash, t.logIndex, t.token, t.side, t.bnb, t.fee, t.tokens, t.block, t.blockTime);
     if (r.changes === 0) return;
     this.db
       .prepare(
@@ -234,7 +276,7 @@ export class Db {
   }
   trades(token: string, limit: number, beforeBlock?: number) {
     return this.db
-      .prepare("SELECT tx_hash, side, bnb, fee, tokens, claim_key, block, block_time FROM trades WHERE token = ? AND block < ? ORDER BY block DESC, log_index DESC LIMIT ?")
-      .all(token, beforeBlock ?? Number.MAX_SAFE_INTEGER, limit) as { tx_hash: string; side: string; bnb: string; fee: string; tokens: string; claim_key: string; block: number; block_time: number | null }[];
+      .prepare("SELECT tx_hash, side, bnb, fee, tokens, block, block_time FROM trades WHERE token = ? AND block < ? ORDER BY block DESC, log_index DESC LIMIT ?")
+      .all(token, beforeBlock ?? Number.MAX_SAFE_INTEGER, limit) as { tx_hash: string; side: string; bnb: string; fee: string; tokens: string; block: number; block_time: number | null }[];
   }
 }

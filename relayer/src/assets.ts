@@ -3,13 +3,14 @@
 // operator editing FEE_POLICY. The price comes from PancakeSwap V2 on-chain:
 // `getAmountsOut(costWei, [WBNB, token])` says how many tokens the relayer's
 // BNB cost is worth; a margin absorbs the move between quote and submission.
-// Tokens with no WBNB pair are shield-only: the relayer cannot take a fee it
-// cannot value, so it refuses relayed sends/withdrawals of them.
+// Tokens still on a launchpad curve are priced off the curve. Tokens with
+// neither are shield-only: the relayer cannot take a fee it cannot value, so it
+// refuses relayed sends/withdrawals of them.
 //
-// The fee is paid straight to the relayer's address by the pool (an ERC-20
-// transfer), so no per-token setup is needed.
+// The fee arrives as a private note in the token (protocol v2), so no
+// per-token setup is needed; the relayer sweeps its notes to BNB periodically.
 import type { PublicClient } from "viem";
-import { IPancakeRouter02Abi, IERC20MetadataAbi, readPool, type EvmAddress } from "@bunker/sdk";
+import { IPancakeRouter02Abi, IERC20MetadataAbi, readPool, readCurve, curveBuy, type EvmAddress } from "@bunker/sdk";
 
 export interface AssetQuote {
   token: EvmAddress;
@@ -39,6 +40,8 @@ export class DynamicAssets {
     readonly opts: {
       router: EvmAddress;
       wbnb: EvmAddress;
+      /** tokens still on a bonding curve are priced off the curve */
+      launchpad?: EvmAddress;
       /** margin over the BNB cost floor, in bps, to absorb price moves between quote and submission */
       marginBps: number;
       bps: number;
@@ -91,14 +94,24 @@ export class DynamicAssets {
     const k = token.toLowerCase();
     const c = this.prices.get(k);
     if (c && Date.now() - c.at < this.opts.priceTtlMs) return (c.tokensPerBnb * wei) / 10n ** 18n;
+    let perBnb: bigint | undefined;
     try {
       const amounts = await this.client.readContract({ address: this.opts.router, abi: IPancakeRouter02Abi, functionName: "getAmountsOut", args: [10n ** 18n, [this.opts.wbnb, token]] });
-      const perBnb = amounts[1];
-      if (!(perBnb > 0n)) return undefined;
-      this.prices.set(k, { tokensPerBnb: perBnb, at: Date.now() });
-      return (perBnb * wei) / 10n ** 18n;
+      if (amounts[1] > 0n) perBnb = amounts[1];
     } catch {
-      return c ? (c.tokensPerBnb * wei) / 10n ** 18n : undefined;
+      /* no pair */
     }
+    if (perBnb === undefined && this.opts.launchpad) {
+      // a token still on its curve: what 1 BNB buys there (spot, before fees)
+      try {
+        const curve = await readCurve(this.client, this.opts.launchpad, token);
+        if (curve && !curve.graduated) perBnb = curveBuy(curve, 10n ** 18n).out;
+      } catch {
+        /* sold out / none */
+      }
+    }
+    if (perBnb === undefined) return c ? (c.tokensPerBnb * wei) / 10n ** 18n : undefined;
+    this.prices.set(k, { tokensPerBnb: perBnb, at: Date.now() });
+    return (perBnb * wei) / 10n ** 18n;
   }
 }
