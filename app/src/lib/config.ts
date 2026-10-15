@@ -2,7 +2,7 @@ import { getAddress } from "viem";
 import { NATIVE_TOKEN, type EvmAddress } from "@bunker/sdk";
 
 export const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://bunkeronbnb.com";
-export const GITHUB = "https://github.com/imadegoodstuff/scash";
+export const GITHUB = "https://github.com/imadegoodstuff/bunker";
 
 export const CHAIN_ID = Number(process.env.NEXT_PUBLIC_CHAIN_ID ?? 56);
 export const MAINNET = CHAIN_ID === 56;

@@ -50,7 +50,7 @@ the treasury), Fly.io deployment config.
 ## Reproducing the build
 
 ```bash
-git clone https://github.com/imadegoodstuff/scash && cd scash
+git clone https://github.com/imadegoodstuff/bunker && cd bunker
 npm ci
 npm run -w circuits build && node circuits/scripts/setup-dev.mjs
 npm run -w contracts verifiers && git diff --exit-code contracts/contracts/verifiers   # verifiers derived from source must match the committed ones
