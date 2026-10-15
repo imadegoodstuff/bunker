@@ -21,10 +21,11 @@ What makes it a wallet rather than a browser tab:
 
 ## Get the APK
 
-Every push to `mobile/` builds one in CI and publishes it to the GitHub
-release tagged `android-latest`. Download `bunker-android.apk`, check it
-against `bunker-android.apk.sha256`, install (allow "unknown sources" for the
-browser you downloaded with).
+**https://bunkeronbnb.com/android** — the site serves `/download/bunker-android.apk`
+and `/download/bunker-android.apk.sha256`. Every push to `mobile/` builds the
+APK in CI and publishes it to the GitHub release tagged `android-latest`, which
+is what the site streams. Install (allow "unknown sources" for the browser you
+downloaded with) and verify against the checksum.
 
 For a Play-store-grade signed release, set these repository secrets and the
 workflow signs with them: `BUNKER_KEYSTORE_BASE64`, `BUNKER_KEYSTORE_PASSWORD`,

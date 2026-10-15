@@ -32,9 +32,9 @@ const SECTIONS: { h: string; p: React.ReactNode }[] = [
     h: "Android",
     p: (
       <>
-        An Android app is available as a direct download:{" "}
-        <a className="text-steel hover:text-fg" href="https://github.com/imadegoodstuff/bunker/releases/download/android-latest/bunker-android.apk">bunker-android.apk</a>{" "}
-        (<a className="text-steel hover:text-fg" href="https://github.com/imadegoodstuff/bunker/releases/tag/android-latest" target="_blank" rel="noreferrer">checksum and notes</a>). It needs no wallet app: on first launch it creates a vault on the phone with a built-in BNB account to shield from, proves on the device, and never backs the key up to the cloud. One backup string restores everything. The same “This device” flow works in any mobile browser, and this site installs as a web app from the browser menu.
+        An Android app is available as a direct download at{" "}
+        <a className="text-steel hover:text-fg" href="/android">bunkeronbnb.com/android</a>{" "}
+        (<a className="text-steel hover:text-fg" href="/download/bunker-android.apk">bunker-android.apk</a>, <a className="text-steel hover:text-fg" href="/download/bunker-android.apk.sha256">sha256</a>). It needs no wallet app: on first launch it creates a vault on the phone with a built-in BNB account to shield from, proves on the device, and never backs the key up to the cloud. One backup string restores everything. The same “This device” flow works in any mobile browser, and this site installs as a web app from the browser menu.
       </>
     ),
   },
