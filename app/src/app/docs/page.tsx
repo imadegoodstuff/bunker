@@ -28,6 +28,31 @@ const SECTIONS: { h: string; p: React.ReactNode }[] = [
     h: "Trust and limits",
     p: <>A guardian key can pause new shields and lower the deposit cap; it cannot touch funds, block withdrawals or alter circuits. The indexer is a convenience: anyone can rebuild the tree from chain events. Amount and timing correlations are not hidden by cryptography; the interface nudges round denominations and patience. The code is new and unaudited.</>,
   },
+  {
+    h: "Developers",
+    p: (
+      <>
+        <span className="block mb-3">
+          <code>@bunker/sdk</code> connects to this deployment directly: the same contracts, indexer, relayer and proving keys as this site, so what you build shares one anonymity set with everyone here. Proofs are generated locally; the seed never leaves your process. Full guide in the{" "}
+          <a className="text-steel hover:text-fg" href="https://github.com/imadegoodstuff/bunker/tree/launchpad/sdk#readme" target="_blank" rel="noreferrer">SDK README</a>.
+        </span>
+        <pre className="slab p-4 overflow-x-auto font-mono text-[12px] leading-relaxed text-fg">{`import { BunkerClient } from "@bunker/sdk";
+import { parseEther } from "viem";
+
+const bunker = await BunkerClient.connect({ seed });   // BSC mainnet preset
+await bunker.sync();
+await bunker.shield("BNB", parseEther("0.01"), { signer: account });
+await bunker.send("BNB", parseEther("0.004"), "bunker1…");
+await bunker.unshield("BNB", parseEther("0.003"), "0x…");
+
+const q = await bunker.launchpad.quoteBuy(token, parseEther("0.05"));
+await bunker.launchpad.buy(token, parseEther("0.05"));`}</pre>
+        <span className="block mt-3 font-mono text-[11px]">
+          indexer <code>bunker-indexer.fly.dev</code> · relayer <code>bunker-relayer.fly.dev</code> · agents <code>bunker-agents.fly.dev</code> · proving keys <code>/circuits/</code>
+        </span>
+      </>
+    ),
+  },
 ];
 
 export default function Docs() {
@@ -43,7 +68,7 @@ export default function Docs() {
         {SECTIONS.map((s, i) => (
           <section key={s.h} className="py-8 grid md:grid-cols-[200px_1fr] gap-4">
             <h2 className="display text-lg"><span className="font-mono text-[11px] text-signal mr-3">0{i + 1}</span>{s.h}</h2>
-            <p className="text-mute leading-relaxed text-[15px] [&_code]:font-mono [&_code]:text-fg [&_code]:text-[12px]">{s.p}</p>
+            <div className="text-mute leading-relaxed text-[15px] [&_code]:font-mono [&_code]:text-fg [&_code]:text-[12px]">{s.p}</div>
           </section>
         ))}
       </div>

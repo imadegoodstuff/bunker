@@ -403,3 +403,30 @@ test("passphrase strength: leaked, common-word and short inputs are weak; phrase
   assert.equal(passphraseStrength("velvet hydrant obelisk cinnamon quasar lantern furrow").level, "strong");
   assert.equal(passphraseStrength("caf\u00e9 velours quasar").bits, passphraseStrength("cafe\u0301 velours quasar").bits);
 });
+
+test("networks.bsc mirrors contracts/deployments/56.json and services answer the hosted URLs", async () => {
+  const { networks } = await import("./networks.js");
+  const { readFileSync, existsSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const { resolve, dirname } = await import("node:path");
+  const here = dirname(fileURLToPath(import.meta.url));
+  const file = resolve(here, "../../contracts/deployments/56.json");
+  if (!existsSync(file)) return; // published package: no repo around it
+  const dep = JSON.parse(readFileSync(file, "utf8")) as { pool: string; launchpad: string; startBlock: number };
+  assert.equal(networks.bsc.pool.toLowerCase(), dep.pool.toLowerCase());
+  assert.equal(networks.bsc.launchpad.toLowerCase(), dep.launchpad.toLowerCase());
+  assert.equal(networks.bsc.startBlock, dep.startBlock);
+  assert.equal(networks.bsc.chainId, 56);
+  for (const u of [networks.bsc.indexerUrl, networks.bsc.relayerUrl, networks.bsc.agentsUrl, networks.bsc.artifactsUrl]) assert.match(u, /^https:\/\//);
+});
+
+test("BunkerClient connects offline and derives a bunker1 address from a seed", async () => {
+  const { BunkerClient } = await import("./client.js");
+  const seed = new Uint8Array(32).fill(7);
+  const c = await BunkerClient.connect({ seed });
+  assert.equal(c.network.chainId, 56);
+  assert.match(c.address(), /^bunker1[02-9ac-hj-np-z]+$/);
+  assert.equal(BunkerClient.seedFromBackup(c.backup()).join(","), seed.join(","));
+  assert.equal(c.tree.size, 0);
+  await assert.rejects(BunkerClient.connect({ seed: new Uint8Array(31) }), /32 bytes/);
+});

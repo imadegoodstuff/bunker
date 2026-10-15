@@ -35,7 +35,7 @@ Full protocol: [SPEC.md](SPEC.md).
 ```
 circuits/     circom 2 circuits (transact2x2: 33,515 constraints · transact4x2: 64,860), build/setup/ceremony scripts
 contracts/    Hardhat: ShieldedPool.sol (tree, verifier, pools, turnstile, exits) · Launchpad.sol + LaunchToken.sol · generated verifiers · deploy/verify scripts
-sdk/          TypeScript: keys, addresses, notes, encryption, Merkle, proving, viem call builders, wallet
+sdk/          TypeScript: keys, addresses, notes, encryption, Merkle, proving, viem call builders, wallet, and `BunkerClient` for the live deployment (see sdk/README.md)
 relayer/      Fee-paying relayer with policy checks, simulation, PancakeSwap fee pricing, randomized delay queue
 indexer/      eth_getLogs scanner → SQLite, HTTP API for commitments / nullifiers / roots / stats / launches / metadata
 agents/       Four AI agents (one key, one model provider each) that vote the launchpad fee policy, keep the curves (harvest, migrate) and run the treasury
