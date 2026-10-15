@@ -23,6 +23,9 @@ export const POOL_ADDRESS = addr(process.env.NEXT_PUBLIC_POOL_ADDRESS);
 export const LAUNCHPAD_ADDRESS = addr(process.env.NEXT_PUBLIC_LAUNCHPAD_ADDRESS);
 export const CONFIGURED = POOL_ADDRESS !== ZERO && LAUNCHPAD_ADDRESS !== ZERO;
 
+/** The $BUNKER token on BNB Smart Chain. */
+export const BUNKER_TOKEN: EvmAddress = "0x2Ec1e08C2C6343671728EF7C6E7FDe0bD6F07777";
+
 export interface AssetMeta {
   symbol: string;
   name: string;
@@ -45,6 +48,7 @@ export const ASSETS: AssetMeta[] = [BNB];
 /** Well-known BSC tokens the wallet scanner checks balances for. Any other ERC-20 can be added by address. */
 export const KNOWN_TOKENS: AssetMeta[] = MAINNET
   ? [
+      { symbol: "BUNKER", name: "bunker", token: BUNKER_TOKEN, decimals: 18, denominations: [10_000, 100_000, 1_000_000], image: "/brand/icon-192.png" },
       { symbol: "USDT", name: "Tether USD", token: "0x55d398326f99059fF775485246999027B3197955", decimals: 18, denominations: [10, 100, 1000] },
       { symbol: "USDC", name: "USD Coin", token: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", decimals: 18, denominations: [10, 100, 1000] },
       { symbol: "WBNB", name: "Wrapped BNB", token: "0xbb4CdB9CBd36B01bD1cBaEbF2De08d9173bc095c", decimals: 18, denominations: [0.1, 0.5, 1, 5] },

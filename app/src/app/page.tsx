@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Wordmark } from "@/components/Wordmark";
 import { Figures } from "@/components/landing/Figures";
+import { Contracts } from "@/components/landing/Contracts";
 import { Walkthrough } from "@/components/landing/Walkthrough";
 import { GITHUB } from "@/lib/config";
 
@@ -20,6 +21,8 @@ export default function Landing() {
           <Link href="/launch" className="btn btn-ghost btn-sm hidden sm:inline-flex">Launchpad</Link>
           <Link href="/agents" className="btn btn-ghost btn-sm hidden sm:inline-flex">Agents</Link>
           <Link href="/docs" className="btn btn-ghost btn-sm hidden sm:inline-flex">Docs</Link>
+          <Link href="/android" className="btn btn-ghost btn-sm hidden md:inline-flex">Android</Link>
+          <Link href="/ios" className="btn btn-ghost btn-sm hidden md:inline-flex">iPhone</Link>
           <Link href="/app" className="btn btn-signal btn-sm ml-2">Open vault</Link>
         </nav>
       </header>
@@ -52,6 +55,8 @@ export default function Landing() {
           </div>
         </div>
       </section>
+
+      <Contracts />
 
       <Figures />
 

@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { LAUNCHPAD_ADDRESS, POOL_ADDRESS, CONFIGURED, explorerAddr } from "@/lib/config";
+import { BUNKER_TOKEN, LAUNCHPAD_ADDRESS, POOL_ADDRESS, CONFIGURED, explorerAddr } from "@/lib/config";
 
 export const metadata: Metadata = { title: "Docs" };
 
@@ -71,6 +71,7 @@ export default function Docs() {
       <div className="label-signal mb-2">04 · Docs</div>
       <h1 className="display text-3xl md:text-4xl mb-8">How BUNKER works, briefly.</h1>
       <div className="slab p-5 mb-8 font-mono text-[11px] space-y-1.5">
+        <div className="flex justify-between gap-4"><span className="text-mute">$BUNKER token</span><a className="text-signal hover:text-fg break-all" href={explorerAddr(BUNKER_TOKEN)} target="_blank" rel="noreferrer">{BUNKER_TOKEN}</a></div>
         <div className="flex justify-between gap-4"><span className="text-mute">pool</span>{CONFIGURED ? <a className="text-steel hover:text-fg break-all" href={explorerAddr(POOL_ADDRESS)} target="_blank" rel="noreferrer">{POOL_ADDRESS}</a> : <span className="text-warn">not configured</span>}</div>
         <div className="flex justify-between gap-4"><span className="text-mute">launchpad</span>{CONFIGURED ? <a className="text-steel hover:text-fg break-all" href={explorerAddr(LAUNCHPAD_ADDRESS)} target="_blank" rel="noreferrer">{LAUNCHPAD_ADDRESS}</a> : <span className="text-warn">not configured</span>}</div>
       </div>
