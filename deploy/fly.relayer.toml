@@ -15,7 +15,7 @@ primary_region = "sin"
   CHAIN_ID = "56"
   RPC_URL = "https://bsc-dataseed.bnbchain.org"
   PANCAKE_ROUTER = "0x10ED43C718714eb63d5aA57B78B54704E256024E"
-  WBNB = "0xbb4CdB9CBd36B01bD1cBaEbF2De08d9173bc095c"
+  WBNB = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
   MIN_DELAY_MS = "5000"
   MAX_DELAY_MS = "90000"
   # BNB fee floor in pool units (gwei): 0.0003 BNB; the effective floor is max(this, GAS_LIMIT × GAS_PRICE_CAP × margin)

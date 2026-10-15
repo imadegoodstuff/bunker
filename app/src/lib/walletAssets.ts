@@ -39,6 +39,27 @@ export async function describeToken(client: PublicClient, token: EvmAddress): Pr
   return { symbol: sym, name: (name || sym).trim(), token: getAddress(token), decimals: Number(decimals), denominations: [1, 10, 100], fromWallet: true };
 }
 
+/** `describeToken` for many addresses in one multicall; anything that is not an ERC-20 (no `decimals`) is dropped. */
+export async function describeTokens(client: PublicClient, tokens: EvmAddress[]): Promise<AssetMeta[]> {
+  if (tokens.length === 0) return [];
+  const fns = ["name", "symbol", "decimals"] as const;
+  const res = await client.multicall({
+    contracts: tokens.flatMap((t) => fns.map((fn) => ({ address: t, abi: IERC20MetadataAbi, functionName: fn }))),
+    allowFailure: true,
+  });
+  const out: AssetMeta[] = [];
+  tokens.forEach((t, i) => {
+    const [name, symbol, decimals] = [res[i * 3], res[i * 3 + 1], res[i * 3 + 2]];
+    if (decimals.status !== "success") return;
+    const d = Number(decimals.result);
+    if (!Number.isInteger(d) || d < 0 || d > 36) return;
+    const sym = (symbol.status === "success" ? String(symbol.result) : "").trim().slice(0, 12) || t.slice(2, 6);
+    const nm = (name.status === "success" ? String(name.result) : "").trim() || sym;
+    out.push({ symbol: sym, name: nm, token: getAddress(t), decimals: d, denominations: [1, 10, 100], fromWallet: true });
+  });
+  return out;
+}
+
 /** Balances of `owner` for every asset in `candidates` (BNB handled by the caller); zero balances are dropped. */
 export async function walletTokens(client: PublicClient, owner: EvmAddress, candidates: AssetMeta[]): Promise<WalletToken[]> {
   const results = await client.multicall({

@@ -36,7 +36,7 @@ export const bsc: NetworkConfig = {
   pool: "0x0c5d2bB3867ADfea4506801df95Fd9895bda105a",
   launchpad: "0x3aBa205aEE7D6673F3EC640f9f79bDC48C8E093D",
   swapExit: "0x2E17431d3D7df13168522F03D71268bA73bDF6f8",
-  wbnb: "0xbb4CdB9CBd36B01bD1cBaEbF2De08d9173bc095c",
+  wbnb: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
   startBlock: 127837374,
   indexerUrl: "https://bunker-indexer.fly.dev",
   relayerUrl: "https://bunker-relayer.fly.dev",

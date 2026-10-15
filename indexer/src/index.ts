@@ -124,6 +124,43 @@ app.get<{ Params: { owner: string } }>("/registry/:owner", async (req, reply) =>
   return { owner: req.params.owner.toLowerCase(), shieldedAddress: r?.shielded_address ?? null, block: r?.block ?? null };
 });
 
+/**
+ * Every ERC-20 an account holds, with balances. An EVM node has no such index,
+ * so this uses the provider's token API when the RPC offers one
+ * (`alchemy_getTokenBalances`); otherwise 501 and the wallet falls back to its
+ * own candidate list. Spam tokens are not filtered here: the wallet reads
+ * name/symbol/decimals on-chain and drops anything that is not an ERC-20.
+ */
+const walletCache = new Map<string, { at: number; items: { token: string; balance: string }[] }>();
+app.get<{ Params: { owner: string } }>("/wallet/:owner/tokens", async (req, reply) => {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(req.params.owner)) return reply.code(400).send({ error: "bad address" });
+  const owner = req.params.owner.toLowerCase();
+  const hit = walletCache.get(owner);
+  if (hit && Date.now() - hit.at < 20_000) return { owner, items: hit.items, source: "cache" };
+  const items: { token: string; balance: string }[] = [];
+  try {
+    let pageKey: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const r = (await client.request({
+        method: "alchemy_getTokenBalances" as never,
+        params: [owner, "erc20", pageKey ? { pageKey } : {}] as never,
+      })) as { tokenBalances: { contractAddress: string; tokenBalance: string | null }[]; pageKey?: string };
+      for (const t of r.tokenBalances) {
+        if (!t.tokenBalance || /^0x0*$/.test(t.tokenBalance)) continue;
+        items.push({ token: getAddress(t.contractAddress), balance: BigInt(t.tokenBalance).toString() });
+      }
+      pageKey = r.pageKey;
+      if (!pageKey) break;
+    }
+  } catch (e) {
+    const msg = (e as Error).message ?? "";
+    if (/not (found|supported)|unknown method|-32601/i.test(msg)) return reply.code(501).send({ error: "token discovery not available on this indexer's RPC" });
+    return reply.code(502).send({ error: msg.slice(0, 200) });
+  }
+  walletCache.set(owner, { at: Date.now(), items });
+  return { owner, items, source: "rpc" };
+});
+
 /** Outgoing ciphertexts (sender-side recovery with ovk). */
 app.get<{ Querystring: { from?: string; limit?: string } }>("/outgoing", async (req) => {
   const from = Number(req.query.from ?? 0);

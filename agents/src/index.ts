@@ -39,7 +39,7 @@ const deployments = loadDeployments(CHAIN_ID);
 const LAUNCHPAD = getAddress(process.env.LAUNCHPAD_ADDRESS ?? deployments?.launchpad ?? fail("LAUNCHPAD_ADDRESS"));
 const POOL = getAddress(process.env.POOL_ADDRESS ?? deployments?.pool ?? fail("POOL_ADDRESS"));
 const ROUTER = getAddress(process.env.PANCAKE_ROUTER ?? deployments?.router ?? "0x10ED43C718714eb63d5aA57B78B54704E256024E");
-const WBNB = getAddress(process.env.WBNB ?? (CHAIN_ID === 97 ? "0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd" : "0xbb4CdB9CBd36B01bD1cBaEbF2De08d9173bc095c"));
+const WBNB = getAddress(process.env.WBNB ?? (CHAIN_ID === 97 ? "0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd" : "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"));
 const PORT = Number(process.env.PORT ?? 8789);
 /** how often to look at the chain; votes are only sent when an epoch has changed or a vote is missing */
 const TICK_MS = Number(process.env.TICK_MS ?? 60_000);

@@ -9,10 +9,10 @@ import {
   contractErrorFromData, NATIVE_TOKEN, ShieldedPoolAbi, IERC20MetadataAbi, SPENDING_KEY_MESSAGE, decodeAddress,
   type PoolState, type SpendableNote, type EvmAddress, type TxEvent,
 } from "@bunker/sdk";
-import { ApiError, relayer, type AssetQuote, type RelayerInfo } from "./api";
+import { ApiError, indexer, relayer, type AssetQuote, type RelayerInfo } from "./api";
 import { ASSETS, BNB, KNOWN_TOKENS, NETWORK, POOL_ADDRESS, SWAP_EXIT_ADDRESS, type AssetMeta } from "./config";
 import { publicClient } from "./chain";
-import { customTokens, describeToken, walletTokens } from "./walletAssets";
+import { customTokens, describeToken, describeTokens, walletTokens } from "./walletAssets";
 import { artifactFor, prefetchArtifacts, type Progress } from "./artifacts";
 import { deviceProvider, forgetDeviceSeed, gasAccount, rememberDeviceSeed } from "./device";
 import { useLegacy } from "./legacy";
@@ -123,6 +123,8 @@ interface State {
   shield: (asset: AssetMeta, amount: bigint, signer: Signer, to?: string) => Promise<void>;
   send: (asset: AssetMeta, amount: bigint, to: string, memo?: string) => Promise<void>;
   unshield: (asset: AssetMeta, amount: bigint, recipient: EvmAddress) => Promise<void>;
+  /** Withdraw without a relayer: the signer submits and pays gas, no fee note. For assets no relayer prices, or by choice. */
+  unshieldDirect: (asset: AssetMeta, amount: bigint, recipient: EvmAddress, signer: Signer) => Promise<void>;
   /** Private PancakeSwap swap: `amount` of `from` leaves the vault, the output lands back as a note of `to`. */
   swap: (from: AssetMeta, amount: bigint, to: AssetMeta) => Promise<void>;
   quoteSwap: (from: AssetMeta, amount: bigint, to: AssetMeta) => Promise<{ out: bigint; relayerFee: bigint }>;
@@ -362,6 +364,11 @@ export const useBunker = create<State>((set, get) => {
     try {
       const candidates = [...KNOWN_TOKENS, ...Object.values(get().launchAssets), ...Object.values(get().walletAssets)].filter((a, i, arr) => arr.findIndex((b) => key(b.token) === key(a.token)) === i);
       for (const t of customTokens()) if (!candidates.some((a) => key(a.token) === key(t))) candidates.push(await describeToken(publicClient, t).catch(() => undefined as never));
+      // everything the account actually holds, from the indexer's token API (any ERC-20 on the chain, not only the known list)
+      const discovered = await indexer.walletTokens(owner).catch(() => [] as { token: EvmAddress; balance: string }[]);
+      const fresh = discovered.filter((d) => BigInt(d.balance) > 0n && !candidates.some((a) => a && key(a.token) === key(d.token))).slice(0, 60);
+      const described = await describeTokens(publicClient, fresh.map((d) => d.token));
+      for (const m of described) candidates.push(m);
       const list = candidates.filter(Boolean);
       const [tokens, bnb] = await Promise.all([walletTokens(publicClient, owner, list), publicClient.getBalance({ address: owner })]);
       const walletAssets: Record<string, AssetMeta> = {};
@@ -583,6 +590,21 @@ export const useBunker = create<State>((set, get) => {
     }
   },
 
+  async unshieldDirect(asset, amount, recipient, signer) {
+    const c = get().client;
+    if (!c) throw new Error("wallet locked");
+    if (c.watchOnly) throw new Error("this vault is watch-only");
+    const id = activity("unshield", asset.symbol, amount, asset.decimals);
+    set({ tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } });
+    try {
+      const h = await c.unshieldDirect(tok(asset), amount, recipient, { signer: sdkSigner(signer), onEvent });
+      finish(id, h);
+      await after();
+    } catch (e) {
+      fail(id, e);
+    }
+  },
+
   async quoteSwap(from, amount, to) {
     const c = get().client;
     if (!c) throw new Error("wallet locked");
@@ -679,6 +701,8 @@ export function friendlyError(e: unknown): string {
   const data = /data="?(0x[0-9a-f]{8})/i.exec(raw)?.[1] ?? /(0x[0-9a-f]{8})\b/i.exec(raw)?.[1];
   const name = data ? contractErrorFromData(data as Hex) : undefined;
   if (name === "NullifierSpent") return "these notes were already spent on-chain; your balance will update after a rescan";
+  if (name === "ShortDelivery") return "this token takes a tax on transfer, so the pool received less than you sent and refused the deposit; fee-on-transfer tokens cannot be shielded";
+  if (name === "TvlCapExceeded") return "this deposit would push the pool over its current cap; try a smaller amount or later";
   if (name) return `the contract refused the transaction: ${name}`;
   if (e instanceof ApiError && typeof e.body === "object" && e.body && "error" in e.body) return String((e.body as { error: unknown }).error).slice(0, 220);
   return raw.length > 220 ? raw.slice(0, 220) + "…" : raw;

@@ -37,12 +37,15 @@ export function VaultPanel() {
   const quote = s.assetQuotes[asset.token.toLowerCase()];
   const feePolicy = s.relayer?.fees.find((f) => f.token.toLowerCase() === asset.token.toLowerCase());
   const relayable = asset.token === NATIVE_TOKEN ? !!feePolicy : !!feePolicy || !!quote?.supported;
+  // unshield without the relayer: forced when no relayer prices this asset, optional otherwise
+  const [selfPay, setSelfPay] = useState(false);
+  const direct = mode === "unshield" && (selfPay || !relayable);
   const modes: Mode[] = (s.watchOnly ? [] : (["shield", "send", "unshield"] as Mode[])).concat(SWAP_EXIT_ADDRESS && !s.watchOnly ? ["swap"] : []);
   const outAsset = assets.find((a) => a.token.toLowerCase() === outToken.toLowerCase());
   const swapTargets = assets.filter((a) => a.token.toLowerCase() !== asset.token.toLowerCase() && !a.launched);
 
   const parsed = useMemo(() => { try { return amount ? parseAmount(amount, asset.decimals) : 0n; } catch { return null; } }, [amount, asset.decimals]);
-  const fee = useMemo(() => (mode === "shield" || !parsed ? null : relayerFeeFor(s, asset, parsed)), [s.relayer, s.assetQuotes, s.pools, asset, parsed, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  const fee = useMemo(() => (mode === "shield" || direct || !parsed ? null : relayerFeeFor(s, asset, parsed)), [s.relayer, s.assetQuotes, s.pools, asset, parsed, mode, direct]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // swap quotes come from the router; debounce them
   useEffect(() => {
@@ -62,7 +65,7 @@ export function VaultPanel() {
   const max = mode === "shield" ? walletBal : shielded;
   const total = parsed && fee ? parsed + fee : parsed;
   const ok = !!parsed && parsed > 0n && !!total && total <= max && toValid && !busy
-    && (mode === "shield" ? !!signer : relayable)
+    && (mode === "shield" || direct ? !!signer : relayable)
     && (mode !== "swap" || (!!swapQuote && !("error" in swapQuote)));
 
   async function go() {
@@ -71,6 +74,7 @@ export function VaultPanel() {
     try {
       if (mode === "shield") await s.shield(asset, parsed, signer!, to || undefined);
       else if (mode === "send") await s.send(asset, parsed, to, memo || undefined);
+      else if (mode === "unshield" && direct) await s.unshieldDirect(asset, parsed, to as `0x${string}`, signer!);
       else if (mode === "unshield") await s.unshield(asset, parsed, to as `0x${string}`);
       else await s.swap(asset, parsed, outAsset!);
       setAmount(""); setMemo("");
@@ -170,7 +174,18 @@ export function VaultPanel() {
           <div>
             <label className="label block mb-2">recipient address (BNB chain)</label>
             <input className="field text-[12px]" value={to} onChange={(e) => setTo(e.target.value)} placeholder="0x…" spellCheck={false} />
-            <p className="mt-2 font-mono text-[10.5px] text-dim">The recipient gets exactly this amount; the relayer's fee is a separate private note. Use a fresh address: withdrawing to the wallet that shielded undoes the point.</p>
+            {direct ? (
+              <p className="mt-2 font-mono text-[10.5px] text-warn">
+                {relayable ? "Your connected wallet submits this withdrawal and pays the gas; no relayer fee." : `No relayer prices ${asset.symbol}, so your connected wallet submits the withdrawal and pays the gas.`} That wallet is visible on the transaction, so withdraw to it (or to an address already linked to it), not to a fresh one.
+              </p>
+            ) : (
+              <p className="mt-2 font-mono text-[10.5px] text-dim">The recipient gets exactly this amount; the relayer's fee is a separate private note. Use a fresh address: withdrawing to the wallet that shielded undoes the point.</p>
+            )}
+            {relayable && signer ? (
+              <button type="button" className="mt-2 font-mono text-[10.5px] text-steel hover:text-fg transition" onClick={() => setSelfPay(!selfPay)}>
+                {selfPay ? "← use the relayer instead" : "pay the gas yourself instead (no relayer fee) →"}
+              </button>
+            ) : null}
           </div>
         ) : (
           <div>
@@ -189,7 +204,7 @@ export function VaultPanel() {
             ) : null}
             <div className="flex items-center justify-between">
               <span>relayer fee <span className="text-dim">(private note)</span></span>
-              <span className="text-fg num">{fee !== null ? `${fmtAmount(fee, asset.decimals)} ${asset.symbol}` : relayable ? "—" : quote?.reason ?? "not relayed for this asset"}</span>
+              <span className="text-fg num">{direct ? "none · your wallet pays gas" : fee !== null ? `${fmtAmount(fee, asset.decimals)} ${asset.symbol}` : relayable ? "—" : quote?.reason ?? "not relayed for this asset"}</span>
             </div>
             {mode === "swap" ? <div className="flex items-center justify-between"><span>slippage</span><span className="text-fg num">1 % max</span></div> : null}
           </div>
@@ -198,7 +213,7 @@ export function VaultPanel() {
         ) : null}
 
         <button className="btn btn-signal w-full h-12" disabled={!ok} onClick={go}>
-          {busy ? "working" : mode === "shield" ? `shield ${asset.symbol}` : mode === "send" ? "send privately" : mode === "unshield" ? "unshield via relayer" : outAsset ? `swap to ${outAsset.symbol} privately` : "swap privately"}
+          {busy ? "working" : mode === "shield" ? `shield ${asset.symbol}` : mode === "send" ? "send privately" : mode === "unshield" ? (direct ? `unshield ${asset.symbol} · your wallet pays gas` : "unshield via relayer") : outAsset ? `swap to ${outAsset.symbol} privately` : "swap privately"}
         </button>
         {err ? <p className="font-mono text-[11px] text-bad break-words">{err}</p> : null}
         {s.walletScanError ? <p className="font-mono text-[10.5px] text-dim">{s.walletScanError}</p> : null}

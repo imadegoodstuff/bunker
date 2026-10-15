@@ -499,6 +499,55 @@ export class BunkerClient {
   }
 
   /**
+   * Withdraw without a relayer: `signer` submits the transaction and pays gas,
+   * the fee output is empty, and `recipient` receives exactly `amount`. Works
+   * for any asset, including ones no relayer will price. The signer's address
+   * is public on the transaction, so use it for an account that may be linked
+   * to the recipient anyway (typically the recipient itself).
+   */
+  async unshieldDirect(token: Token, amount: bigint, recipient: EvmAddress, o: { signer: Signer; onEvent?: (e: TxEvent) => void }): Promise<Hex> {
+    const t = norm(token);
+    const pool = await this.pool(t, true);
+    const units = toUnits(amount, pool.unit);
+    if (units <= 0n) throw new Error("amount too small for this pool's unit");
+    await this.sync();
+    const asset = assetId(t.toLowerCase());
+    const need = sharesForWithdraw(pool, units);
+    if (this.wallet.balance(asset) < need && this.wallet.balance(asset) + this.wallet.queuedBalance(asset) >= need) await this.ensureInserted(undefined, { signer: o.signer, onEvent: o.onEvent });
+    let consumed: bigint[] = [];
+    try {
+      const build = async () => {
+        o.onEvent?.({ stage: "proving", message: "generating proof" });
+        const built = await this.wallet.buildTransact({
+          asset, poolAddress: this.network.pool, token: t, pool, tree: this.tree, artifacts: await this.allArtifacts(),
+          kind: "unshield", amount: units, recipient: getAddress(recipient), relayerFee: 0n,
+        });
+        consumed = built.consumed;
+        return built;
+      };
+      let built: BuiltTransact;
+      try { built = await build(); } catch (e) {
+        if (!isStaleRoot(e)) throw e;
+        this.wallet.release(consumed); consumed = [];
+        await this.sync();
+        built = await build();
+      }
+      o.onEvent?.({ stage: "confirming", message: "confirm the withdrawal in your wallet" });
+      const hash = await this.write(o.signer, built.call);
+      o.onEvent?.({ stage: "confirming", message: "waiting for the transaction", txHash: hash });
+      await this.waitOk(hash);
+      this.wallet.markSpent(built.consumedNullifiers);
+      o.onEvent?.({ stage: "done", txHash: hash });
+      await this.syncUntilCaughtUp().catch(() => undefined);
+      return hash;
+    } catch (e) {
+      await this.sync().catch(() => undefined);
+      this.wallet.release(consumed.filter((cm) => !this.wallet.isSpent(cm)));
+      throw e;
+    }
+  }
+
+  /**
    * Withdraw `amount` into a contract that implements `IBunkerExit`. With
    * `reshield`, whatever the hook sends back to the pool in that token becomes
    * a fresh note of yours in the same transaction (an atomic private call).

@@ -26,7 +26,7 @@ primary_region = "sin"
   RPC_URL = "https://bsc-dataseed.bnbchain.org"
   INDEXER_URL = "https://bunker-indexer.fly.dev"
   PANCAKE_ROUTER = "0x10ED43C718714eb63d5aA57B78B54704E256024E"
-  WBNB = "0xbb4CdB9CBd36B01bD1cBaEbF2De08d9173bc095c"
+  WBNB = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
   TICK_MS = "60000"
   ORBIO_TOKEN_PATH = "/data/orbio.json"
   # treasury (agent 0): fuel the other keys and the relayer, keep a reserve, buy back at random

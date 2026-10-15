@@ -30,7 +30,7 @@ const POOL = getAddress(process.env.POOL_ADDRESS ?? deployments?.pool ?? fail("P
 const LAUNCHPAD: EvmAddress | undefined = process.env.LAUNCHPAD_ADDRESS === "" ? undefined : getAddress(process.env.LAUNCHPAD_ADDRESS ?? deployments?.launchpad ?? fail("LAUNCHPAD_ADDRESS"));
 const SWAP_EXIT: EvmAddress | undefined = process.env.SWAP_EXIT_ADDRESS === "" ? undefined : (process.env.SWAP_EXIT_ADDRESS ?? deployments?.swapExit) ? getAddress(process.env.SWAP_EXIT_ADDRESS ?? deployments!.swapExit!) : undefined;
 const ROUTER = getAddress(process.env.PANCAKE_ROUTER ?? deployments?.router ?? "0x10ED43C718714eb63d5aA57B78B54704E256024E");
-const WBNB = getAddress(process.env.WBNB ?? deployments?.wbnb ?? (CHAIN_ID === 97 ? "0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd" : "0xbb4CdB9CBd36B01bD1cBaEbF2De08d9173bc095c"));
+const WBNB = getAddress(process.env.WBNB ?? deployments?.wbnb ?? (CHAIN_ID === 97 ? "0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd" : "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"));
 const PORT = Number(process.env.PORT ?? 8787);
 
 const chain = CHAIN_ID === 56 ? bsc : CHAIN_ID === 97 ? bscTestnet : CHAIN_ID === 31337 ? hardhat : defineChain({ id: CHAIN_ID, name: `chain-${CHAIN_ID}`, nativeCurrency: { name: "BNB", symbol: "BNB", decimals: 18 }, rpcUrls: { default: { http: [RPC] } } });
@@ -74,10 +74,14 @@ const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
 await app.register(cors, { origin: true });
 await app.register(rateLimit, { max: 60, timeWindow: "1 minute" });
 // Any ERC-20 with a pool: fee priced off PancakeSwap (or the launchpad curve). DYNAMIC_ASSETS=0 limits the relayer to FEE_POLICY.
+const QUOTER_V3 = process.env.QUOTER_V3 ?? (CHAIN_ID === 56 ? "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997" : "");
 const dynamic = new DynamicAssets(publicClient, POOL, {
   router: ROUTER,
   wbnb: WBNB,
   launchpad: LAUNCHPAD,
+  // BSC mainnet: USDT, USDC as routing stables; PancakeSwap V3 QuoterV2. Other chains: set STABLES / QUOTER_V3.
+  stables: (process.env.STABLES ?? (CHAIN_ID === 56 ? "0x55d398326f99059fF775485246999027B3197955,0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d" : "")).split(",").map((s) => s.trim()).filter(Boolean).map((s) => getAddress(s)),
+  quoterV3: QUOTER_V3 ? getAddress(QUOTER_V3) : undefined,
   marginBps: Number(process.env.DYNAMIC_MARGIN_BPS ?? 5_000),
   bps: Number(process.env.DYNAMIC_FEE_BPS ?? 5),
   priceTtlMs: Number(process.env.PRICE_TTL_MS ?? 60_000),

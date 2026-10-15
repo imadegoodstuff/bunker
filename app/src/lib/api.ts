@@ -45,6 +45,8 @@ export const indexer = {
   commitments: (from: number, limit = 1000) => j<CommitmentsPage>(`${INDEXER_URL}/commitments?from=${from}&limit=${limit}`),
   nullifiers: (sinceBlock: number) => j<{ nullifier: string; block: number }[]>(`${INDEXER_URL}/nullifiers?sinceBlock=${sinceBlock}&limit=5000`),
   roots: () => j<{ root: string; next_index: number; block: number }[]>(`${INDEXER_URL}/roots?n=32`),
+  /** Every ERC-20 the account holds (indexer-side token API); empty when the indexer cannot discover tokens. */
+  walletTokens: (owner: string) => j<{ owner: string; items: { token: `0x${string}`; balance: string }[] }>(`${INDEXER_URL}/wallet/${owner}/tokens`).then((r) => r.items),
   stats: (days = 30) =>
     j<{ leaves: number; perToken: Record<string, { shields: number; unshields: number; donated: string; shielded: string; unshielded: string }>; daily: { day: string; txs: number }[] }>(
       `${INDEXER_URL}/stats?days=${days}`
