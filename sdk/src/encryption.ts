@@ -7,8 +7,8 @@ import { BJJ_SUBGROUP_ORDER, bigIntToBytesBE, bigIntToBytesLE, bytesToBigIntBE, 
 import { SCALAR_MASK, type Address } from "./keys.js";
 import { noteRandomness, type Note } from "./note.js";
 
-const PERSON_ENC = new TextEncoder().encode("scash_NoteEncKey");
-const PERSON_OUT = new TextEncoder().encode("scash_OutKey____");
+const PERSON_ENC = new TextEncoder().encode("bunkerNoteEncKey");
+const PERSON_OUT = new TextEncoder().encode("bunkerOutKey____");
 const NONCE = new Uint8Array(12);
 
 /**

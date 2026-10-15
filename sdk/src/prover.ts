@@ -1,7 +1,7 @@
 // Builds circuit inputs and produces Groth16 proofs with snarkjs. Works in
 // Node and in the browser (pass artifact URLs or bytes).
 import { groth16 } from "snarkjs";
-import { TREE_DEPTH, Q, encodePublicAmount, bigIntToBytesBE, concatBytes, fromHex } from "./field.js";
+import { encodePublicAmount, fromHex } from "./field.js";
 import type { MerklePath } from "./merkle.js";
 import type { Note, SpendableNote } from "./note.js";
 import { noteCommitment, nullifier } from "./note.js";
@@ -45,8 +45,6 @@ export interface TransactProof {
   circuit: CircuitName;
   proof: Groth16Proof;
   publicSignals: bigint[];
-  /** 256 bytes: A(64) || B(128) || C(64), big-endian, as the on-chain verifier expects. */
-  proofBytes: Uint8Array;
   nullifiers: bigint[];
   outCommitments: bigint[];
 }
@@ -153,35 +151,22 @@ export async function prove(p: TransactParams, artifacts: Record<CircuitName, Ci
     circuit,
     proof: g,
     publicSignals: publicSignals.map((s) => BigInt(s)),
-    proofBytes: encodeProof(g),
     nullifiers,
     outCommitments,
   };
 }
 
-/**
- * Serialize for groth16-solana: A as (x,y) big-endian, B as (x_im, x_re, y_im, y_re)?
- * groth16-solana expects B in the same order snarkjs prints it: [[x0,x1],[y0,y1]] with
- * each coordinate big-endian, and it negates A internally. We therefore negate A here
- * so the verifier's pairing equation holds (Light Protocol convention).
- */
-export function encodeProof(p: Groth16Proof): Uint8Array {
-  // negation is in the base field Q (point coordinates), not the scalar field P
-  const negAy = p.piA[1] === 0n ? 0n : Q - p.piA[1];
-  return concatBytes(
-    bigIntToBytesBE(p.piA[0]),
-    bigIntToBytesBE(negAy),
-    bigIntToBytesBE(p.piB[0][1]),
-    bigIntToBytesBE(p.piB[0][0]),
-    bigIntToBytesBE(p.piB[1][1]),
-    bigIntToBytesBE(p.piB[1][0]),
-    bigIntToBytesBE(p.piC[0]),
-    bigIntToBytesBE(p.piC[1])
-  );
-}
-
-export function publicSignalsToBytes(signals: bigint[]): Uint8Array[] {
-  return signals.map((s) => bigIntToBytesBE(s));
+/** Verify a proof off-chain against a verification key JSON (what the relayer does before paying gas). */
+export async function verifyProof(vk: unknown, proof: TransactProof): Promise<boolean> {
+  const p = proof.proof;
+  const snark = {
+    pi_a: [p.piA[0].toString(), p.piA[1].toString(), "1"],
+    pi_b: [[p.piB[0][0].toString(), p.piB[0][1].toString()], [p.piB[1][0].toString(), p.piB[1][1].toString()], ["1", "0"]],
+    pi_c: [p.piC[0].toString(), p.piC[1].toString(), "1"],
+    protocol: "groth16",
+    curve: "bn128",
+  };
+  return groth16.verify(vk as any, proof.publicSignals.map(String), snark as any);
 }
 
 export { fromHex };

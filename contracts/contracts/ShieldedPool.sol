@@ -86,7 +86,7 @@ contract ShieldedPool {
     // ---- events (the indexer reads these; SPEC §7)
 
     event PoolCreated(address indexed token, uint8 decimals, uint256 unit, uint256 tvlCap);
-    event Transact(uint32 indexed firstIndex, uint256 commitment0, uint256 commitment1, bytes ciphertext0, bytes ciphertext1, bytes outCiphertext, uint256 newRoot);
+    event Transact(address indexed token, uint32 indexed firstIndex, uint256 commitment0, uint256 commitment1, bytes ciphertext0, bytes ciphertext1, bytes outCiphertext, uint256 newRoot);
     event Nullified(uint256 indexed nullifier);
     event Shield(address indexed token, uint256 amount);
     event Unshield(address indexed token, uint256 amount);
@@ -358,7 +358,7 @@ contract ShieldedPool {
 
         // ---- append outputs
         (uint32 first, uint256 newRoot) = _insertPair(outCommitments[0], outCommitments[1]);
-        emit Transact(first, outCommitments[0], outCommitments[1], ext.ciphertext0, ext.ciphertext1, ext.outCiphertext, newRoot);
+        emit Transact(token, first, outCommitments[0], outCommitments[1], ext.ciphertext0, ext.ciphertext1, ext.outCiphertext, newRoot);
     }
 
     /// @notice Add `amount` units to a pool without minting shares: every existing note is worth more (SPEC §9).

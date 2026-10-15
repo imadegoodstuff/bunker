@@ -149,6 +149,11 @@ contract Launchpad is IBunkerExit {
         return tokens.length;
     }
 
+    /// @dev The auto-generated `params()` getter omits the `agents` array; this returns everything.
+    function getParams() external view returns (Params memory) {
+        return params;
+    }
+
     /// @notice The curve as it will be after the policy roll for the current block (what a client should quote against).
     function curveRolled(address token) external view returns (Curve memory c) {
         c = _curves[token];

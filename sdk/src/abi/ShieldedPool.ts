@@ -273,6 +273,12 @@ export const ShieldedPoolAbi = [
     "inputs": [
       {
         "indexed": true,
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "indexed": true,
         "internalType": "uint32",
         "name": "firstIndex",
         "type": "uint32"

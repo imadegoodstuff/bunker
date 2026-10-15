@@ -6,8 +6,8 @@ const { bech32m } = bech32pkg;
 import { BabyJub, poseidon, type Point } from "./crypto.js";
 import { P, mod, bytesToBigIntLE, concatBytes, randomBytes } from "./field.js";
 
-const PERSON_EXPAND = new TextEncoder().encode("scash_ExpandSeed");
-const PERSON_DIVERSIFY = new TextEncoder().encode("scash_Diversify_");
+const PERSON_EXPAND = new TextEncoder().encode("bunkerExpandSeed");
+const PERSON_DIVERSIFY = new TextEncoder().encode("bunkerDiversify_");
 
 /**
  * The message a wallet signs to derive the shielded spending key.
@@ -20,16 +20,16 @@ const PERSON_DIVERSIFY = new TextEncoder().encode("scash_Diversify_");
  * mixed into `seedFromSignature`, which a stolen signature cannot replay.
  */
 export const SPENDING_KEY_MESSAGE = [
-  "scash shielded wallet",
+  "BUNKER shielded wallet",
   "",
   "Signing this message derives the key that can SPEND your private balance.",
-  "Only sign it inside the scash app. Never sign it for any other site,",
+  "Only sign it inside the BUNKER app at bunkeronbnb.com. Never sign it for any other site,",
   "no matter what it claims.",
   "",
-  "version: 2",
+  "version: 1",
 ].join("\n");
 
-const SEED_SALT = new TextEncoder().encode("scash:v2:wallet-seed");
+const SEED_SALT = new TextEncoder().encode("bunker:v1:wallet-seed");
 
 export interface SpendingKey {
   sk: Uint8Array; // 32 bytes
@@ -67,7 +67,7 @@ export function spendingKeyFromSeed(sk: Uint8Array): SpendingKey {
  * Derive the 32-byte seed from a wallet signature over SPENDING_KEY_MESSAGE and
  * an optional passphrase.
  *
- *   seed = scrypt(password = sig || NFKC(passphrase), salt = "scash:v2:wallet-seed", N = 2^15, r = 8, p = 1)
+ *   seed = scrypt(password = sig || NFKC(passphrase), salt = "bunker:v1:wallet-seed", N = 2^15, r = 8, p = 1)
  *
  * The signature alone is high-entropy, so scrypt is not there to stretch it;
  * it is there so that an attacker who phished the signature still has to
@@ -120,7 +120,7 @@ export function expectedSecondsToCrack(bits: number): number {
 const LEAKED = new Set([
   "password", "passphrase", "123456", "12345678", "123456789", "1234567890", "qwerty", "qwertyuiop", "abc123", "111111", "iloveyou",
   "admin", "welcome", "monkey", "dragon", "letmein", "login", "princess", "football", "baseball", "sunshine", "master", "shadow",
-  "superman", "trustno1", "solana", "scash", "bitcoin", "crypto", "wallet", "secret", "changeme", "default", "freedom", "whatever",
+  "superman", "trustno1", "solana", "scash", "bunker", "bnb", "binance", "bitcoin", "crypto", "wallet", "secret", "changeme", "default", "freedom", "whatever",
   "correcthorsebatterystaple", "correct horse battery staple", "tothemoon", "hodl", "satoshi", "nakamoto", "ethereum", "privatekey",
   "seedphrase", "password1", "password123", "p@ssw0rd", "passw0rd", "letmein1", "qwerty123", "1q2w3e4r", "zaq12wsx", "asdfgh", "zxcvbn",
 ]);
@@ -239,13 +239,13 @@ export function passphraseStrength(passphrase: string): PassphraseStrength {
 /** Hex encoding of a seed for backup. 64 hex chars; anyone holding it can spend. */
 export function seedToBackup(seed: Uint8Array): string {
   if (seed.length !== 32) throw new Error("seed must be 32 bytes");
-  return "scashseed1" + Array.from(seed, (b) => b.toString(16).padStart(2, "0")).join("");
+  return "bunkerseed1" + Array.from(seed, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 export function seedFromBackup(s: string): Uint8Array {
   const t = s.trim().toLowerCase();
-  if (!t.startsWith("scashseed1")) throw new Error("not a scash seed backup");
-  const hex = t.slice("scashseed1".length);
+  if (!t.startsWith("bunkerseed1")) throw new Error("not a BUNKER seed backup");
+  const hex = t.slice("bunkerseed1".length);
   if (!/^[0-9a-f]{64}$/.test(hex)) throw new Error("malformed seed backup");
   return Uint8Array.from(hex.match(/../g)!, (h) => parseInt(h, 16));
 }
@@ -307,7 +307,7 @@ export function addressAtIndex(bjj: BabyJub, ivk: bigint, index: number): Addres
   throw new Error("no valid diversifier near index");
 }
 
-export function encodeAddress(bjj: BabyJub, addr: Address, hrp: "scash" | "tscash" = "scash"): string {
+export function encodeAddress(bjj: BabyJub, addr: Address, hrp: "bunker" | "tbunker" = "bunker"): string {
   const payload = concatBytes(addr.d, bjj.compress(addr.pkd));
   return bech32m.encode(hrp, bech32m.toWords(payload), 120);
 }

@@ -1,69 +1,99 @@
 /**
- * Mirror of `programs/scash_vault/src/error.rs` (`VaultError`, `#[repr(u32)]`
- * by declaration order). The relayer turns a simulation failure into a named
- * error with this table so clients classify by name, not by parsing RPC error
- * JSON; `sdk.test.ts` checks the table against the Rust source so the two
- * cannot drift.
+ * Custom errors of `ShieldedPool` and `Launchpad`, by name. The relayer turns a
+ * failed simulation into one of these names so clients classify by name, not by
+ * parsing RPC error payloads; `sdk.test.ts` checks the lists against the ABIs.
  */
-export const VAULT_ERRORS = [
-  "InvalidInstruction",
-  "AlreadyInitialized",
-  "NotInitialized",
-  "WrongDiscriminator",
-  "InvalidPda",
+import { BaseError, ContractFunctionRevertedError, decodeErrorResult, type Hex } from "viem";
+import { ShieldedPoolAbi } from "./abi/ShieldedPool.js";
+import { LaunchpadAbi } from "./abi/Launchpad.js";
+
+export const POOL_ERRORS = [
   "UnknownRoot",
   "UnknownAspRoot",
   "InvalidProof",
   "MalformedProof",
   "NullifierSpent",
   "PublicAmountOutOfRange",
-  "ShieldPaused",
+  "ShieldPausedError",
   "TvlCapExceeded",
   "Turnstile",
   "FeeExceedsAmount",
-  "DepositorNotSigner",
   "Unauthorized",
   "TreeFull",
   "Overflow",
-  "WrongAsset",
   "AccountMismatch",
   "CapNotLower",
-  "ExtDataTooLarge",
-  "UnsupportedMintExtension",
+  "AlreadyInitialized",
+  "NotInitialized",
   "ShortDelivery",
+  "BadUnit",
+  "TransferFailed",
+  "Reentrancy",
+  "ValueMismatch",
 ] as const;
-export type VaultErrorName = (typeof VAULT_ERRORS)[number];
+export type PoolErrorName = (typeof POOL_ERRORS)[number];
+
+export const LAUNCH_ERRORS = [
+  "BadParams",
+  "NotFromPool",
+  "UnknownCurve",
+  "Migrated",
+  "NotGraduated",
+  "NotMigratable",
+  "AmountTooSmall",
+  "Slippage",
+  "SoldOut",
+  "InsufficientReserve",
+  "Nothing",
+  "NotAgent",
+  "BadExit",
+  "Reentrancy",
+  "TransferFailed",
+] as const;
+export type LaunchErrorName = (typeof LAUNCH_ERRORS)[number];
+
+export type ContractErrorName = PoolErrorName | LaunchErrorName;
 
 /** Errors that mean "the tree moved under you": a fresh sync and a new proof against the current root are the right response. */
-export const STALE_ROOT_ERRORS: readonly VaultErrorName[] = ["UnknownRoot", "InvalidProof"];
+export const STALE_ROOT_ERRORS: readonly ContractErrorName[] = ["UnknownRoot", "InvalidProof"];
 
-/**
- * Extract the vault error name from a `TransactionError` as returned by
- * `simulateTransaction` / `sendTransaction`:
- *   { InstructionError: [ixIndex, { Custom: n }] }
- * Returns undefined for anything that is not a custom error of this program
- * (compute budget, system program, token program, insufficient funds, ...).
- */
-export function vaultErrorName(txError: unknown): VaultErrorName | undefined {
-  if (!txError || typeof txError !== "object") return undefined;
-  const ie = (txError as { InstructionError?: unknown }).InstructionError;
-  if (!Array.isArray(ie) || ie.length !== 2) return undefined;
-  const inner = ie[1];
-  if (!inner || typeof inner !== "object") return undefined;
-  const custom = (inner as { Custom?: unknown }).Custom;
-  if (typeof custom !== "number" || !Number.isInteger(custom) || custom < 0 || custom >= VAULT_ERRORS.length) return undefined;
-  return VAULT_ERRORS[custom];
+const ABIS = [...ShieldedPoolAbi, ...LaunchpadAbi];
+
+/** Decode a revert's raw data into a known custom error name (undefined for anything else: out of gas, plain `require`, …). */
+export function contractErrorFromData(data: Hex | undefined): ContractErrorName | undefined {
+  if (!data || data === "0x") return undefined;
+  try {
+    const d = decodeErrorResult({ abi: ABIS, data });
+    const name = d.errorName as ContractErrorName;
+    if ((POOL_ERRORS as readonly string[]).includes(name) || (LAUNCH_ERRORS as readonly string[]).includes(name)) return name;
+  } catch {
+    /* not ours */
+  }
+  return undefined;
 }
 
-/** Body of a relayer 422. `vaultError` is the structured field; `details` is the raw RPC error for debugging only. */
+/** Pull the custom error name out of a viem error (from `simulateContract`, `estimateGas`, `writeContract`). */
+export function contractErrorName(err: unknown): ContractErrorName | undefined {
+  if (!(err instanceof BaseError)) return undefined;
+  const reverted = err.walk((e) => e instanceof ContractFunctionRevertedError) as ContractFunctionRevertedError | null;
+  if (reverted?.data?.errorName) {
+    const name = reverted.data.errorName as ContractErrorName;
+    if ((POOL_ERRORS as readonly string[]).includes(name) || (LAUNCH_ERRORS as readonly string[]).includes(name)) return name;
+  }
+  if (reverted?.raw) return contractErrorFromData(reverted.raw);
+  // raw RPC error payloads
+  const walked = err.walk((e) => typeof (e as { data?: unknown }).data === "string") as { data?: Hex } | null;
+  return contractErrorFromData(walked?.data);
+}
+
+/** Body of a relayer 422. `contractError` is the structured field; `details` is the raw error for debugging only. */
 export interface RelayRejection {
   error: string;
-  vaultError?: VaultErrorName;
+  contractError?: ContractErrorName;
   details?: unknown;
-  logs?: string[];
 }
 
 export function isStaleRootRejection(body: unknown): boolean {
-  const name = (body as RelayRejection | undefined)?.vaultError;
+  const name = (body as RelayRejection | undefined)?.contractError;
   return !!name && STALE_ROOT_ERRORS.includes(name);
 }

@@ -1204,6 +1204,71 @@ export const LaunchpadAbi = [
     "type": "function"
   },
   {
+    "inputs": [],
+    "name": "getParams",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "treasury",
+            "type": "address"
+          },
+          {
+            "internalType": "uint16",
+            "name": "tradeFeeBps",
+            "type": "uint16"
+          },
+          {
+            "internalType": "uint256",
+            "name": "virtualBnb",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "virtualToken",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "curveSupply",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "totalSupply",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "graduationWei",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint8",
+            "name": "decimals",
+            "type": "uint8"
+          },
+          {
+            "internalType": "address[4]",
+            "name": "agents",
+            "type": "address[4]"
+          },
+          {
+            "internalType": "address",
+            "name": "router",
+            "type": "address"
+          }
+        ],
+        "internalType": "struct Launchpad.Params",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
     "inputs": [
       {
         "internalType": "address",

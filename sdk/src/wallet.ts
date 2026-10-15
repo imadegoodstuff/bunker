@@ -1,15 +1,14 @@
 // High-level wallet: scans ciphertexts with ivk, tracks spendable notes,
-// builds shield / send / unshield transactions through a relayer.
-import { PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
+// builds shield / send / unshield transactions (as viem contract calls).
 import { BabyJub, type Point } from "./crypto.js";
 import { MAX_U64 } from "./field.js";
 import { encryptNote, encryptOutgoing, tryDecryptNote, NOTE_CIPHERTEXT_LEN_NO_MEMO } from "./encryption.js";
-import { extDataHash, NO_EXIT, type ExtData } from "./extdata.js";
+import { extDataHash, NO_EXIT, ZERO_ADDRESS, type EvmAddress, type ExtData } from "./extdata.js";
 import { fullViewingKey, groupHash, newAddress, spendingKeyFromSeed, type Address, type FullViewingKey, type SpendingKey } from "./keys.js";
 import { MerkleTree } from "./merkle.js";
 import { noteCommitment, nullifier, freshRandomness, type Note, type SpendableNote } from "./note.js";
 import { prove, type CircuitArtifacts, type CircuitName, type SpendInput, type TransactProof } from "./prover.js";
-import { transactIx, findRootIndex, type PoolState, type TreeState, type TransactAccounts, sharesForDeposit, sharesForWithdraw, amountForMint } from "./program.js";
+import { transactCall, sharesForDeposit, sharesForWithdraw, amountForMint, type PoolState, type TransactCall } from "./pool.js";
 
 export interface IndexedOutput {
   index: number; // leaf index
@@ -26,10 +25,10 @@ export interface BuiltTransact {
   proof: TransactProof;
   ext: ExtData;
   root: bigint;
-  rootIndex: number;
   publicAmount: bigint;
   aspRoot: bigint;
-  instruction: TransactionInstruction;
+  /** The contract call: `walletClient.writeContract(call)` or hand `call` to the relayer. */
+  call: TransactCall;
   outputs: Note[];
   /** Commitments of the input notes, now marked pending; hand back to `release` if the transaction is never submitted. */
   consumed: bigint[];
@@ -124,39 +123,33 @@ export class ShieldedWallet {
   }
 
   /**
-   * Build a transact proof + instruction.
-   *  - shield:   amount > 0, inputs empty, outputs = [note(to self or recipient), change 0]
+   * Build a transact proof + contract call. Amounts are in the pool's internal
+   * units (`PoolState.unit` wei each; gwei for BNB).
+   *  - shield:   amount > 0, inputs empty, outputs = [note(to self or recipient), change 0]; `value` = cost in wei
    *  - send:     amount = 0, outputs = [note(to recipient), change(to self)]
    *  - unshield: amount < 0 with recipient = public account
    */
   async buildTransact(opts: {
     asset: bigint;
-    mint: PublicKey;
-    tokenProgram?: PublicKey;
+    /** pool contract */
+    poolAddress: EvmAddress;
+    /** asset address, ZERO_ADDRESS for BNB */
+    token: EvmAddress;
     pool: PoolState;
     tree: MerkleTree;
-    /** On-chain tree state, used to locate the root in the ring (or pass rootIndex). */
-    chainTree?: TreeState;
-    rootIndex?: number;
     artifacts: Record<CircuitName, CircuitArtifacts>;
     kind: "shield" | "send" | "unshield";
-    amount: bigint; // asset base units
+    amount: bigint; // internal units
     to?: Address; // shielded recipient (send / shield-to-other)
-    recipient?: PublicKey; // public recipient (unshield)
-    relayer: PublicKey;
-    relayerDest: PublicKey;
-    relayerFee: bigint; // base units, taken from unshield amount
-    payer: PublicKey;
-    depositor?: PublicKey;
-    depositorSource?: PublicKey;
+    recipient?: EvmAddress; // public recipient (unshield)
+    relayer: EvmAddress;
+    relayerFee: bigint; // internal units, taken from unshield amount
     memo?: Uint8Array;
     aspRoot?: bigint;
+    aspProvider?: EvmAddress;
     aspPathFor?: (cm: bigint) => Promise<{ elements: bigint[]; indices: number[] } | undefined>;
-    exitTarget?: PublicKey;
+    exitTarget?: EvmAddress;
     exitData?: Uint8Array;
-    exitAccounts?: import("@solana/web3.js").AccountMeta[];
-    /** Vault program to target (defaults to PROGRAM_ID); used for migrations into a new vault. */
-    programId?: PublicKey;
   }): Promise<BuiltTransact> {
     const { asset, pool, tree, kind } = opts;
     const self = this.address();
@@ -213,14 +206,12 @@ export class ShieldedWallet {
     const outCipher = encryptOutgoing(this.bjj, this.spend.ovk, cm0, outputs[0].pkd, c0.esk);
 
     const relayerFee = kind === "shield" ? 0n : opts.relayerFee;
-    const recipient = kind === "unshield" ? opts.recipient! : opts.relayerDest;
-    // The second output of a shield or an unshield is a zero-value dummy to
-    // the sender; an unshield's first output is the sender's own change. Their
-    // ciphertexts and (for an unshield) the outgoing record carry nothing
-    // anyone will ever decrypt, so they are sent empty: the program requires
-    // two ciphertexts, not their lengths. The bytes saved are what let a
-    // relayed launchpad trade and its claim fit one v0 packet (SPEC §7). A
-    // private send keeps both ciphertexts: its second output is real change.
+    const recipient: EvmAddress = kind === "unshield" ? opts.recipient! : opts.relayer;
+    // The second output of a shield or an unshield is a zero-value dummy to the
+    // sender; an unshield's first output is the sender's own change. Their
+    // ciphertexts (and an unshield's outgoing record) carry nothing anyone will
+    // decrypt, so they are sent empty to save calldata. A private send keeps
+    // both ciphertexts: its second output is real change.
     const dummyEmpty = kind !== "send";
     const outEmpty = kind === "unshield";
     const ext: ExtData = {
@@ -229,7 +220,8 @@ export class ShieldedWallet {
       relayerFee,
       exitTarget: opts.exitTarget ?? NO_EXIT,
       exitData: opts.exitData ?? new Uint8Array(0),
-      ciphertexts: [c0.ciphertext, dummyEmpty ? new Uint8Array(0) : c1.ciphertext],
+      ciphertext0: c0.ciphertext,
+      ciphertext1: dummyEmpty ? new Uint8Array(0) : c1.ciphertext,
       outCiphertext: outEmpty ? new Uint8Array(0) : outCipher,
     };
     const extHash = extDataHash(ext);
@@ -256,24 +248,12 @@ export class ShieldedWallet {
       opts.artifacts
     );
 
-    const rootIndex = opts.rootIndex ?? findRootIndex(opts.chainTree!, root);
-    if (rootIndex < 0) throw new Error("local root is not in the on-chain ring; resync");
-    const accounts: TransactAccounts = {
-      payer: opts.payer,
-      mint: opts.mint,
-      tokenProgram: opts.tokenProgram,
-      depositor: opts.depositor ?? opts.payer,
-      depositorSource: opts.depositorSource ?? opts.depositor ?? opts.payer,
-      recipient,
-      relayerDest: opts.relayerDest,
-      exitTarget: opts.exitTarget,
-      exitAccounts: opts.exitAccounts,
-    };
-    const instruction = transactIx(accounts, proof, rootIndex, publicShares, opts.aspRoot ?? 0n, ext, opts.programId);
+    const value = kind === "shield" && opts.token === ZERO_ADDRESS ? amountForMint(pool, publicShares) * pool.unit : 0n;
+    const call = transactCall(opts.poolAddress, opts.token, proof, root, publicShares, opts.aspRoot ?? 0n, opts.aspProvider ?? ZERO_ADDRESS, ext, value);
 
     const consumed = inputs.map((n) => n.commitment);
     this.reserve(consumed);
-    return { proof, ext, root, rootIndex, publicAmount: publicShares, aspRoot: opts.aspRoot ?? 0n, instruction, outputs, consumed, consumedNullifiers: proof.nullifiers.slice(0, inputs.length) };
+    return { proof, ext, root, publicAmount: publicShares, aspRoot: opts.aspRoot ?? 0n, call, outputs, consumed, consumedNullifiers: proof.nullifiers.slice(0, inputs.length) };
   }
 
   /** Mark notes (by commitment) as pending so a second build cannot pick them. */
@@ -296,4 +276,4 @@ export class ShieldedWallet {
   }
 }
 
-export { NOTE_CIPHERTEXT_LEN_NO_MEMO, SystemProgram, amountForMint };
+export { NOTE_CIPHERTEXT_LEN_NO_MEMO, amountForMint };
