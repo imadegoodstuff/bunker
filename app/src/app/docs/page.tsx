@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { GITHUB, LAUNCHPAD_ADDRESS, POOL_ADDRESS, CONFIGURED, explorerAddr } from "@/lib/config";
+import { LAUNCHPAD_ADDRESS, POOL_ADDRESS, CONFIGURED, explorerAddr } from "@/lib/config";
 
 export const metadata: Metadata = { title: "Docs" };
 
@@ -38,7 +38,6 @@ export default function Docs() {
       <div className="slab p-5 mb-8 font-mono text-[11px] space-y-1.5">
         <div className="flex justify-between gap-4"><span className="text-mute">pool</span>{CONFIGURED ? <a className="text-steel hover:text-fg break-all" href={explorerAddr(POOL_ADDRESS)} target="_blank" rel="noreferrer">{POOL_ADDRESS}</a> : <span className="text-warn">not configured</span>}</div>
         <div className="flex justify-between gap-4"><span className="text-mute">launchpad</span>{CONFIGURED ? <a className="text-steel hover:text-fg break-all" href={explorerAddr(LAUNCHPAD_ADDRESS)} target="_blank" rel="noreferrer">{LAUNCHPAD_ADDRESS}</a> : <span className="text-warn">not configured</span>}</div>
-        <div className="flex justify-between gap-4"><span className="text-mute">source · spec · security</span><a className="text-steel hover:text-fg" href={GITHUB} target="_blank" rel="noreferrer">github ↗</a></div>
       </div>
       <div className="divide-y rule">
         {SECTIONS.map((s, i) => (
