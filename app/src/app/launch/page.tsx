@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { useAccount } from "wagmi";
+import { useWallet } from "@/lib/wallet";
 import { useLaunchpad } from "@/lib/launchpad";
 import { useBunker } from "@/lib/store";
 import { useSigner } from "@/lib/useSigner";
@@ -80,7 +80,7 @@ function LaunchCard({ l }: { l: LaunchRow }) {
 function CreateForm({ onDone }: { onDone: () => void }) {
   const lp = useLaunchpad();
   const signer = useSigner();
-  const { isConnected } = useAccount();
+  const isConnected = useWallet((w) => !!w.address);
   const [name, setName] = useState("");
   const [symbol, setSymbol] = useState("");
   const [desc, setDesc] = useState("");

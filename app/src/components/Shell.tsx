@@ -2,8 +2,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { useBlockNumber } from "wagmi";
 import { ConnectButton } from "./ConnectButton";
+import { publicClient } from "@/lib/chain";
 import { Wordmark } from "./Wordmark";
 import { indexer, relayer } from "@/lib/api";
 import { CHAIN_NAME, CONFIGURED, GITHUB } from "@/lib/config";
@@ -39,6 +39,18 @@ function useServices() {
   return s;
 }
 
+function useBlock() {
+  const [b, setB] = useState<bigint>();
+  useEffect(() => {
+    let alive = true;
+    const tick = () => publicClient.getBlockNumber().then((n) => alive && setB(n)).catch(() => undefined);
+    tick();
+    const id = setInterval(tick, 6000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+  return b;
+}
+
 function Dot({ h }: { h: Health }) {
   const c = h === "ok" ? "bg-ok" : h === "down" ? "bg-bad" : "bg-dim";
   return <span className={`inline-block w-1.5 h-1.5 ${c} ${h === "ok" ? "blink" : ""}`} />;
@@ -47,7 +59,7 @@ function Dot({ h }: { h: Health }) {
 export function Shell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
   const landing = path === "/";
-  const { data: block } = useBlockNumber({ watch: true, query: { refetchInterval: 6000 } });
+  const block = useBlock();
   const svc = useServices();
   const phase = useBunker((s) => s.phase);
   const [open, setOpen] = useState(false);

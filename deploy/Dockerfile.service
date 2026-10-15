@@ -6,6 +6,7 @@ COPY package.json package-lock.json* ./
 COPY sdk/package.json sdk/
 COPY app/package.json app/
 COPY circuits/package.json circuits/
+COPY contracts/package.json contracts/
 COPY relayer/package.json relayer/
 COPY indexer/package.json indexer/
 COPY agents/package.json agents/

@@ -40,6 +40,9 @@ async function main() {
     launchpad: await d.launchpad.getAddress(),
     router: d.router,
     emptyLeaf: d.emptyLeaf.toString(),
+    // constructor inputs, kept so scripts/verify.cjs can reproduce them after the guardian changes them
+    guardian: process.env.GUARDIAN || deployer.address,
+    nativeTvlCap: ethers.MaxUint256.toString(),
     params: Object.fromEntries(Object.entries(d.params).map(([k, v]) => [k, typeof v === "bigint" ? v.toString() : v])),
   };
   const dir = join(__dirname, "..", "deployments");

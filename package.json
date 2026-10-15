@@ -1,8 +1,8 @@
 {
-  "name": "scash",
+  "name": "bunker",
   "private": true,
   "version": "0.1.0",
-  "description": "Shielded notes on Solana. Sapling-style keys and addresses, Groth16 proofs verified on-chain, relayer-paid fees, turnstile-bounded pools.",
+  "description": "BUNKER: a Zcash-Sapling shielded pool and private launchpad on BNB Smart Chain. Groth16 proofs verified on-chain, relayer-paid fees, turnstile-bounded pools.",
   "license": "MIT",
   "workspaces": [
     "circuits",
@@ -22,7 +22,10 @@
     "indexer:dev": "npm -w indexer run dev",
     "agents:dev": "npm -w agents run dev",
     "app:dev": "npm -w app run dev",
-    "test": "npm run circuits:test && npm run sdk:test",
+    "contracts:build": "npm -w contracts run build",
+    "contracts:test": "npm -w contracts run test",
+    "e2e": "node scripts/e2e.mjs --spawn",
+    "test": "npm run contracts:test && npm run sdk:test && npm -w relayer test && npm -w indexer test && npm -w agents test",
     "audit": "node scripts/audit.mjs"
   },
   "overrides": {

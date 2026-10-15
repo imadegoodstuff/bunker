@@ -1,15 +1,15 @@
 "use client";
 import { useMemo, useState } from "react";
-import { useAccount, useSignMessage } from "wagmi";
 import { passphraseStrength, PASSPHRASE_MIN_BITS, PASSPHRASE_STRONG_BITS } from "@bunker/sdk";
 import { useBunker } from "@/lib/store";
+import { useWallet } from "@/lib/wallet";
 import { CONFIGURED } from "@/lib/config";
 
 type Mode = "sign" | "restore";
 
 export function Unlock() {
-  const { isConnected } = useAccount();
-  const { signMessageAsync } = useSignMessage();
+  const isConnected = useWallet((w) => !!w.address);
+  const signMessage = useWallet((w) => w.signMessage);
   const { phase, error, unlock, unlockFromSeed } = useBunker();
   const [mode, setMode] = useState<Mode>("sign");
   const [pass, setPass] = useState("");
@@ -63,7 +63,7 @@ export function Unlock() {
               </div>
             )}
             <div className="flex flex-wrap items-center gap-3">
-              <button className="btn btn-signal" disabled={!isConnected || busy || !canSign || !CONFIGURED} onClick={() => unlock((m) => signMessageAsync({ message: m }), sigOnly ? null : pass)}>
+              <button className="btn btn-signal" disabled={!isConnected || busy || !canSign || !CONFIGURED} onClick={() => unlock(signMessage, sigOnly ? null : pass)}>
                 {busy ? (phase === "deriving" ? "deriving key" : "syncing notes") : isConnected ? "sign & open" : "connect a wallet first"}
               </button>
               <button className="btn btn-ghost btn-sm" type="button" onClick={() => { setSigOnly(!sigOnly); setAck(false); }}>{sigOnly ? "use a passphrase instead" : "signature only (weaker)"}</button>

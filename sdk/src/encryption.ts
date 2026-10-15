@@ -12,10 +12,10 @@ const PERSON_OUT = new TextEncoder().encode("bunkerOutKey____");
 const NONCE = new Uint8Array(12);
 
 /**
- * Maximum memo length. Bounded by Solana's 1232-byte packet, not by the
- * protocol: a 2-in/2-out transact with a lookup table is ~1140 bytes before
- * the memo, which leaves exactly one 64-byte bucket. `sdk.test.ts` builds
- * the real v0 transaction and asserts this; raise it only if that test passes.
+ * Maximum memo length. On BNB Chain calldata is cheap enough that this is a
+ * privacy choice, not a transport limit: every note ciphertext is padded to
+ * the same 64-byte bucket so memo length leaks nothing. Raising it changes
+ * the ciphertext size every client must agree on; treat it as a protocol constant.
  */
 export const MEMO_MAX = 64;
 /** Memos are padded to a multiple of this so lengths leak only a bucket. */

@@ -4,7 +4,7 @@
 //   node ceremony.mjs init                                   coordinator: _0000.zkey per circuit + transcript
 //   node ceremony.mjs contribute --circuit C --in a.zkey --out b.zkey --name "handle"
 //   node ceremony.mjs verify     --circuit C --zkey b.zkey   full check of one zkey against r1cs + ptau + transcript
-//   node ceremony.mjs beacon     --circuit C --in a.zkey --out final.zkey --hash <solana blockhash hex> --slot N
+//   node ceremony.mjs beacon     --circuit C --in a.zkey --out final.zkey --hash <BSC block hash hex> --slot <block number>
 //   node ceremony.mjs check      [--fetch]                   transcript self-consistency (+ download and verify latest)
 //
 // The transcript records, per circuit: the r1cs blake2b (so a contributor can
@@ -124,7 +124,7 @@ async function beacon() {
   const t = loadTranscript();
   const circuit = need("circuit"), inFile = need("in"), outFile = need("out"), hashHex = need("hash");
   const c = t.circuits[circuit] ?? fail(`unknown circuit ${circuit}`);
-  if (!/^[0-9a-f]{64}$/i.test(hashHex)) fail("--hash must be a 32-byte hex string (a Solana blockhash, base58-decoded)");
+  if (!/^[0-9a-f]{64}$/i.test(hashHex)) fail("--hash must be a 32-byte hex string (a BNB Smart Chain block hash)");
   const inHash = await blake2b(inFile);
   const expected = c.contributions.length ? c.contributions.at(-1).zkeyBlake2b : c.initialZkeyBlake2b;
   if (inHash !== expected) fail("--in is not the latest zkey in the transcript");
@@ -171,7 +171,7 @@ async function check() {
     }
     if (c.beacon) {
       say(c.beacon.inputZkeyBlake2b === prev, `${name} beacon chains from the last contribution`);
-      say(!!c.beacon.slot && !!c.beacon.blockhashHex, `${name} beacon names its Solana slot and blockhash`);
+      say(!!c.beacon.slot && !!c.beacon.blockhashHex, `${name} beacon names its BSC block number and block hash`);
     }
     if (values.fetch) {
       const last = c.beacon ?? c.contributions.at(-1);

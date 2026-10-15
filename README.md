@@ -1,33 +1,32 @@
-# scash
+# BUNKER
 
-**Shielded notes on Solana.** Sapling-style keys and diversified addresses, Groth16 proofs verified
-on-chain, relayer-paid transactions, and a vault bounded by a per-asset turnstile (immutable once the ceremony keys are burned in).
+**A shielded pool and private launchpad on BNB Smart Chain.** Sapling-style keys and diversified
+addresses, Groth16 proofs verified on-chain, relayer-paid transactions, and a pool bounded by a
+per-asset turnstile. No owner, no upgrade, no pause on withdrawals. Live at [bunkeronbnb.com](https://bunkeronbnb.com).
 
-> Status: **mainnet.** The proving keys switch to the [public phase-2 ceremony](ceremony/README.md)'s
-> keys when it completes; the programs stay upgradeable until then. See [SECURITY.md](SECURITY.md) §16.
+> Status: **BSC mainnet.** The proving keys switch to the [public phase-2 ceremony](ceremony/README.md)'s
+> keys (new verifier contracts, new pool) when it completes. See [SECURITY.md](SECURITY.md) §11.
 
 ## What it does
 
 | | |
 |---|---|
-| **Shield** | Move SOL, an SPL token, or a Token-2022 token without fee / hook / permanent-delegate extensions into the pool. You receive a *note* holding pool shares. |
-| **Send** | Pay any `scash1…` address privately. Amount, sender, recipient: all hidden. Relayer pays the fee. |
-| **Unshield** | Withdraw to any public address from a relayer-signed transaction. Your public wallet never appears. |
-| **Swap** | Exit through a CPI adapter bound inside the proof (adapter program in review). |
-| **Launch** | A token launchpad whose primary market exists only inside the pool: buys and sells are unshields whose exit target is the curve, proceeds land at a one-use key derived from your seed and are shielded straight back. Each token gets its own shielded pool at launch and the mint has no authorities. The trading tax (0–5 %) is set per token by four model-driven agents voting every minute, with no proposer, guardian or pause anywhere; the tax goes to the agents' own treasury, which pays their gas and buys back the scash token to burn or airdrop it. Until graduation at 20 SOL there is no public route in; at graduation the curve's SOL and the reserved 20.7 % of supply become a Raydium pool with every LP token burned, and the agents stop setting that token's fee. Every launch carries an image. [SPEC §16](SPEC.md#16-the-launchpad). |
-| **Yield** | Notes hold shares; `donate()` raises a pool's share rate. SCASH creator fees are donated to the **SCASH pool only**: SOL or USDC notes do not earn from it. The share rate measures tokens per share, not fiat value. |
+| **Shield** | Move BNB or any ERC-20 into the pool. You receive a *note* holding pool shares. The first shield of a token opens its pool; no listing, no permission. |
+| **Send** | Pay any `bunker1…` address privately. Amount, sender, recipient: all hidden. The relayer pays gas and is repaid from the note. |
+| **Unshield** | Withdraw to any address from a relayer-signed transaction. Your public wallet never appears. |
+| **Launch** | A token launchpad whose primary market exists only inside the pool: buys and sells are unshields whose exit target is the curve, proceeds land at a one-use key derived from your seed and are shielded straight back. Each token gets its own shielded pool at launch and the token has no owner. The trading fee (0–5 %) is set per token by four model-driven agents voting every minute, with no proposer, guardian or pause anywhere; the fee goes to the agents' own treasury, which pays their gas and buys back the BUNKER token to burn or airdrop it. Until graduation there is no public route in; at graduation the curve's BNB and the reserved 20.7 % of supply become a PancakeSwap V2 pair with every LP token burned. [SPEC §13](SPEC.md#13-the-launchpad). |
+| **Yield** | Notes hold shares; `donate()` raises a pool's share rate for every holder of that asset with no distribution and no information about who holds what. |
 
 ## Why it is different
 
 - **Diversified addresses** (`pk_d = [ivk]·GroupHash(d)` on Baby Jubjub): unlimited unlinkable addresses per viewing key.
-- **Wallet-derived keys with a second factor**: the seed is `scrypt(sign(SPENDING_KEY_MESSAGE) ‖ passphrase)`. A phished signature alone does not yield the spending key. The seed can be exported as a `scashseed1…` backup and restored without the wallet.
-- **Client-side trial decryption**: the indexer serves ciphertexts; only your browser knows which are yours.
+- **Wallet-derived keys with a second factor**: the seed is `scrypt(sign(SPENDING_KEY_MESSAGE) ‖ passphrase)`. A phished signature alone does not yield the spending key. The seed can be exported as a `bunkerseed1…` backup and restored without the wallet.
+- **Client-side proving and trial decryption**: the indexer serves ciphertexts; only your browser knows which are yours, and proofs are made there too.
 - **Nullifier = Poseidon(nk, ρ, position)**: bound to the leaf, immune to duplicate-commitment attacks.
-- **One tree for all assets**, depth 26, 128-root ring. Note that the asset id is a public input, so the anonymity set of a transaction is the unspent notes *of that asset*, not every leaf; the app reports it per asset.
-- **Turnstile**: `total_out ≤ total_in` per asset is enforced on-chain, so even a circuit soundness bug cannot drain other assets.
-- **No upgrade authority.** The guardian can only pause *new* shields and *lower* the TVL cap.
-- **Compliance opt-in**: association-set roots (Privacy Pools style) as a public input, scoped viewing keys, payment receipts.
-- **VK hygiene**: the exporter refuses a verifying key whose δ equals γ.
+- **One tree for all assets**, depth 26, 128-root ring. The asset id is a public input, so the anonymity set of a transaction is the unspent notes *of that asset*; the app reports it per asset.
+- **Turnstile**: `totalOut ≤ totalIn` per asset is enforced on-chain, so even a circuit soundness bug cannot drain other assets.
+- **No admin over funds.** The guardian can only pause *new* shields and *lower* a TVL cap, and can burn itself.
+- **Compliance opt-in**: association-set roots (Privacy Pools style) as a public input.
 
 Full protocol: [SPEC.md](SPEC.md).
 
@@ -35,67 +34,58 @@ Full protocol: [SPEC.md](SPEC.md).
 
 ```
 circuits/     circom 2 circuits (transact2x2: 33,515 constraints · transact4x2: 64,860), build/setup/ceremony scripts
-crates/       scash-core: shared instruction & state layouts
-programs/     scash_vault (pool, verifier, tree, turnstile, exits) · scash_harvester (SCASH fee router) · scash_migrator (old vault → new vault without a public hop) · scash_launch (shielded-only bonding-curve launchpad behind the vault's exit target)
-sdk/          TypeScript: keys, addresses, notes, encryption, Merkle, proving, tx building, wallet
-relayer/      Fee-paying relayer with policy checks, simulation, randomized delay queue
-indexer/      Event scanner → SQLite, HTTP API for commitments / nullifiers / roots / stats / launches
-agents/       Four AI agents (one key, one model provider each) that vote the launchpad fee policy; public decision log
-app/          Next.js shielded wallet with in-browser proving
-deploy/       Dockerfiles and Fly.io manifests
-ceremony/     Phase-2 ceremony: transcript, attestations, tooling (circuits/scripts/ceremony.mjs)
+contracts/    Hardhat: ShieldedPool.sol (tree, verifier, pools, turnstile, exits) · Launchpad.sol + LaunchToken.sol · generated verifiers · deploy/verify scripts
+sdk/          TypeScript: keys, addresses, notes, encryption, Merkle, proving, viem call builders, wallet
+relayer/      Fee-paying relayer with policy checks, simulation, PancakeSwap fee pricing, randomized delay queue
+indexer/      eth_getLogs scanner → SQLite, HTTP API for commitments / nullifiers / roots / stats / launches / metadata
+agents/       Four AI agents (one key, one model provider each) that vote the launchpad fee policy, keep the curves (harvest, migrate) and run the treasury
+app/          Next.js wallet with in-browser proving (bunkeronbnb.com)
+deploy/       Dockerfiles, Fly.io manifests, fly-deploy.sh
+ceremony/     Phase-2 ceremony: transcript, attestations, tooling
 audit/        Audit package: scope, threat model, invariants ↔ tests, test matrix, known issues
+scripts/      e2e.mjs (full protocol on a Hardhat node), audit and doc-drift checks
 ```
 
-## Build
+## Build and test
 
-Requirements: Node ≥ 22, Rust stable, Solana CLI (for deployment). No native circom needed — the compiler runs as wasm.
+Requirements: Node ≥ 22. No native circom needed; the compiler runs as wasm.
 
 ```bash
 npm ci
-npm run -w circuits build         # r1cs + wasm witness generators
-node circuits/scripts/setup-dev.mjs   # DEV ONLY zkeys (single contributor)
-node circuits/scripts/export-vk.mjs   # Rust verifying keys → programs/scash_vault/src/vk
-npm run -w sdk test
-node circuits/scripts/prove-fixture.mjs      # real proofs → programs/scash_vault/tests/fixtures
-cargo test -p scash-vault                    # verifies those proofs with the on-chain verifier code
-cargo build-sbf --manifest-path programs/scash_vault/Cargo.toml
+npm run -w circuits build              # r1cs + wasm witness generators
+node circuits/scripts/setup-dev.mjs    # DEV ONLY zkeys (single contributor)
+npm run -w contracts verifiers         # Solidity verifiers from the zkeys
+npm run -w contracts build             # compile + export ABIs into sdk/src/abi
+npm run -w sdk build && npm test       # contracts, sdk, relayer, indexer, agents
+npm run e2e                            # spawns a Hardhat node, deploys, runs the whole protocol
 ```
+
+Copy `circuits/build/<name>/<name>_js/<name>.wasm` and the `.zkey` into `app/public/circuits/` as
+`<name>.wasm` / `<name>.zkey` before building the app.
 
 ## Run locally
 
 ```bash
-# indexer
-RPC_URL=https://api.mainnet-beta.solana.com npm run -w indexer dev
-# relayer (fund the key with SOL on the cluster RPC_URL points at)
-RELAYER_KEYPAIR_PATH=./keypairs/relayer.json npm run -w relayer dev
-# app
-NEXT_PUBLIC_INDEXER_URL=http://localhost:8788 NEXT_PUBLIC_RELAYER_URL=http://localhost:8787 npm run -w app dev
+npm run -w contracts node                       # Hardhat node on :8545
+TREASURY=0x… AGENTS=0x…,0x…,0x…,0x… npm run -w contracts deploy:local   # writes contracts/deployments/31337.json
+CHAIN_ID=31337 RPC_URL=http://127.0.0.1:8545 npm run -w indexer dev
+CHAIN_ID=31337 RPC_URL=http://127.0.0.1:8545 RELAYER_KEY=0x… npm run -w relayer dev
+NEXT_PUBLIC_CHAIN_ID=31337 NEXT_PUBLIC_POOL_ADDRESS=0x… NEXT_PUBLIC_LAUNCHPAD_ADDRESS=0x… npm run -w app dev
 ```
 
-Copy `circuits/build/<name>/<name>_js/<name>.wasm` and the `.zkey` into `app/public/circuits/` as
-`<name>.wasm` / `<name>.zkey`.
+Services read `POOL_ADDRESS`/`LAUNCHPAD_ADDRESS` from the environment or from `contracts/deployments/<chainId>.json`.
 
 ## Deploy
 
-Programs: `.github/workflows/ci.yml` builds SBF artifacts on every push. The manual `deploy-mainnet` job
-(Actions → ci → Run workflow → `deploy_mainnet`) deploys them to mainnet-beta from the `mainnet` environment’s
-secrets (`MAINNET_DEPLOYER_KEYPAIR`, `MAINNET_RPC_URL`, `*_PROGRAM_KEYPAIR`), verifies the on-chain bytecode
-against the artifact it just built, and runs `scripts/init.mjs` (idempotent) using the variables
-`MAINNET_RELAYER_PUBKEY`, `MAINNET_TREASURY_PUBKEY`, `MAINNET_AGENT_PUBKEYS` (four comma-separated keys), `MAINNET_LOOKUP_TABLE`, `MAINNET_TVL_CAP_SOL`.
-Mainnet-beta is the only cluster; every end-to-end test runs on `solana-test-validator` in CI.
+Contracts: `DEPLOYER_KEY=0x… TREASURY=0x… AGENTS=0x…,0x…,0x…,0x… npm run -w contracts deploy:bsc` writes
+`contracts/deployments/56.json`; `BSCSCAN_API_KEY=… npm run -w contracts verify:bsc` verifies the sources.
+The manual `deploy-bsc` CI job does the same from the `bsc` environment's secrets.
 
-Services: `fly deploy -c deploy/fly.indexer.toml`, `fly deploy -c deploy/fly.relayer.toml`,
-`fly deploy -c deploy/fly.agents.toml`, `fly deploy -c deploy/fly.app.toml` from the repo root, each with `--build-arg GIT_SHA=$(git rev-parse HEAD)` so the app footer, relayer `/info` and indexer `/health` report the commit they were built from. Set `RELAYER_KEYPAIR`, `RPC_URL` (keyed endpoint) and, after `init.mjs`, `LOOKUP_TABLE` as Fly secrets on the relayer; `RPC_URL` on the indexer; on the agents, `AGENT_0..3_KEYPAIR` (the four keys passed to `init.mjs`) plus either the Orbio server app (`ORBIO_CLIENT_ID`, `ORBIO_CLIENT_SECRET`, `ORBIO_CONNECT_SECRET`; the owner then opens `/auth/orbio/start?key=…` once and the four agents run on four vendors' models through that one connection) or `AGENT_0..3_MODEL` (`provider:model`) with the providers' own API keys; pass the keyed endpoint to the app build as `--build-arg NEXT_PUBLIC_RPC_URL=…`.
-
-## Program IDs (mainnet-beta)
-
-| program | id |
-|---|---|
-| scash_vault | `89TrDDtwYTkrvxGmfYnSz6EbA1muGStuPBFUt3Dvd8WR` |
-| scash_harvester | `Cmvzy6Acq5QsnzpWGYEbUCwgzMK6AHFRJkAL2LgMURqK` |
-| scash_migrator | `42CGrJH6QGjHjH1CK9yQLF44UhrYjN9cQwGqVvrSYz4u` |
-| scash_launch | `861VJkPL2yUYL1DTCToeziREP4XyraihkqbTM1irFZ3k` |
+Services: `deploy/fly-deploy.sh all` deploys `bunker-indexer`, `bunker-relayer`, `bunker-agents` and
+`bunker-app` with the addresses from `56.json`. Secrets are set with `flyctl secrets set`: `RELAYER_KEY`
+and a keyed `RPC_URL` on the relayer; `RPC_URL`/`RPC_URLS` on the indexer; `AGENT_0..3_KEY` plus either the
+Orbio server app (`ORBIO_CLIENT_ID`, `ORBIO_CLIENT_SECRET`, `ORBIO_CONNECT_SECRET`) or `AGENT_0..3_MODEL`
+with the providers' own API keys on the agents.
 
 ## License
 

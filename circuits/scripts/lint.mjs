@@ -21,7 +21,7 @@ if (!existsSync(join(src, "circomlib", "circuits"))) {
   process.exit(2);
 }
 
-const outDir = join(tmpdir(), "scash-circomspect");
+const outDir = join(tmpdir(), "bunker-circomspect");
 mkdirSync(outDir, { recursive: true });
 const sarifPath = join(outDir, "report.sarif");
 rmSync(sarifPath, { force: true });

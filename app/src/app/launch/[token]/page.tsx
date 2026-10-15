@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { useAccount } from "wagmi";
+import { useWallet } from "@/lib/wallet";
 import { getAddress, isAddress } from "viem";
 import { NATIVE_TOKEN, rolled, quotePrivateBuy, quotePrivateSell, pancakeSwapUrl, spotPrice, NATIVE_UNIT, worstFeeBps } from "@bunker/sdk";
 import { indexer, type FeeEventRow, type LaunchRow, type TradeRow } from "@/lib/api";
@@ -24,7 +24,7 @@ export default function TokenPage() {
   const lp = useLaunchpad();
   const bunker = useBunker();
   const signer = useSigner();
-  const { address: owner } = useAccount();
+  const owner = useWallet((w) => w.address);
   const [row, setRow] = useState<(LaunchRow & { trades: TradeRow[]; feeEvents: FeeEventRow[] }) | null>();
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [amt, setAmt] = useState("0.05");

@@ -1,7 +1,6 @@
 **/node_modules
 **/dist
 **/.next
-target
 keypairs
 .git
 .github
@@ -9,6 +8,6 @@ keypairs
 circuits/ptau
 circuits/build/**/*.sym
 circuits/build/**/*.r1cs
-programs
-crates
+contracts/artifacts
+contracts/cache
 docs

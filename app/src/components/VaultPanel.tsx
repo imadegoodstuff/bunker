@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { useAccount } from "wagmi";
+import { useWallet } from "@/lib/wallet";
 import { isAddress } from "viem";
 import { NATIVE_TOKEN, decodeAddress, MEMO_MAX } from "@bunker/sdk";
 import { shieldedAmount, useBunker } from "@/lib/store";
@@ -12,7 +12,7 @@ type Mode = "shield" | "send" | "unshield";
 
 export function VaultPanel() {
   const s = useBunker();
-  const { address: owner } = useAccount();
+  const owner = useWallet((w) => w.address);
   const signer = useSigner();
   const assets = s.assets();
   const [token, setToken] = useState<string>(NATIVE_TOKEN);

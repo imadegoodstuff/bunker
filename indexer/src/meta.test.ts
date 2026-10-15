@@ -46,7 +46,7 @@ test("meta: rejections", () => {
 });
 
 test("meta: the store writes content-addressed files once and only serves well-formed names", () => {
-  const dir = mkdtempSync(join(tmpdir(), "scash-meta-"));
+  const dir = mkdtempSync(join(tmpdir(), "bunker-meta-"));
   try {
     const store = new MetaStore(dir);
     const m = buildMeta({ name: "n", symbol: "S", image: dataUrl(PNG) }, "https://idx.example");

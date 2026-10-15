@@ -11,7 +11,8 @@
     "node": "hardhat node",
     "deploy:local": "hardhat run scripts/deploy.cjs --network localhost",
     "deploy:bsc": "hardhat run scripts/deploy.cjs --network bsc",
-    "deploy:bscTestnet": "hardhat run scripts/deploy.cjs --network bscTestnet"
+    "deploy:bscTestnet": "hardhat run scripts/deploy.cjs --network bscTestnet",
+    "verify:bsc": "hardhat run scripts/verify.cjs --network bsc"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
