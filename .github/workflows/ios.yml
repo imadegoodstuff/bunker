@@ -1,0 +1,105 @@
+name: ios
+
+# Builds the BUNKER iOS app (mobile/ios) on a macOS runner.
+#   always:            an unsigned device build, proving the project compiles
+#   with Apple secrets: a signed archive uploaded straight to App Store Connect → TestFlight
+#
+# Secrets for TestFlight (Settings → Secrets → Actions):
+#   APPLE_TEAM_ID           10-character team id
+#   ASC_KEY_ID              App Store Connect API key id
+#   ASC_ISSUER_ID           App Store Connect API issuer id
+#   ASC_KEY_P8_BASE64       the AuthKey_<KEY_ID>.p8 file, base64
+#   APPLE_CERT_P12_BASE64   (optional) Apple Distribution certificate + key as .p12, base64
+#   APPLE_CERT_PASSWORD     (optional) its password
+# Without the .p12, Xcode creates a distribution certificate through the API key on first run
+# (the key needs the Admin or App Manager role). The app record must exist in App Store Connect
+# with bundle id com.bunkeronbnb.wallet.
+
+on:
+  push:
+    branches: [main, launchpad]
+    paths: ["mobile/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+
+jobs:
+  ios:
+    name: ios
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: select xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app || sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | tail -1)"
+
+      - name: capacitor sync (pod install)
+        working-directory: mobile
+        run: npm ci && npx cap sync ios
+
+      - name: compile (unsigned)
+        working-directory: mobile/ios/App
+        run: |
+          set -o pipefail
+          xcodebuild -workspace App.xcworkspace -scheme App -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            -derivedDataPath "$RUNNER_TEMP/dd" build | xcpretty || xcodebuild -workspace App.xcworkspace -scheme App -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -derivedDataPath "$RUNNER_TEMP/dd" build
+
+      - name: are Apple secrets configured?
+        id: gate
+        env:
+          HAVE_APPLE: ${{ secrets.APPLE_TEAM_ID != '' && secrets.ASC_KEY_ID != '' && secrets.ASC_ISSUER_ID != '' && secrets.ASC_KEY_P8_BASE64 != '' }}
+        run: |
+          echo "apple=$HAVE_APPLE" >> "$GITHUB_OUTPUT"
+          [ "$HAVE_APPLE" = "true" ] || echo "::notice::No Apple secrets: compiled only. Add APPLE_TEAM_ID / ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_P8_BASE64 to upload to TestFlight."
+
+      - name: signing material
+        id: sign
+        if: steps.gate.outputs.apple == 'true'
+        env:
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          mkdir -p ~/private_keys
+          echo "$ASC_KEY_P8_BASE64" | base64 -d > ~/private_keys/AuthKey_${ASC_KEY_ID}.p8
+          echo "key=$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8" >> "$GITHUB_OUTPUT"
+          if [ -n "$APPLE_CERT_P12_BASE64" ]; then
+            KC="$RUNNER_TEMP/bunker.keychain-db"; PW="$(uuidgen)"
+            security create-keychain -p "$PW" "$KC"
+            security set-keychain-settings -lut 21600 "$KC"
+            security unlock-keychain -p "$PW" "$KC"
+            echo "$APPLE_CERT_P12_BASE64" | base64 -d > "$RUNNER_TEMP/dist.p12"
+            security import "$RUNNER_TEMP/dist.p12" -P "$APPLE_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KC"
+            security set-key-partition-list -S apple-tool:,apple: -k "$PW" "$KC"
+            security list-keychain -d user -s "$KC" login.keychain-db
+            rm -f "$RUNNER_TEMP/dist.p12"
+          fi
+
+      - name: archive and upload to TestFlight
+        if: steps.gate.outputs.apple == 'true'
+        working-directory: mobile/ios/App
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          BUILD=$(( GITHUB_RUN_NUMBER + 100 ))
+          sed -i '' "s/APPLE_TEAM_ID_PLACEHOLDER/$APPLE_TEAM_ID/" ../ExportOptions.plist
+          xcodebuild -workspace App.xcworkspace -scheme App -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CURRENT_PROJECT_VERSION="$BUILD" \
+            -allowProvisioningUpdates -allowProvisioningDeviceRegistration \
+            -authenticationKeyPath "${{ steps.sign.outputs.key }}" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            archive
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/App.xcarchive" -exportOptionsPlist ../ExportOptions.plist \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "${{ steps.sign.outputs.key }}" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          echo "Uploaded build $BUILD to App Store Connect; it appears in TestFlight after processing."
+
+      - name: cleanup
+        if: always()
+        run: rm -rf ~/private_keys "$RUNNER_TEMP/bunker.keychain-db" || true

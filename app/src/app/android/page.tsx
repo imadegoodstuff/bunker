@@ -39,7 +39,7 @@ export default function AndroidPage() {
             <a className="btn btn-ghost btn-sm" href="/download/bunker-android.apk.sha256">sha256</a>
           </div>
           <p className="font-mono text-[11px] text-dim mb-10">
-            Direct download. Verify with <code>sha256sum bunker-android.apk</code> against the checksum file. iOS is next.
+            Direct download. Verify with <code>sha256sum bunker-android.apk</code> against the checksum file. iOS is in TestFlight preparation: same vault, same on-device proving.
           </p>
 
           <div className="divide-y rule border-t rule">

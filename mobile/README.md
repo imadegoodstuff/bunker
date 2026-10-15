@@ -47,10 +47,45 @@ cd android && ./gradlew assembleDebug      # app/build/outputs/apk/debug/app-deb
 `npx cap open android` opens the project in Android Studio. To point the shell
 at a staging site: `BUNKER_APP_URL=https://bunker-app.fly.dev/app npx cap sync android`.
 
+## iOS (TestFlight)
+
+The same shell, same device vault, same on-device proving. `mobile/ios` is the
+Capacitor iOS project with our icon, splash, portrait-only Info.plist and an
+`AppDelegate` that excludes the WebView's data from iCloud backup (the iOS
+counterpart of Android's `allowBackup=false`).
+
+`.github/workflows/ios.yml` runs on every push to `mobile/`:
+
+- always: compiles an unsigned device build on a macOS runner, so the project
+  is known to build;
+- with Apple secrets: archives, signs and uploads straight to App Store
+  Connect, where the build shows up in TestFlight after processing.
+
+To turn on TestFlight uploads you need an Apple Developer Program membership
+($99/yr) and, in App Store Connect, an app record with bundle id
+`com.bunkeronbnb.wallet` and an API key (Users and Access → Integrations →
+App Store Connect API, role App Manager). Then add these repository secrets:
+
+| secret | value |
+|---|---|
+| `APPLE_TEAM_ID` | the 10-character team id |
+| `ASC_KEY_ID` | API key id |
+| `ASC_ISSUER_ID` | API issuer id |
+| `ASC_KEY_P8_BASE64` | `base64 -i AuthKey_<KEY_ID>.p8` |
+| `APPLE_CERT_P12_BASE64` | optional: Apple Distribution cert + key as .p12, base64 |
+| `APPLE_CERT_PASSWORD` | optional: its password |
+
+Without the `.p12`, Xcode creates a distribution certificate through the API
+key on the first run. Builds are numbered from the workflow run number, so each
+push is a new TestFlight build. Add testers in App Store Connect → TestFlight.
+
+Local: `npx cap open ios` on a Mac with Xcode; or `cd ios/App && pod install && xcodebuild -workspace App.xcworkspace -scheme App build`.
+
 ## Layout
 
 ```
 capacitor.config.ts   app id com.bunkeronbnb.wallet, server.url, allowed hosts
 www/                  offline placeholder shown only if the site is unreachable
 android/              generated Capacitor project; icons, splash and manifest are ours
+ios/                  generated Capacitor project; icon, splash, Info.plist, AppDelegate, ExportOptions are ours
 ```

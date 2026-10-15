@@ -5,14 +5,16 @@
   "description": "Android shell for the BUNKER wallet: a Capacitor WebView over bunkeronbnb.com with the vault, proving and keys all on the device.",
   "license": "MIT",
   "scripts": {
-    "sync": "cap sync android",
+    "sync": "cap sync",
     "open": "cap open android",
+    "open:ios": "cap open ios",
     "apk:debug": "cd android && ./gradlew assembleDebug",
     "apk:release": "cd android && ./gradlew assembleRelease"
   },
   "dependencies": {
     "@capacitor/android": "^7.4.0",
-    "@capacitor/core": "^7.4.0"
+    "@capacitor/core": "^7.4.0",
+    "@capacitor/ios": "^7.6.9"
   },
   "devDependencies": {
     "@capacitor/cli": "^7.4.0",
