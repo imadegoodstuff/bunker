@@ -15,7 +15,7 @@ export default function Landing() {
   return (
     <div className="min-h-screen grain">
       <header className="h-14 flex items-center justify-between px-5 md:px-10 border-b rule">
-        <Wordmark />
+        <Wordmark className="h-7" />
         <nav className="flex items-center gap-1 font-mono text-[11px] uppercase tracking-[0.18em]">
           <Link href="/launch" className="btn btn-ghost btn-sm hidden sm:inline-flex">Launchpad</Link>
           <Link href="/agents" className="btn btn-ghost btn-sm hidden sm:inline-flex">Agents</Link>
@@ -27,11 +27,20 @@ export default function Landing() {
       {/* hero */}
       <section className="relative overflow-hidden border-b rule grid-bg">
         <div className="scanline" />
-        <div className="max-w-7xl mx-auto px-5 md:px-10 pt-20 md:pt-28 pb-16 md:pb-24">
-          <div className="label-signal mb-6 rise">Shielded pool · private launchpad · BNB Smart Chain</div>
-          <h1 className="display text-[18vw] md:text-[11rem] leading-[0.85] font-bold rise" style={{ animationDelay: ".05s" }}>
-            BUN<span className="text-signal">K</span>ER
-          </h1>
+        <div className="max-w-7xl mx-auto px-5 md:px-10 pt-16 md:pt-24 pb-16 md:pb-24">
+          <div className="grid lg:grid-cols-[1fr_auto] gap-10 lg:gap-16 items-center">
+            <div>
+              <div className="label-signal mb-6 rise">Shielded pool · private launchpad · BNB Smart Chain</div>
+              <h1 className="display text-[18vw] md:text-[11rem] leading-[0.85] font-bold rise" style={{ animationDelay: ".05s" }}>
+                BUN<span className="text-signal">K</span>ER
+              </h1>
+            </div>
+            <div className="relative justify-self-center lg:justify-self-end rise" style={{ animationDelay: ".1s" }}>
+              <div className="absolute inset-0 rounded-full blur-3xl opacity-40" style={{ background: "radial-gradient(closest-side, var(--color-signal), transparent 70%)" }} />
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/brand/mark-512.png" alt="BUNKER vault mark" className="relative w-[220px] md:w-[300px] lg:w-[340px] h-auto select-none" draggable={false} />
+            </div>
+          </div>
           <div className="grid md:grid-cols-[1fr_auto] gap-8 items-end mt-10">
             <p className="text-lg md:text-2xl text-mute max-w-2xl leading-snug rise" style={{ animationDelay: ".15s" }}>
               Shield once. Then send, trade and launch tokens with no trace back to your wallet. Zcash-Sapling cryptography, proofs made in your browser, contracts you can read.

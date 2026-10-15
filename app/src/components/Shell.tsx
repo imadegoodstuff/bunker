@@ -72,7 +72,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
       {/* rail */}
       <aside className={`fixed inset-y-0 left-0 z-40 w-[232px] flex flex-col border-r rule bg-bg transition-transform lg:static lg:translate-x-0 ${open ? "translate-x-0" : "-translate-x-full"}`}>
         <Link href="/" className="h-14 flex items-center px-5 border-b rule">
-          <Wordmark className="h-5" />
+          <Wordmark className="h-7" />
         </Link>
         <nav className="py-3">
           {NAV.map((n) => (

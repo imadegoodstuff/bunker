@@ -57,7 +57,7 @@ export function Unlock() {
               <div className="border border-warn/40 bg-warn/5 p-4 space-y-3">
                 <p className="text-sm text-fg">Signature-only mode: whoever can get your wallet to sign the BUNKER message owns this vault. Phishing pages ask for exactly that. Use it only for amounts you would hand to a stranger.</p>
                 <label className="flex items-start gap-3 text-sm text-mute cursor-pointer">
-                  <input type="checkbox" className="mt-1 accent-[#b6ff2e]" checked={ack} onChange={(e) => setAck(e.target.checked)} />
+                  <input type="checkbox" className="mt-1 accent-[#ffb02e]" checked={ack} onChange={(e) => setAck(e.target.checked)} />
                   I understand a signature is not a secret.
                 </label>
               </div>

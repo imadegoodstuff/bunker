@@ -5,18 +5,18 @@
   one acid signal colour, square corners, 1px rules, mono labels.
 */
 @theme {
-  --color-bg: #0e0f0e;
+  --color-bg: #0b0b0c;
   --color-bg-2: #131412;
   --color-fg: #e8e6df;
   --color-mute: #9b9a92;
   --color-dim: #5f5f59;
   --color-line: rgb(232 230 223 / 0.09);
   --color-line-strong: rgb(232 230 223 / 0.18);
-  --color-slab: #161715;
-  --color-slab-2: #1c1d1a;
-  --color-signal: #b6ff2e;
-  --color-signal-dim: rgb(182 255 46 / 0.14);
-  --color-steel: #7fa6c9;
+  --color-slab: #151516;
+  --color-slab-2: #1b1b1d;
+  --color-signal: #ffb02e;
+  --color-signal-dim: rgb(255 176 46 / 0.14);
+  --color-steel: #3ec9e6;
   --color-ok: #7be38a;
   --color-warn: #f2c14e;
   --color-bad: #ff6a5c;
@@ -83,7 +83,7 @@ body { font-family: var(--font-sans); }
 /* scan line sweeping down a hero */
 @keyframes scan { 0% { transform: translateY(-10%); opacity: 0 } 10% { opacity: 1 } 90% { opacity: 1 } 100% { transform: translateY(1100%); opacity: 0 } }
 .scanline { position: absolute; left: 0; right: 0; height: 9%; pointer-events: none;
-  background: linear-gradient(to bottom, transparent, rgb(182 255 46 / 0.10), transparent);
+  background: linear-gradient(to bottom, transparent, rgb(255 176 46 / 0.10), transparent);
   animation: scan 7s linear infinite; }
 
 /* blinking status dot */

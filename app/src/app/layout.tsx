@@ -18,7 +18,7 @@ export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   openGraph: { title: TITLE, description: DESC, type: "website", url: SITE_URL, siteName: "BUNKER" },
   twitter: { card: "summary_large_image", title: TITLE, description: DESC },
-  icons: { icon: "/icon.svg" },
+  icons: { icon: "/icon.png", apple: "/apple-icon.png" },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
