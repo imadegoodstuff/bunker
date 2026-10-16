@@ -13,6 +13,8 @@ export interface NetworkConfig {
   launchpad: EvmAddress;
   /** the private-swap exit hook (PancakeSwap V2), or null */
   swapExit: EvmAddress | null;
+  /** the pool's governance (a Timelock; compliance hooks and role changes queue here, 24 h ahead), if known */
+  timelock?: EvmAddress;
   /** WBNB, what a swap path uses for BNB */
   wbnb: EvmAddress;
   /** block the contracts were deployed at; the indexer scans from here */
@@ -33,11 +35,12 @@ export const bsc: NetworkConfig = {
   chainId: 56,
   rpcUrl: "https://bsc-dataseed.bnbchain.org",
   protocolVersion: 2,
-  pool: "0x0c5d2bB3867ADfea4506801df95Fd9895bda105a",
-  launchpad: "0x3aBa205aEE7D6673F3EC640f9f79bDC48C8E093D",
-  swapExit: "0x2E17431d3D7df13168522F03D71268bA73bDF6f8",
+  pool: "0x19D7Ae0287507A9A16E3F5c726E1d2dA62787A39",
+  launchpad: "0xC0016aFC627FF96041a64347485F58B4ed1DD94E",
+  swapExit: "0x7Ebe074b0378860C0f088ace26158Af737f05126",
+  timelock: "0x70c3898970E3D440cD94B16DDD72Dca46120C954",
   wbnb: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
-  startBlock: 127837374,
+  startBlock: 127892057,
   indexerUrl: "https://bunker-indexer.fly.dev",
   relayerUrl: "https://bunker-relayer.fly.dev",
   relayerUrls: ["https://bunker-relayer.fly.dev"],

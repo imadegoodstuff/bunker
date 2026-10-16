@@ -9,6 +9,8 @@ import type { Groth16Proof, TransactProof } from "./prover.js";
 export { ShieldedPoolAbi };
 
 export const PROTOCOL_VERSION = 2;
+/** `ShieldedPool.REVISION`: hidden in-pool asset, chain/pool-bound intents with expiry, batches, governance seam. */
+export const PROTOCOL_REVISION = 1;
 /** Must equal `ShieldedPool.VIRTUAL_OFFSET`: V virtual shares backed by V units from creation (SPEC §9). */
 export const VIRTUAL_OFFSET = 1_000_000n;
 /** `ShieldedPool.NATIVE_UNIT`: BNB is accounted in gwei inside the pool. */
@@ -71,23 +73,35 @@ export function proofArg(p: Groth16Proof) {
   };
 }
 
+/** The contract's `TransactArgs` struct. */
+export interface TransactArgs {
+  proof: ReturnType<typeof proofArg>;
+  /** address(0) for a private send: the asset stays inside the proof */
+  token: EvmAddress;
+  root: bigint;
+  publicAmount: bigint;
+  aspRoot: bigint;
+  aspProvider: EvmAddress;
+  nullifiers: readonly bigint[];
+  outCommitments: readonly [bigint, bigint, bigint];
+  ext: ReturnType<typeof extDataArg>;
+}
+
 export interface TransactCall {
   address: EvmAddress;
   abi: typeof ShieldedPoolAbi;
   functionName: "transact";
-  args: readonly [
-    ReturnType<typeof proofArg>,
-    EvmAddress,
-    bigint,
-    bigint,
-    bigint,
-    EvmAddress,
-    readonly bigint[],
-    readonly [bigint, bigint, bigint],
-    ReturnType<typeof extDataArg>,
-  ];
+  args: readonly [TransactArgs];
   /** wei to attach: `amountForMint(shares) * unit` on a shield, else 0 */
   value: bigint;
+}
+
+export interface TransactBatchCall {
+  address: EvmAddress;
+  abi: typeof ShieldedPoolAbi;
+  functionName: "transactBatch";
+  args: readonly [readonly TransactArgs[]];
+  value: 0n;
 }
 
 /** Build the `writeContract` / `simulateContract` request for a transact. */
@@ -107,19 +121,31 @@ export function transactCall(
     address: pool,
     abi: ShieldedPoolAbi,
     functionName: "transact",
-    args: [
-      proofArg(proof.proof),
-      token,
+    args: [{
+      proof: proofArg(proof.proof),
+      token: publicAmount === 0n ? ZERO : token,
       root,
       publicAmount,
       aspRoot,
       aspProvider,
-      proof.nullifiers,
-      [proof.outCommitments[0], proof.outCommitments[1], proof.outCommitments[2]],
-      extDataArg(ext),
-    ],
+      nullifiers: proof.nullifiers,
+      outCommitments: [proof.outCommitments[0], proof.outCommitments[1], proof.outCommitments[2]],
+      ext: extDataArg(ext),
+    }],
     value,
   };
+}
+
+const ZERO: EvmAddress = "0x0000000000000000000000000000000000000000";
+
+/** `transactBatch([...])`: several non-shield transacts in one transaction (a relayer landing its queue). */
+export function transactBatchCall(pool: EvmAddress, calls: readonly TransactCall[]): TransactBatchCall {
+  if (calls.length === 0) throw new Error("empty batch");
+  for (const c of calls) {
+    if (c.args[0].publicAmount > 0n) throw new Error("a batch cannot contain a shield");
+    if (c.value !== 0n) throw new Error("a batch carries no value");
+  }
+  return { address: pool, abi: ShieldedPoolAbi, functionName: "transactBatch", args: [calls.map((c) => c.args[0])], value: 0n };
 }
 
 /** `drain(max)`: move queued commitments into the tree. Anyone may call; relayers do it as a keeper. */
@@ -153,12 +179,14 @@ export interface TransactCallJson {
     ciphertext2: `0x${string}`;
     outCiphertext: `0x${string}`;
     reshield: { token: EvmAddress; ownerHash: string; rho: string; rcm: string; ciphertext: `0x${string}` };
+    validUntil: string;
+    complianceData: `0x${string}`;
   };
   value: string;
 }
 
 export function transactCallToJson(c: TransactCall): TransactCallJson {
-  const [proof, token, root, publicAmount, aspRoot, aspProvider, nullifiers, outCommitments, ext] = c.args;
+  const { proof, token, root, publicAmount, aspRoot, aspProvider, nullifiers, outCommitments, ext } = c.args[0];
   const s = (x: bigint) => x.toString();
   return {
     token,
@@ -169,7 +197,7 @@ export function transactCallToJson(c: TransactCall): TransactCallJson {
     nullifiers: nullifiers.map(s),
     outCommitments: [s(outCommitments[0]), s(outCommitments[1]), s(outCommitments[2])],
     proof: { a: [s(proof.a[0]), s(proof.a[1])], b: [[s(proof.b[0][0]), s(proof.b[0][1])], [s(proof.b[1][0]), s(proof.b[1][1])]], c: [s(proof.c[0]), s(proof.c[1])] },
-    ext: { ...ext, reshield: { ...ext.reshield, ownerHash: s(ext.reshield.ownerHash), rho: s(ext.reshield.rho), rcm: s(ext.reshield.rcm) } },
+    ext: { ...ext, reshield: { ...ext.reshield, ownerHash: s(ext.reshield.ownerHash), rho: s(ext.reshield.rho), rcm: s(ext.reshield.rcm) }, validUntil: s(ext.validUntil) },
     value: s(c.value),
   };
 }
@@ -188,17 +216,23 @@ export function transactCallFromJson(pool: EvmAddress, j: TransactCallJson): Tra
     address: pool,
     abi: ShieldedPoolAbi,
     functionName: "transact",
-    args: [
+    args: [{
       proof,
-      j.token,
-      b(j.root),
-      b(j.publicAmount),
-      b(j.aspRoot),
-      j.aspProvider,
-      j.nullifiers.map(b),
-      [b(j.outCommitments[0]), b(j.outCommitments[1]), b(j.outCommitments[2])],
-      { ...j.ext, reshield: { token: r.token, ownerHash: b(r.ownerHash), rho: b(r.rho), rcm: b(r.rcm), ciphertext: r.ciphertext } },
-    ],
+      token: j.token,
+      root: b(j.root),
+      publicAmount: b(j.publicAmount),
+      aspRoot: b(j.aspRoot),
+      aspProvider: j.aspProvider,
+      nullifiers: j.nullifiers.map(b),
+      outCommitments: [b(j.outCommitments[0]), b(j.outCommitments[1]), b(j.outCommitments[2])],
+      ext: {
+        recipient: j.ext.recipient, exitTarget: j.ext.exitTarget, exitData: j.ext.exitData,
+        ciphertext0: j.ext.ciphertext0, ciphertext1: j.ext.ciphertext1, ciphertext2: j.ext.ciphertext2, outCiphertext: j.ext.outCiphertext,
+        reshield: { token: r.token, ownerHash: b(r.ownerHash), rho: b(r.rho), rcm: b(r.rcm), ciphertext: r.ciphertext },
+        validUntil: b(j.ext.validUntil ?? "0"),
+        complianceData: j.ext.complianceData ?? "0x",
+      },
+    }],
     value: b(j.value),
   };
 }
@@ -232,7 +266,21 @@ export async function readNullifierSpent(client: PublicClient, pool: EvmAddress,
   return client.readContract({ address: pool, abi: ShieldedPoolAbi, functionName: "nullifierSpent", args: [nf] });
 }
 
-/** The 43-byte shielded address an EOA published, or null. */
+export async function readGovernance(client: PublicClient, pool: EvmAddress): Promise<{ guardian: EvmAddress; governance: EvmAddress; shieldPaused: boolean }> {
+  const [guardian, governance, shieldPaused] = await Promise.all([
+    client.readContract({ address: pool, abi: ShieldedPoolAbi, functionName: "guardian" }),
+    client.readContract({ address: pool, abi: ShieldedPoolAbi, functionName: "governance" }),
+    client.readContract({ address: pool, abi: ShieldedPoolAbi, functionName: "shieldPaused" }),
+  ]);
+  return { guardian, governance, shieldPaused };
+}
+
+/** The entrance compliance hook of a token, or the zero address when shields of it are ungated. */
+export async function readComplianceHook(client: PublicClient, pool: EvmAddress, token: EvmAddress): Promise<EvmAddress> {
+  return client.readContract({ address: pool, abi: ShieldedPoolAbi, functionName: "complianceHook", args: [token] });
+}
+
+/** The 43-byte (or 1227-byte post-quantum) shielded address an EOA published, or null. */
 export async function readRegistry(client: PublicClient, pool: EvmAddress, owner: EvmAddress): Promise<Uint8Array | null> {
   const hex = await client.readContract({ address: pool, abi: ShieldedPoolAbi, functionName: "registry", args: [owner] });
   const h = hex.slice(2);

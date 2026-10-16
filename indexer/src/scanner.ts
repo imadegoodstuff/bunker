@@ -152,11 +152,14 @@ export class Scanner {
         // --- pool
         case "Transact": {
           const first = Number(a.firstIndex);
-          const token = addr(a.token);
+          // v2.1: an in-pool send publishes no asset (token = 0, publicAmount = 0); wallets learn it from the note plaintext
+          const publicAmount = (a.publicAmount as bigint | undefined) ?? 0n;
+          const token = publicAmount === 0n ? null : addr(a.token);
           const cms = a.commitments as readonly bigint[];
           const cts = [a.ciphertext0, a.ciphertext1, a.ciphertext2] as Hex[];
           for (let i = 0; i < 3; i++) this.db.insertCommitment(first + i, hex32(cms[i]), token, bytesOf(cts[i]), txHash, block, bt);
           this.db.insertOutCiphertext(txHash, first, bytesOf(a.outCiphertext as Hex));
+          this.db.insertTransact(txHash, first, addr(a.sender ?? "0x0000000000000000000000000000000000000000"), publicAmount.toString(), hex32((a.aspRoot as bigint | undefined) ?? 0n), block);
           break;
         }
         case "OpenNote":

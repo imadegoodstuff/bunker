@@ -27,17 +27,22 @@ async function main() {
 
   console.log(`deployer ${deployer.address} on chain ${chainId}, balance ${ethers.formatEther(await ethers.provider.getBalance(deployer.address))} BNB`);
   const startBlock = await ethers.provider.getBlockNumber();
-  const d = await deployAll(ethers, { agents, treasury, router, guardian: process.env.GUARDIAN, graduationWei, tradeFeeBps, log: console.log });
+  const d = await deployAll(ethers, {
+    agents, treasury, router, guardian: process.env.GUARDIAN, graduationWei, tradeFeeBps, log: console.log,
+    timelock: process.env.TIMELOCK, timelockAdmin: process.env.TIMELOCK_ADMIN, timelockDelay: process.env.TIMELOCK_DELAY ? Number(process.env.TIMELOCK_DELAY) : undefined,
+  });
 
   const out = {
     chainId,
     startBlock,
     deployer: deployer.address,
     protocolVersion: 2,
+    revision: 1,
     poseidonT3: d.poseidon,
     poseidonT6: d.poseidonT6,
     verifier2x3: d.verifier2x3,
     verifier4x3: d.verifier4x3,
+    timelock: d.timelock,
     pool: await d.pool.getAddress(),
     launchpad: await d.launchpad.getAddress(),
     swapExit: await d.swapExit.getAddress(),
@@ -46,6 +51,9 @@ async function main() {
     emptyLeaf: d.emptyLeaf.toString(),
     // constructor inputs, kept so scripts/verify.cjs can reproduce them after the guardian changes them
     guardian: process.env.GUARDIAN || deployer.address,
+    governance: d.timelock,
+    timelockAdmin: process.env.TIMELOCK_ADMIN || deployer.address,
+    timelockDelay: Number(process.env.TIMELOCK_DELAY ?? 24 * 3600),
     nativeTvlCap: ethers.MaxUint256.toString(),
     params: Object.fromEntries(Object.entries(d.params).map(([k, v]) => [k, typeof v === "bigint" ? v.toString() : v])),
   };

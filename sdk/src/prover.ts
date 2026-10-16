@@ -108,9 +108,13 @@ export async function buildWitnessInput(p: TransactParams) {
   const outCommitments: bigint[] = [];
   for (const o of p.outputs) outCommitments.push(await noteCommitment(o));
 
+  // The asset is a private witness; the public `assetPublic` is 0 for a private
+  // send and the asset itself when value crosses the pool boundary (what the
+  // contract derives from `token`).
   const input = {
     root: p.root.toString(),
     publicAmount: encodePublicAmount(p.publicAmount).toString(),
+    assetPublic: (p.publicAmount === 0n ? 0n : p.asset).toString(),
     asset: p.asset.toString(),
     extDataHash: p.extDataHash.toString(),
     aspRoot: (p.aspRoot ?? 0n).toString(),

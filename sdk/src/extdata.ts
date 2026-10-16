@@ -1,6 +1,9 @@
 // ExtData: everything a transact binds to its proof besides the circuit's own
 // public inputs (SPEC A7). Hashed exactly as `ShieldedPool.extDataHash` does:
-// `uint256(sha256(abi.encode(ext))) % p`.
+// `uint256(sha256(abi.encode(block.chainid, address(pool), ext))) % p`. The
+// chain id and the pool address are mixed into the hash rather than carried
+// in calldata, so a proof is void on any other chain or deployment; `validUntil`
+// lets it expire.
 import { sha256 } from "@noble/hashes/sha2.js";
 import { encodeAbiParameters, decodeAbiParameters, type Hex } from "viem";
 import { mod, bytesToBigIntBE, fromHex, toHex } from "./field.js";
@@ -29,6 +32,10 @@ export interface ExtData {
   ciphertext2: Uint8Array;
   outCiphertext: Uint8Array;
   reshield: Reshield;
+  /** unix seconds after which the pool refuses the proof; 0 = never */
+  validUntil: bigint;
+  /** input for the entrance compliance hook of the token being shielded (empty when none is set) */
+  complianceData: Uint8Array;
 }
 
 export const ZERO_ADDRESS: EvmAddress = "0x0000000000000000000000000000000000000000";
@@ -57,9 +64,13 @@ export const EXT_DATA_ABI = [
           { name: "ciphertext", type: "bytes" },
         ],
       },
+      { name: "validUntil", type: "uint64" },
+      { name: "complianceData", type: "bytes" },
     ],
   },
 ] as const;
+
+const BOUND_ABI = [{ type: "uint256" }, { type: "address" }, EXT_DATA_ABI[0]] as const;
 
 const hex = (b: Uint8Array): Hex => `0x${toHex(b)}`;
 
@@ -74,16 +85,23 @@ export function extDataArg(e: ExtData) {
     ciphertext2: hex(e.ciphertext2),
     outCiphertext: hex(e.outCiphertext),
     reshield: { token: e.reshield.token, ownerHash: e.reshield.ownerHash, rho: e.reshield.rho, rcm: e.reshield.rcm, ciphertext: hex(e.reshield.ciphertext) },
+    validUntil: e.validUntil,
+    complianceData: hex(e.complianceData),
   } as const;
 }
 
-/** `abi.encode(ext)` — the exact bytes the contract hashes. */
+/** `abi.encode(ext)` alone (what the relayer wire format carries). */
 export function serializeExtData(e: ExtData): Uint8Array {
   return fromHex(encodeAbiParameters(EXT_DATA_ABI, [extDataArg(e)]));
 }
 
-export function extDataHash(e: ExtData): bigint {
-  return mod(bytesToBigIntBE(sha256(serializeExtData(e))));
+/** `abi.encode(chainId, pool, ext)` — the exact bytes the contract hashes. */
+export function serializeBoundExtData(e: ExtData, chainId: number | bigint, pool: EvmAddress): Uint8Array {
+  return fromHex(encodeAbiParameters(BOUND_ABI, [BigInt(chainId), pool, extDataArg(e)]));
+}
+
+export function extDataHash(e: ExtData, chainId: number | bigint, pool: EvmAddress): bigint {
+  return mod(bytesToBigIntBE(sha256(serializeBoundExtData(e, chainId, pool))));
 }
 
 export function deserializeExtData(b: Uint8Array): ExtData {
@@ -97,5 +115,7 @@ export function deserializeExtData(b: Uint8Array): ExtData {
     ciphertext2: fromHex(d.ciphertext2),
     outCiphertext: fromHex(d.outCiphertext),
     reshield: { token: d.reshield.token, ownerHash: d.reshield.ownerHash, rho: d.reshield.rho, rcm: d.reshield.rcm, ciphertext: fromHex(d.reshield.ciphertext) },
+    validUntil: d.validUntil,
+    complianceData: fromHex(d.complianceData),
   };
 }

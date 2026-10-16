@@ -122,9 +122,19 @@ interface State {
   /** amounts in base units (wei for BNB); `to` is a `bunker1…` address or a registered `0x…` */
   shield: (asset: AssetMeta, amount: bigint, signer: Signer, to?: string) => Promise<void>;
   send: (asset: AssetMeta, amount: bigint, to: string, memo?: string) => Promise<void>;
-  unshield: (asset: AssetMeta, amount: bigint, recipient: EvmAddress) => Promise<void>;
+  /** Send without a relayer: the signer submits and pays gas, no fee note. The signer is visible as the submitter. */
+  sendDirect: (asset: AssetMeta, amount: bigint, to: string, signer: Signer, memo?: string) => Promise<void>;
+  /** `compliant`: the proof also shows every spent note descends from a deposit the association set vouches for. */
+  unshield: (asset: AssetMeta, amount: bigint, recipient: EvmAddress, o?: { compliant?: boolean }) => Promise<void>;
   /** Withdraw without a relayer: the signer submits and pays gas, no fee note. For assets no relayer prices, or by choice. */
-  unshieldDirect: (asset: AssetMeta, amount: bigint, recipient: EvmAddress, signer: Signer) => Promise<void>;
+  unshieldDirect: (asset: AssetMeta, amount: bigint, recipient: EvmAddress, signer: Signer, o?: { compliant?: boolean }) => Promise<void>;
+  /** The association set this deployment's indexer maintains (null: none). Cached after the first call. */
+  asp?: { provider: EvmAddress; root: bigint; leaves: number; updatedAt: number | null } | null;
+  loadAsp: () => Promise<void>;
+  /** This vault's post-quantum (`bunkerq1…`) address: the same keys with an ML-KEM-768 key attached; longer, hybrid-encrypted notes. */
+  pqAddress: () => string | undefined;
+  /** A selective-disclosure document (SPEC §13) as JSON text; `full` adds the viewing key. */
+  exportDisclosure: (scope: "notes" | "full") => string | undefined;
   /** Private PancakeSwap swap: `amount` of `from` leaves the vault, the output lands back as a note of `to`. */
   swap: (from: AssetMeta, amount: bigint, to: AssetMeta) => Promise<void>;
   quoteSwap: (from: AssetMeta, amount: bigint, to: AssetMeta) => Promise<{ out: bigint; relayerFee: bigint }>;
@@ -575,14 +585,14 @@ export const useBunker = create<State>((set, get) => {
     }
   },
 
-  async unshield(asset, amount, recipient) {
+  async sendDirect(asset, amount, to, signer, memo) {
     const c = get().client;
     if (!c) throw new Error("wallet locked");
     if (c.watchOnly) throw new Error("this vault is watch-only");
-    const id = activity("unshield", asset.symbol, amount, asset.decimals);
+    const id = activity("send", asset.symbol, amount, asset.decimals);
     set({ tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } });
     try {
-      const h = await c.unshield(asset.token, amount, recipient, { onEvent });
+      const h = await c.sendDirect(tok(asset), amount, to, { signer: sdkSigner(signer), memo: memo || undefined, onEvent });
       finish(id, h);
       await after();
     } catch (e) {
@@ -590,19 +600,51 @@ export const useBunker = create<State>((set, get) => {
     }
   },
 
-  async unshieldDirect(asset, amount, recipient, signer) {
+  async unshield(asset, amount, recipient, o = {}) {
     const c = get().client;
     if (!c) throw new Error("wallet locked");
     if (c.watchOnly) throw new Error("this vault is watch-only");
     const id = activity("unshield", asset.symbol, amount, asset.decimals);
-    set({ tx: { stage: "proving", message: "Generating zero-knowledge proof in your browser" } });
+    set({ tx: { stage: "proving", message: o.compliant ? "Generating the proof, with association-set membership for every note spent" : "Generating zero-knowledge proof in your browser" } });
     try {
-      const h = await c.unshieldDirect(tok(asset), amount, recipient, { signer: sdkSigner(signer), onEvent });
+      const h = await c.unshield(asset.token, amount, recipient, { onEvent, compliant: o.compliant });
       finish(id, h);
       await after();
     } catch (e) {
       fail(id, e);
     }
+  },
+
+  async unshieldDirect(asset, amount, recipient, signer, o = {}) {
+    const c = get().client;
+    if (!c) throw new Error("wallet locked");
+    if (c.watchOnly) throw new Error("this vault is watch-only");
+    const id = activity("unshield", asset.symbol, amount, asset.decimals);
+    set({ tx: { stage: "proving", message: o.compliant ? "Generating the proof, with association-set membership for every note spent" : "Generating zero-knowledge proof in your browser" } });
+    try {
+      const h = await c.unshieldDirect(tok(asset), amount, recipient, { signer: sdkSigner(signer), onEvent, compliant: o.compliant });
+      finish(id, h);
+      await after();
+    } catch (e) {
+      fail(id, e);
+    }
+  },
+
+  async loadAsp() {
+    const c = get().client;
+    if (!c) return;
+    try { set({ asp: await c.aspInfo() }); } catch { set({ asp: null }); }
+  },
+
+  pqAddress() {
+    const c = get().client;
+    return c ? c.address({ pq: true }) : undefined;
+  },
+
+  exportDisclosure(scope) {
+    const c = get().client;
+    if (!c) return undefined;
+    return JSON.stringify(c.disclosure({ scope }), null, 2);
   },
 
   async quoteSwap(from, amount, to) {

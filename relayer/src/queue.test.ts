@@ -3,8 +3,18 @@ import assert from "node:assert/strict";
 import { SubmitQueue } from "./queue.js";
 import type { TransactCall } from "@bunker/sdk";
 
-const call = () => ({ args: [{}, "0x0", 0n, 0n, 0n, "0x0", [1n, 2n], [0n, 0n], {}] }) as unknown as TransactCall;
+const call = (validUntil = 0n) => ({ args: [{ nullifiers: [1n, 2n], outCommitments: [0n, 0n, 0n], ext: { validUntil } }] }) as unknown as TransactCall;
 const opts = { minDelayMs: 0, maxDelayMs: 0, gasLimit: 1n, gasPrice: () => 0n, maxAttempts: 1, pool: "0x0000000000000000000000000000000000000000" as const };
+
+test("a job's release never lands past its validUntil", () => {
+  const q = new SubmitQueue(undefined, { ...opts, minDelayMs: 600_000, maxDelayMs: 600_000 });
+  const soon = BigInt(Math.floor(Date.now() / 1000) + 120);
+  const j = q.enqueue(call(soon), ["aa"]);
+  assert.equal(j.validUntil, Number(soon));
+  assert.ok(j.releaseAt <= Number(soon) * 1000 - 30_000, "released with 30 s to spare");
+  const k = q.enqueue(call(), ["bb"]);
+  assert.ok(k.releaseAt >= Date.now() + 599_000, "no deadline: the full random hold");
+});
 
 test("a second /relay carrying a nullifier of a live job resolves to that job; a failed job frees its nullifiers", () => {
   const q = new SubmitQueue(undefined, opts);

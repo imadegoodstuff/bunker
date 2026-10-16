@@ -5,14 +5,14 @@ import { encodeAbiParameters, encodeErrorResult } from "viem";
 import { POOL_ERRORS, LAUNCH_ERRORS, SWAP_EXIT_ERRORS, contractErrorFromData, isStaleRootRejection } from "./errors.js";
 import { ShieldedPoolAbi, LaunchpadAbi, SwapExitAbi } from "./abi/index.js";
 import { BabyJub, poseidon } from "./crypto.js";
-import { spendingKeyFromSeed, fullViewingKey, newAddress, encodeAddress, decodeAddress, addressToBytes, addressFromBytes, encodeViewingKey, decodeViewingKey, groupHash, seedFromSignature, seedToBackup, seedFromBackup, SPENDING_KEY_MESSAGE, SCALAR_MASK, passphraseStrength, expectedSecondsToCrack, PASSPHRASE_MIN_BITS } from "./keys.js";
-import { encryptNote, tryDecryptNote, encryptOutgoing, decryptOutgoing, decryptNoteAsSender, NOTE_CIPHERTEXT_LEN, NOTE_CIPHERTEXT_LEN_NO_MEMO, NOTE_VERSION, MEMO_MAX } from "./encryption.js";
+import { spendingKeyFromSeed, fullViewingKey, newAddress, encodeAddress, decodeAddress, addressToBytes, addressFromBytes, encodeViewingKey, decodeViewingKey, groupHash, seedFromSignature, seedToBackup, seedFromBackup, SPENDING_KEY_MESSAGE, SCALAR_MASK, passphraseStrength, expectedSecondsToCrack, PASSPHRASE_MIN_BITS, toPqAddress, isPqAddress, kemKeyPairFor, KEM_PUBLIC_KEY_BYTES, PQ_ADDRESS_BYTES, type PqAddress } from "./keys.js";
+import { encryptNote, tryDecryptNote, encryptOutgoing, decryptOutgoing, decryptNoteAsSender, NOTE_CIPHERTEXT_LEN, NOTE_CIPHERTEXT_LEN_NO_MEMO, NOTE_CIPHERTEXT_PQ_LEN_NO_MEMO, NOTE_VERSION, NOTE_VERSION_PQ, MEMO_MAX } from "./encryption.js";
 import { noteCommitment, openNoteCommitment, ownerHash, nullifier, assetId, freshRandomness, noteRandomness, NATIVE_TOKEN, addressToBytes32 } from "./note.js";
 import { MerkleTree, verifyPath, EMPTY_LEAF_PREIMAGE } from "./merkle.js";
 import { ShieldedWallet } from "./wallet.js";
-import { extDataHash, serializeExtData, deserializeExtData, NO_EXIT, NO_RESHIELD, ZERO_ADDRESS, EXT_DATA_ABI, extDataArg } from "./extdata.js";
+import { extDataHash, serializeExtData, serializeBoundExtData, deserializeExtData, NO_EXIT, NO_RESHIELD, ZERO_ADDRESS, EXT_DATA_ABI, extDataArg } from "./extdata.js";
 import { encodePublicAmount, decodePublicAmount, P, BJJ_SUBGROUP_ORDER, toHex } from "./field.js";
-import { proofArg, sharesForDeposit, amountForMint, amountForBurn, sharesForWithdraw, VIRTUAL_OFFSET, PROTOCOL_VERSION, type PoolState } from "./pool.js";
+import { proofArg, sharesForDeposit, amountForMint, amountForBurn, sharesForWithdraw, VIRTUAL_OFFSET, PROTOCOL_VERSION, transactCall, transactCallToJson, transactCallFromJson, transactBatchCall, type PoolState } from "./pool.js";
 import { exitData, decodeExitData, swapExitData, decodeSwapExitData, EXIT_BUY, EXIT_SELL, rolled, policy, worstFeeBps, voteInBounds, curveBuy, curveBuyCapped, curveSell, quotePrivateBuy, quotePrivateSell, quoteBuyExactOut, feeOf, feeOnNet, type CurveState } from "./launch.js";
 
 const seed = new Uint8Array(32).fill(7);
@@ -70,7 +70,7 @@ test("note encryption: receiver decrypts with ivk, strangers cannot, sender reco
   const to = newAddress(bjj, receiver.ivk);
   const gd = groupHash(bjj, to.d)!;
   const asset = assetId(NATIVE_TOKEN);
-  const note = { asset, value: 1234n, gd, pkd: to.pkd, ...freshRandomness() };
+  const note = { asset, token: NATIVE_TOKEN, value: 1234n, gd, pkd: to.pkd, ...freshRandomness() };
   const memo = new TextEncoder().encode("hello");
   const { ciphertext, esk } = encryptNote(bjj, to, note, memo, true);
   assert.equal(ciphertext.length, NOTE_CIPHERTEXT_LEN_NO_MEMO + 64);
@@ -100,14 +100,68 @@ test("note encryption: receiver decrypts with ivk, strangers cannot, sender reco
   const small = encryptNote(bjj, to, note, undefined, false);
   assert.equal(small.ciphertext.length, NOTE_CIPHERTEXT_LEN_NO_MEMO);
   assert.ok(tryDecryptNote(bjj, receiver.ivk, small.ciphertext));
+  // the asset travels inside the ciphertext
+  assert.equal(got!.plaintext.token, NATIVE_TOKEN);
 
-  // ciphertexts carry a version byte: an unknown version (a future PQ hybrid) is skipped, not misparsed
+  // ciphertexts carry a version byte: an unknown version is skipped, not misparsed
   assert.equal(PROTOCOL_VERSION, 2);
   assert.equal(small.ciphertext[0], NOTE_VERSION);
   const other = new Uint8Array(small.ciphertext);
-  other[0] = 0x03;
+  other[0] = 0x09;
   assert.equal(tryDecryptNote(bjj, receiver.ivk, other), null);
   assert.equal(decryptNoteAsSender(bjj, rec!.pkd, rec!.esk, other), null);
+  // the view tag is checked before the AEAD: flipping it rejects without touching the payload
+  const badTag = new Uint8Array(small.ciphertext);
+  badTag[1] ^= 0xff;
+  assert.equal(tryDecryptNote(bjj, receiver.ivk, badTag), null);
+});
+
+test("post-quantum envelope: bunkerq1… addresses carry an ML-KEM-768 key; the receiver (and a watch-only holder of ivk) decrypts, strangers and ECDH-only cannot", async () => {
+  const bjj = await BabyJub.load();
+  const receiver = await fullViewingKey(spendingKeyFromSeed(new Uint8Array(32).fill(21)));
+  const stranger = await fullViewingKey(spendingKeyFromSeed(new Uint8Array(32).fill(22)));
+  const classic = newAddress(bjj, receiver.ivk);
+  const pq = toPqAddress(receiver.ivk, classic);
+  assert.equal(pq.kemPk.length, KEM_PUBLIC_KEY_BYTES);
+  assert.ok(isPqAddress(pq) && !isPqAddress(classic));
+  // deterministic per (ivk, d); unrelated across diversifiers
+  assert.deepEqual(kemKeyPairFor(receiver.ivk, classic.d).publicKey, pq.kemPk);
+  assert.notDeepEqual(toPqAddress(receiver.ivk, newAddress(bjj, receiver.ivk)).kemPk, pq.kemPk);
+  // string form and raw bytes
+  const s = encodeAddress(bjj, pq);
+  assert.ok(s.startsWith("bunkerq1"), s.slice(0, 12));
+  const dec = decodeAddress(bjj, s);
+  assert.equal(dec.hrp, "bunker");
+  assert.ok(isPqAddress(dec.address));
+  assert.deepEqual((dec.address as PqAddress).kemPk, pq.kemPk);
+  assert.equal(addressToBytes(bjj, pq).length, PQ_ADDRESS_BYTES);
+  assert.deepEqual(addressFromBytes(bjj, addressToBytes(bjj, pq)), pq);
+  assert.throws(() => decodeAddress(bjj, s.replace(/^bunkerq1/, "bunker1")), /match|checksum|Invalid/);
+
+  const gd = groupHash(bjj, pq.d)!;
+  const note = { asset: assetId(A1), token: A1, value: 99n, gd, pkd: pq.pkd, ...freshRandomness() };
+  const memo = new TextEncoder().encode("pq");
+  const { ciphertext } = encryptNote(bjj, pq, note, memo, true);
+  assert.equal(ciphertext[0], NOTE_VERSION_PQ);
+  assert.equal(ciphertext.length, NOTE_CIPHERTEXT_PQ_LEN_NO_MEMO + 64);
+  const got = tryDecryptNote(bjj, receiver.ivk, ciphertext);
+  assert.ok(got);
+  assert.equal(got!.plaintext.value, 99n);
+  assert.equal(got!.plaintext.token, A1.toLowerCase());
+  assert.deepEqual(got!.plaintext.d, pq.d);
+  assert.equal(new TextDecoder().decode(got!.plaintext.memo.slice(0, 2)), "pq");
+  assert.equal(tryDecryptNote(bjj, stranger.ivk, ciphertext), null);
+  // a corrupted KEM ciphertext fails the payload AEAD (the ECDH half alone opens nothing but the diversifier)
+  const bad = new Uint8Array(ciphertext);
+  bad[40] ^= 1;
+  assert.equal(tryDecryptNote(bjj, receiver.ivk, bad), null);
+  // the wallet scans it like any other note
+  const w = await ShieldedWallet.fromSeed(new Uint8Array(32).fill(21));
+  const n = await w.scan({ index: 3, commitment: await noteCommitment(note), ciphertext });
+  assert.ok(n);
+  assert.equal(n!.token, A1.toLowerCase());
+  const watch = await ShieldedWallet.fromViewingKey(receiver);
+  assert.ok(await watch.scan({ index: 3, commitment: await noteCommitment(note), ciphertext }));
 });
 
 test("open notes: commitment = Poseidon(asset, shares, ownerHash, rho, rcm); only the owner recognises it", async () => {
@@ -123,9 +177,9 @@ test("open notes: commitment = Poseidon(asset, shares, ownerHash, rho, rcm); onl
   const shares = 4321n;
   const cm = await openNoteCommitment(asset, shares, oh, rnd.rho, rnd.rcm);
   // the same note, seen as an ordinary note, has the same commitment: the contract and the circuit agree
-  assert.equal(cm, await noteCommitment({ asset, value: shares, gd, pkd: to.pkd, ...rnd }));
+  assert.equal(cm, await noteCommitment({ asset, token: NATIVE_TOKEN, value: shares, gd, pkd: to.pkd, ...rnd }));
   // the ciphertext the exit sender attached carries no amount of its own (value 0); the chain fills it in
-  const ct = encryptNote(bjj, to, { asset, value: 0n, gd, pkd: to.pkd, ...rnd }, undefined, false).ciphertext;
+  const ct = encryptNote(bjj, to, { asset, token: NATIVE_TOKEN, value: 0n, gd, pkd: to.pkd, ...rnd }, undefined, false).ciphertext;
   const got = await w.scanOpenNote({ index: 5, commitment: cm, shares, ownerHash: oh, ciphertext: ct }, asset);
   assert.ok(got);
   assert.equal(got!.value, shares);
@@ -142,7 +196,7 @@ test("queued notes count toward queuedBalance, not spendable, until markInserted
   const to = w.address();
   const asset = assetId(NATIVE_TOKEN);
   for (let i = 0; i < 3; i++) {
-    const n = { asset, value: 10n, gd: groupHash(bjj, to.d)!, pkd: to.pkd, ...freshRandomness() };
+    const n = { asset, token: NATIVE_TOKEN, value: 10n, gd: groupHash(bjj, to.d)!, pkd: to.pkd, ...freshRandomness() };
     await w.scan({ index: i, commitment: await noteCommitment(n), ciphertext: encryptNote(bjj, to, n, undefined, false).ciphertext }, asset);
   }
   w.markInserted(1);
@@ -169,12 +223,12 @@ test("full viewing key: bunkerview1… round-trips and a watch-only wallet sees 
   assert.ok(watch.watchOnly);
   const to = watch.address();
   const asset = assetId(NATIVE_TOKEN);
-  const n = { asset, value: 77n, gd: groupHash(bjj, to.d)!, pkd: to.pkd, ...freshRandomness() };
+  const n = { asset, token: NATIVE_TOKEN, value: 77n, gd: groupHash(bjj, to.d)!, pkd: to.pkd, ...freshRandomness() };
   assert.ok(await watch.scan({ index: 0, commitment: await noteCommitment(n), ciphertext: encryptNote(bjj, to, n, undefined, false).ciphertext }, asset));
   watch.markInserted(1);
   assert.equal(watch.balance(asset), 77n);
   const t = new MerkleTree(26); await t.whenReady();
-  await assert.rejects(watch.buildTransact({ asset, poolAddress: A1, token: NATIVE_TOKEN, pool: { exists: true, decimals: 18, unit: 1n, totalShares: 0n, totalAssets: 0n, totalIn: 0n, totalOut: 0n, tvlCap: 0n }, tree: t, artifacts: {} as never, kind: "unshield", amount: 1n, recipient: A1 }), /watch-only/);
+  await assert.rejects(watch.buildTransact({ asset, poolAddress: A1, chainId: 56, token: NATIVE_TOKEN, pool: { exists: true, decimals: 18, unit: 1n, totalShares: 0n, totalAssets: 0n, totalIn: 0n, totalOut: 0n, tvlCap: 0n }, tree: t, artifacts: {} as never, kind: "unshield", amount: 1n, recipient: A1 }), /watch-only/);
 });
 
 test("address bytes: 43 raw bytes, what the registry stores", async () => {
@@ -205,7 +259,7 @@ test("a g_d with a torsion component passes the circuit's small-order check but 
   assert.ok(!bjj.inSubgroup(gdTorsion));
   const asset = assetId(NATIVE_TOKEN);
 
-  const honest = { asset, value: 500n, gd, pkd: to.pkd, ...freshRandomness() };
+  const honest = { asset, token: NATIVE_TOKEN, value: 500n, gd, pkd: to.pkd, ...freshRandomness() };
   const honestCt = encryptNote(bjj, to, honest, undefined, false).ciphertext;
   assert.ok(await receiver.scan({ index: 0, commitment: await noteCommitment(honest), ciphertext: honestCt }, asset));
 
@@ -223,12 +277,12 @@ test("a torsion component in epk cannot probe ivk mod 8 (cofactor-cleared key ag
   const receiver = await fullViewingKey(spendingKeyFromSeed(new Uint8Array(32).fill(11)));
   const to = newAddress(bjj, receiver.ivk);
   const gd = groupHash(bjj, to.d)!;
-  const note = { asset: assetId(NATIVE_TOKEN), value: 7n, gd, pkd: to.pkd, ...freshRandomness() };
+  const note = { asset: assetId(NATIVE_TOKEN), token: NATIVE_TOKEN, value: 7n, gd, pkd: to.pkd, ...freshRandomness() };
   const { ciphertext, epk } = encryptNote(bjj, to, note, undefined, false);
   assert.ok(tryDecryptNote(bjj, receiver.ivk, ciphertext));
   const epkT = bjj.add(epk, T);
   const tampered = new Uint8Array(ciphertext);
-  tampered.set(bjj.compress(epkT), 0);
+  tampered.set(bjj.compress(epkT), 2); // version(1) + viewTag(1) precede epk
   assert.equal(tryDecryptNote(bjj, receiver.ivk, tampered), null);
   for (let k = 0n; k < 8n; k++) {
     const ivkK = (receiver.ivk & ~7n) | k;
@@ -250,7 +304,7 @@ test("merkle tree paths verify; empty leaf is Poseidon('bunker_empty')", async (
   assert.equal(EMPTY_LEAF_PREIMAGE, x % P);
 });
 
-test("ext data is abi.encode(tuple) and hashes like ShieldedPool.extDataHash", () => {
+test("ext data is abi.encode(tuple); the hash binds chain id and pool like ShieldedPool.extDataHash", () => {
   const ext = {
     recipient: A1,
     exitTarget: NO_EXIT,
@@ -260,6 +314,8 @@ test("ext data is abi.encode(tuple) and hashes like ShieldedPool.extDataHash", (
     ciphertext2: new Uint8Array(100).fill(0x12),
     outCiphertext: new Uint8Array(40).fill(0xef),
     reshield: NO_RESHIELD,
+    validUntil: 1_900_000_000n,
+    complianceData: new Uint8Array(0),
   };
   const bytes = serializeExtData(ext);
   assert.equal("0x" + toHex(bytes), encodeAbiParameters(EXT_DATA_ABI, [extDataArg(ext)]));
@@ -268,15 +324,43 @@ test("ext data is abi.encode(tuple) and hashes like ShieldedPool.extDataHash", (
   assert.deepEqual(back.ciphertext2, ext.ciphertext2);
   assert.equal(back.exitTarget, ZERO_ADDRESS);
   assert.equal(back.reshield.token, ZERO_ADDRESS);
-  const h = createHash("sha256").update(Buffer.from(bytes)).digest("hex");
-  assert.equal(extDataHash(ext), BigInt("0x" + h) % P);
-  assert.ok(extDataHash(ext) < P);
+  assert.equal(back.validUntil, 1_900_000_000n);
+  const bound = serializeBoundExtData(ext, 56, A2);
+  assert.equal("0x" + toHex(bound), encodeAbiParameters([{ type: "uint256" }, { type: "address" }, EXT_DATA_ABI[0]], [56n, A2, extDataArg(ext)]));
+  const h = createHash("sha256").update(Buffer.from(bound)).digest("hex");
+  assert.equal(extDataHash(ext, 56, A2), BigInt("0x" + h) % P);
+  assert.ok(extDataHash(ext, 56, A2) < P);
+  // another chain or another pool: a different hash, so the proof is void there
+  assert.notEqual(extDataHash(ext, 97, A2), extDataHash(ext, 56, A2));
+  assert.notEqual(extDataHash(ext, 56, A1), extDataHash(ext, 56, A2));
+  assert.notEqual(extDataHash({ ...ext, validUntil: 0n }, 56, A2), extDataHash(ext, 56, A2));
   const withReshield = { ...ext, exitTarget: A2, reshield: { token: A1, ownerHash: 5n, rho: 6n, rcm: 7n, ciphertext: new Uint8Array(100).fill(0x34) } };
   const rb = deserializeExtData(serializeExtData(withReshield));
   assert.equal(rb.reshield.token, A1);
   assert.equal(rb.reshield.ownerHash, 5n);
   assert.deepEqual(rb.reshield.ciphertext, withReshield.reshield.ciphertext);
-  assert.notEqual(extDataHash(withReshield), extDataHash(ext));
+  assert.notEqual(extDataHash(withReshield, 56, A2), extDataHash(ext, 56, A2));
+});
+
+test("transact wire format round-trips (validUntil, complianceData included); a private send names no token; batches refuse shields", () => {
+  const proof = { circuit: "transact2x3" as const, proof: { piA: [1n, 2n] as [bigint, bigint], piB: [[3n, 4n], [5n, 6n]] as [[bigint, bigint], [bigint, bigint]], piC: [7n, 8n] as [bigint, bigint] }, publicSignals: [], nullifiers: [11n, 12n], outCommitments: [21n, 22n, 23n] };
+  const ext = { recipient: ZERO_ADDRESS, exitTarget: NO_EXIT, exitData: new Uint8Array(0), ciphertext0: new Uint8Array(3).fill(1), ciphertext1: new Uint8Array(0), ciphertext2: new Uint8Array(2).fill(2), outCiphertext: new Uint8Array(0), reshield: NO_RESHIELD, validUntil: 1_900_000_000n, complianceData: new Uint8Array(0) };
+  const send = transactCall(A2, A1, proof, 99n, 0n, 0n, ZERO_ADDRESS, ext, 0n);
+  assert.equal(send.args[0].token, ZERO_ADDRESS, "a private send hides its asset");
+  const unshield = transactCall(A2, A1, proof, 99n, -5n, 0n, ZERO_ADDRESS, ext, 0n);
+  assert.equal(unshield.args[0].token, A1);
+  const j = transactCallToJson(unshield);
+  assert.equal(j.ext.validUntil, "1900000000");
+  const back = transactCallFromJson(A2, j);
+  assert.deepEqual(back.args[0].ext, unshield.args[0].ext);
+  assert.deepEqual(back.args[0].nullifiers, [11n, 12n]);
+  assert.equal(back.args[0].publicAmount, -5n);
+  const batch = transactBatchCall(A2, [send, unshield]);
+  assert.equal(batch.functionName, "transactBatch");
+  assert.equal(batch.args[0].length, 2);
+  const shield = transactCall(A2, A1, proof, 99n, 5n, 0n, ZERO_ADDRESS, ext, 100n);
+  assert.throws(() => transactBatchCall(A2, [shield]), /shield/);
+  assert.throws(() => transactBatchCall(A2, []), /empty/);
 });
 
 test("share math mirrors the contract", () => {
@@ -334,7 +418,7 @@ test("note reservation: reserve hides a note, release restores it, markSpent rem
   const asset = assetId(NATIVE_TOKEN);
   const notes = [];
   for (let i = 0; i < 3; i++) {
-    const n = { asset, value: 100n * BigInt(i + 1), gd: groupHash(bjj, to.d)!, pkd: to.pkd, ...freshRandomness() };
+    const n = { asset, token: NATIVE_TOKEN, value: 100n * BigInt(i + 1), gd: groupHash(bjj, to.d)!, pkd: to.pkd, ...freshRandomness() };
     const ct = encryptNote(bjj, to, n, undefined, false).ciphertext;
     const sn = await w.scan({ index: i, commitment: await noteCommitment(n), ciphertext: ct }, asset);
     assert.ok(sn);

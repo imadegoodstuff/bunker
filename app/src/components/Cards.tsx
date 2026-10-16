@@ -20,26 +20,28 @@ export function Card({ title, children, right }: { title: string; children: Reac
 }
 
 export function AddressCard() {
-  const { address, rotateAddress, registered, register, unregister, checkRegistry, watchOnly, client } = useBunker();
+  const { address, rotateAddress, registered, register, unregister, checkRegistry, watchOnly, client, pqAddress } = useBunker();
   const owner = useWallet((w) => w.address);
   const signer = useSigner();
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [pq, setPq] = useState(false);
   const [err, setErr] = useState<string>();
   useEffect(() => { if (owner && client) void checkRegistry(owner); }, [owner, client]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!address) return null;
   const mine = client?.address();
   const isMine = !!registered && !!mine && registered === mine;
+  const shown = pq ? pqAddress() ?? address : address;
   const act = async (f: () => Promise<void>) => { setBusy(true); setErr(undefined); try { await f(); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); } };
   return (
-    <Card title="Receiving address" right={<button className="btn btn-ghost btn-sm" onClick={rotateAddress}>new</button>}>
+    <Card title="Receiving address" right={<div className="flex gap-1"><button className="btn btn-ghost btn-sm" data-active={pq} title="Post-quantum: the same vault, with an ML-KEM-768 key attached. Notes sent to it are encrypted under both curves; the address is longer." onClick={() => setPq(!pq)}>{pq ? "pq · on" : "pq"}</button><button className="btn btn-ghost btn-sm" onClick={rotateAddress}>new</button></div>}>
       <button
         className="w-full text-left font-mono text-[11px] leading-relaxed break-all text-fg hover:text-signal transition"
-        onClick={() => { void navigator.clipboard.writeText(address); setCopied(true); setTimeout(() => setCopied(false), 1200); }}
+        onClick={() => { void navigator.clipboard.writeText(shown); setCopied(true); setTimeout(() => setCopied(false), 1200); }}
       >
-        {address}
+        {shown}
       </button>
-      <p className="mt-3 font-mono text-[10.5px] text-dim">{copied ? "copied" : "click to copy · every address of yours pays into the same vault; hand out a fresh one per counterparty"}</p>
+      <p className="mt-3 font-mono text-[10.5px] text-dim">{copied ? "copied" : pq ? "click to copy · bunkerq1… carries an ML-KEM-768 key: notes to it stay confidential against a future quantum computer (hybrid, never weaker than the classic address)" : "click to copy · every address of yours pays into the same vault; hand out a fresh one per counterparty"}</p>
       {owner && !watchOnly ? (
         <div className="mt-4 border-t rule pt-3">
           <div className="flex items-center justify-between gap-3">
@@ -65,7 +67,17 @@ export function AddressCard() {
 export function BackupCard() {
   const exportSeed = useBunker((s) => s.exportSeed);
   const exportViewingKey = useBunker((s) => s.exportViewingKey);
+  const exportDisclosure = useBunker((s) => s.exportDisclosure);
   const forgetDevice = useBunker((s) => s.forgetDevice);
+  const download = (scope: "notes" | "full") => {
+    const text = exportDisclosure(scope);
+    if (!text) return;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+    a.download = `bunker-disclosure-${scope}-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
   const watchOnly = useBunker((s) => s.watchOnly);
   const device = useWallet((w) => w.device);
   const account = useWallet((w) => w.address);
@@ -100,6 +112,7 @@ export function BackupCard() {
           <div className="flex flex-wrap gap-2 mt-3">
             {watchOnly ? null : <button className="btn btn-sm" onClick={() => { const v = exportSeed(); if (v) setShown({ kind: "seed", value: v }); }}>reveal seed</button>}
             <button className="btn btn-ghost btn-sm" onClick={() => { const v = exportViewingKey(); if (v) setShown({ kind: "view", value: v }); }}>viewing key</button>
+            <button className="btn btn-ghost btn-sm" title="A JSON report of every note of this vault with its opening: whoever you hand it to can recompute each commitment against the chain, and learns nothing else." onClick={() => download("notes")}>disclosure report</button>
             {device ? (
               confirm
                 ? <button className="btn btn-sm border-bad text-bad" onClick={() => forgetDevice()}>yes, wipe it from this device</button>

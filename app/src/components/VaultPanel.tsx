@@ -37,9 +37,13 @@ export function VaultPanel() {
   const quote = s.assetQuotes[asset.token.toLowerCase()];
   const feePolicy = s.relayer?.fees.find((f) => f.token.toLowerCase() === asset.token.toLowerCase());
   const relayable = asset.token === NATIVE_TOKEN ? !!feePolicy : !!feePolicy || !!quote?.supported;
-  // unshield without the relayer: forced when no relayer prices this asset, optional otherwise
+  // without the relayer: forced when no relayer prices this asset, optional otherwise (unshield and send)
   const [selfPay, setSelfPay] = useState(false);
-  const direct = mode === "unshield" && (selfPay || !relayable);
+  const direct = (mode === "unshield" || mode === "send") && (selfPay || !relayable) && !!signer;
+  // compliant withdrawal: the proof also shows association-set membership for every note spent
+  const [compliant, setCompliant] = useState(false);
+  useEffect(() => { if (s.client && s.asp === undefined) void s.loadAsp(); }, [s.client]); // eslint-disable-line react-hooks/exhaustive-deps
+  const aspAvailable = !!s.asp;
   const modes: Mode[] = (s.watchOnly ? [] : (["shield", "send", "unshield"] as Mode[])).concat(SWAP_EXIT_ADDRESS && !s.watchOnly ? ["swap"] : []);
   const outAsset = assets.find((a) => a.token.toLowerCase() === outToken.toLowerCase());
   const swapTargets = assets.filter((a) => a.token.toLowerCase() !== asset.token.toLowerCase() && !a.launched);
@@ -73,9 +77,10 @@ export function VaultPanel() {
     setErr(undefined); setBusy(true);
     try {
       if (mode === "shield") await s.shield(asset, parsed, signer!, to || undefined);
+      else if (mode === "send" && direct) await s.sendDirect(asset, parsed, to, signer!, memo || undefined);
       else if (mode === "send") await s.send(asset, parsed, to, memo || undefined);
-      else if (mode === "unshield" && direct) await s.unshieldDirect(asset, parsed, to as `0x${string}`, signer!);
-      else if (mode === "unshield") await s.unshield(asset, parsed, to as `0x${string}`);
+      else if (mode === "unshield" && direct) await s.unshieldDirect(asset, parsed, to as `0x${string}`, signer!, { compliant: compliant && aspAvailable });
+      else if (mode === "unshield") await s.unshield(asset, parsed, to as `0x${string}`, { compliant: compliant && aspAvailable });
       else await s.swap(asset, parsed, outAsset!);
       setAmount(""); setMemo("");
       if (owner) void s.scanWallet(owner).catch(() => undefined);
@@ -169,6 +174,14 @@ export function VaultPanel() {
               <label className="label block mb-2">memo <span className="text-dim normal-case tracking-normal">(encrypted, {MEMO_MAX} bytes)</span></label>
               <input className="field text-[12px]" value={memo} maxLength={MEMO_MAX} onChange={(e) => setMemo(e.target.value)} placeholder="only the recipient can read it" />
             </div>
+            {direct ? (
+              <p className="font-mono text-[10.5px] text-warn">Your connected wallet submits this send and pays the gas; no relayer fee. The transaction names no asset, amount or recipient, but your wallet is visible as its submitter.</p>
+            ) : null}
+            {relayable && signer ? (
+              <button type="button" className="font-mono text-[10.5px] text-steel hover:text-fg transition" onClick={() => setSelfPay(!selfPay)}>
+                {selfPay ? "← use the relayer instead" : "submit from my own wallet instead (no relayer fee) →"}
+              </button>
+            ) : null}
           </>
         ) : mode === "unshield" ? (
           <div>
@@ -185,6 +198,14 @@ export function VaultPanel() {
               <button type="button" className="mt-2 font-mono text-[10.5px] text-steel hover:text-fg transition" onClick={() => setSelfPay(!selfPay)}>
                 {selfPay ? "← use the relayer instead" : "pay the gas yourself instead (no relayer fee) →"}
               </button>
+            ) : null}
+            {aspAvailable ? (
+              <label className="mt-3 flex items-start gap-2.5 cursor-pointer select-none">
+                <input type="checkbox" className="mt-0.5 accent-[var(--color-signal)]" checked={compliant} onChange={(e) => setCompliant(e.target.checked)} />
+                <span className="font-mono text-[10.5px] text-dim leading-relaxed">
+                  <span className="text-fg">Compliant withdrawal.</span> The proof also shows that every note spent descends from a deposit the association set vouches for (sanctioned depositors excluded), without naming which. Set: {s.asp!.leaves.toLocaleString()} notes. A note outside the set cannot be withdrawn this way.
+                </span>
+              </label>
             ) : null}
           </div>
         ) : (
@@ -213,7 +234,7 @@ export function VaultPanel() {
         ) : null}
 
         <button className="btn btn-signal w-full h-12" disabled={!ok} onClick={go}>
-          {busy ? "working" : mode === "shield" ? `shield ${asset.symbol}` : mode === "send" ? "send privately" : mode === "unshield" ? (direct ? `unshield ${asset.symbol} · your wallet pays gas` : "unshield via relayer") : outAsset ? `swap to ${outAsset.symbol} privately` : "swap privately"}
+          {busy ? "working" : mode === "shield" ? `shield ${asset.symbol}` : mode === "send" ? (direct ? "send privately · your wallet pays gas" : "send privately") : mode === "unshield" ? (direct ? `unshield ${asset.symbol} · your wallet pays gas` : compliant && aspAvailable ? "unshield via relayer · with compliance proof" : "unshield via relayer") : outAsset ? `swap to ${outAsset.symbol} privately` : "swap privately"}
         </button>
         {err ? <p className="font-mono text-[11px] text-bad break-words">{err}</p> : null}
         {s.walletScanError ? <p className="font-mono text-[10.5px] text-dim">{s.walletScanError}</p> : null}

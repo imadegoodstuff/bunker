@@ -23,8 +23,11 @@ function log(address: `0x${string}`, abi: typeof ShieldedPoolAbi | typeof Launch
   return { address, topics, data, blockNumber: BigInt(block), transactionHash: txHash as Hex, logIndex, blockHash: toHex(block, { size: 32 }), transactionIndex: 0, removed: false } as unknown as Log;
 }
 /** A v2 transact: three leaves, no root (roots come from Drain events). */
-const transact = (first: number, block: number, tx: string, token: `0x${string}` = NATIVE) =>
-  log(POOL, ShieldedPoolAbi, "Transact", { token, firstIndex: first, commitments: [BigInt(first + 1), BigInt(first + 2), BigInt(first + 3)], ciphertext0: "0xa0", ciphertext1: "0xa1", ciphertext2: "0xa2", outCiphertext: "0xb0" }, block, tx);
+const transact = (first: number, block: number, tx: string, token: `0x${string}` = NATIVE, extra: { publicAmount?: bigint; aspRoot?: bigint; sender?: `0x${string}` } = {}) =>
+  log(POOL, ShieldedPoolAbi, "Transact", {
+    token, firstIndex: first, publicAmount: extra.publicAmount ?? 1n, aspRoot: extra.aspRoot ?? 0n, sender: extra.sender ?? CLAIM,
+    commitments: [BigInt(first + 1), BigInt(first + 2), BigInt(first + 3)], ciphertext0: "0xa0", ciphertext1: "0xa1", ciphertext2: "0xa2", outCiphertext: "0xb0",
+  }, block, tx);
 const drain = (from: number, count: number, block: number, tx: string, logIndex = 1) =>
   log(POOL, ShieldedPoolAbi, "Drain", { fromIndex: from, count, newRoot: BigInt(from + count + 1000), rootIndex: 1 }, block, tx, logIndex);
 

@@ -103,7 +103,7 @@ export class Sweeper {
     const units = amountForBurn(pool, shares);
     if (units < this.o.minSweepUnits) return `only ${units} units spendable (${c.wallet.queuedBalance(asset)} shares queued); below the sweep minimum`;
     const built = await c.wallet.buildTransact({
-      asset, poolAddress: this.o.pool, token: NATIVE_TOKEN, pool, tree: c.tree, artifacts: await this.artifacts(c),
+      asset, poolAddress: this.o.pool, chainId: this.o.walletClient.chain.id, token: NATIVE_TOKEN, pool, tree: c.tree, artifacts: await this.artifacts(c),
       kind: "unshield", amount: units > 1n ? units - 1n : units, recipient: eoa,
     });
     if (!this.submit) { c.wallet.release(built.consumed); return "no submit hook"; }

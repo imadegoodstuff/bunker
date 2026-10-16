@@ -35,6 +35,13 @@ primary_region = "sin"
   # drain keeper: fold queued leaves into the tree after this long or at this many leaves
   DRAIN_AFTER_MS = "15000"
   DRAIN_AT = "32"
+  # signed transactions leave through a private endpoint (48 Club), never the public mempool; reads stay on RPC_URL
+  SUBMIT_RPC_URL = "https://rpc-bsc.48.club"
+  # several due transacts go out as one transactBatch
+  BATCH_MAX = "4"
+  # association set: publish the indexer's root from this EOA; membership proofs stay optional
+  ASP_PUBLISH = "1"
+  ASP_REQUIRED = "0"
 
 [http_service]
   internal_port = 8787

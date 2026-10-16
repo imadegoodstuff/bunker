@@ -24,8 +24,14 @@ import * as snarkjs from "snarkjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
 const repo = resolve(root, "..");
-const PTAU = join(root, "ptau", "ppot_0080_16.ptau");
-const PTAU_SHA256 = "ed3622a7c79b0b49aadd134ebbc5b77df8c8c59bccebdfd0d9bf2c1a51561cf9";
+// Phase 1: Perpetual Powers of Tau (PSE), pinned by SHA-256 exactly as in setup-dev.mjs. transact2x3 (35k constraints)
+// fits 2^16; transact4x3 (67k) needs 2^17.
+const PTAUS = {
+  16: { file: "pot28_0080/ppot_0080_16.ptau", sha256: "ed3622a7c79b0b49aadd134ebbc5b77df8c8c59bccebdfd0d9bf2c1a51561cf9" },
+  17: { file: "pot28_0080/ppot_0080_17.ptau", sha256: "f807e065fde53f72f4bf4d57140fab85b26daa6cc95bdfec7cce93622b3a367c" },
+};
+const POWER = { transact2x3: 16, transact4x3: 17 };
+const ptauPath = (circuit) => join(root, "ptau", `ppot_0080_${POWER[circuit]}.ptau`);
 const TRANSCRIPT = join(repo, "ceremony", "transcript.json");
 const CONTRIB_DIR = join(repo, "ceremony", "contributions");
 const CIRCUITS = ["transact2x3", "transact4x3"];
@@ -53,12 +59,12 @@ process.exit(0);
 
 async function init() {
   if (existsSync(TRANSCRIPT)) throw new Error(`${TRANSCRIPT} exists; refusing to restart the ceremony`);
-  await checkPtau();
+  for (const name of CIRCUITS) await checkPtau(name);
   const t = {
-    version: 1,
+    version: 2,
+    protocol: "v2 revision 1",
     status: "open",
-    phase1: { file: "pot28_0080/ppot_0080_16.ptau", sha256: PTAU_SHA256,
-      source: "Perpetual Powers of Tau (PSE), BN254, 2^16" },
+    phase1: Object.fromEntries(CIRCUITS.map((n) => [n, { ...PTAUS[POWER[n]], source: `Perpetual Powers of Tau (PSE), BN254, 2^${POWER[n]}` }])),
     opened: new Date().toISOString(),
     circuits: {},
   };
@@ -67,8 +73,9 @@ async function init() {
     const info = await snarkjs.r1cs.info(r1cs);
     const out = join(root, "build", name, `${name}_0000.zkey`);
     console.log(`[init] ${name}: ${info.nConstraints} constraints, computing _0000.zkey`);
-    await snarkjs.zKey.newZKey(r1cs, PTAU, out);
+    await snarkjs.zKey.newZKey(r1cs, ptauPath(name), out);
     t.circuits[name] = {
+      power: POWER[name],
       constraints: Number(info.nConstraints),
       publicInputs: Number(info.nPubInputs) + Number(info.nOutputs),
       r1csBlake2b: await blake2b(r1cs),
@@ -151,11 +158,11 @@ async function check() {
   let bad = 0;
   const say = (ok, msg) => { console.log(`${ok ? "ok  " : "FAIL"} ${msg}`); if (!ok) bad++; };
   say(["open", "closed", "finalized"].includes(t.status), `status ${t.status}`);
-  say(t.phase1?.sha256 === PTAU_SHA256, "phase-1 ptau pinned to the setup-dev hash");
   for (const name of CIRCUITS) {
     const c = t.circuits[name];
     say(!!c, `${name} present`);
     if (!c) continue;
+    say(t.phase1?.[name]?.sha256 === PTAUS[POWER[name]].sha256, `${name} phase-1 ptau (2^${POWER[name]}) pinned to the setup-dev hash`);
     if (existsSync(r1csPath(name))) {
       const h = await blake2b(r1csPath(name));
       say(h === c.r1csBlake2b, `${name} r1cs rebuilt from source hashes to the transcript value`);
@@ -182,7 +189,7 @@ async function check() {
       const res = await fetch(last.url);
       if (!res.ok || !res.body) { say(false, `${name} download ${res.status}`); continue; }
       await pipeline(Readable.fromWeb(res.body), createWriteStream(file));
-      await checkPtau();
+      await checkPtau(name);
       say(await verifyAgainstTranscript(t, name, file), `${name} hosted zkey verifies against r1cs, ptau and the transcript chain`);
     }
   }
@@ -203,7 +210,7 @@ async function verifyAgainstTranscript(t, circuit, zkey) {
   // snarkjs prints every contribution hash while verifying; capture and compare.
   const lines = [];
   const logger = { info: (m) => lines.push(String(m)), debug: () => {}, warn: (m) => lines.push(String(m)), error: (m) => lines.push(String(m)), log: (m) => lines.push(String(m)) };
-  const sound = await snarkjs.zKey.verifyFromR1cs(r1csPath(circuit), PTAU, zkey, logger);
+  const sound = await snarkjs.zKey.verifyFromR1cs(r1csPath(circuit), ptauPath(circuit), zkey, logger);
   if (!sound) { console.log("snarkjs: zkey does not verify against r1cs + ptau"); ok = false; }
   const printed = lines.join("\n").match(/contribution #\d+[^\n]*\n((?:\t\t[0-9a-f ]+\n?){4})/g) ?? [];
   const hashes = printed.map((blk) => blk.split("\n").slice(1).join(" ").replace(/\s+/g, ""));
@@ -215,12 +222,13 @@ async function verifyAgainstTranscript(t, circuit, zkey) {
   return ok;
 }
 
-async function checkPtau() {
-  if (!existsSync(PTAU)) fail(`ptau missing: run npm run -w circuits setup:dev once to download it`);
+async function checkPtau(circuit) {
+  const file = ptauPath(circuit), want = PTAUS[POWER[circuit]].sha256;
+  if (!existsSync(file)) fail(`ptau missing: run npm run -w circuits setup:dev once to download it`);
   const h = createHash("sha256");
-  await pipeline(createReadStream(PTAU), h);
+  await pipeline(createReadStream(file), h);
   const d = h.digest("hex");
-  if (d !== PTAU_SHA256) fail(`ptau sha256 ${d} != ${PTAU_SHA256}`);
+  if (d !== want) fail(`ptau sha256 ${d} != ${want}`);
 }
 
 async function blake2b(file) {

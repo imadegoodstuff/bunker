@@ -21,6 +21,18 @@ const SECTIONS: { h: string; p: React.ReactNode }[] = [
     p: <>A wallet can register its <code>bunker1…</code> address under its public account (<code>register</code>, one transaction). From then on anyone can type the <code>0x…</code> address in the vault and the payment lands as a shielded note, unlinkable to the sender. The registry is public; which payments reach it is not.</>,
   },
   {
+    h: "The asset stays inside",
+    p: <>Since revision 1 of the v2 protocol the asset is a private witness of the proof. Shielding and withdrawing name a token, because value crosses the boundary; a transfer inside the pool publishes none, so a USDT send and a BNB send look identical on-chain and a receiver learns the token from inside the note. The circuit still forces every input and output of one transaction to share an asset, so no transfer can turn one token into another.</>,
+  },
+  {
+    h: "Compliance without a backdoor",
+    p: <>A withdrawal can carry a second Merkle proof: that every note it spends descends from a deposit the <em>association set</em> vouches for. The set is built by the indexer from public events only (deposits from OFAC-sanctioned addresses are excluded, and lineage is inherited through transactions that proved it) and its root is published on-chain by the relayer. The proof names no note and no deposit; whoever receives the funds can ask for it, and nobody can impose it. Separately, a per-token <em>compliance hook</em> can be set by governance for deposits of that token only (a tokenised stock might require an attestation to enter) and never touches sends or withdrawals. And the owner of a vault can export a <em>disclosure report</em>: the openings of chosen notes, verifiable against the chain by whoever they hand it to.</>,
+  },
+  {
+    h: "Post-quantum addresses",
+    p: <>A <code>bunkerq1…</code> address is the same vault with an ML-KEM-768 key attached. Notes sent to it are encrypted under both the curve and the lattice (hybrid), so their contents stay confidential even if a quantum computer later breaks the curve; against today's adversaries they are exactly as strong as classic notes. The address is longer and the note ciphertext about 1.2 kB; toggle it in the vault's address card.</>,
+  },
+  {
     h: "Viewing keys",
     p: <>A full viewing key (<code>bunkerview1…</code>) decrypts every note, memo and spend of a vault and signs nothing. Paste it into a second device for a read-only mirror, or hand it to whoever needs to audit you. The spending seed never leaves the device that holds it.</>,
   },
@@ -30,7 +42,7 @@ const SECTIONS: { h: string; p: React.ReactNode }[] = [
   },
   {
     h: "Relayer",
-    p: <>Sends, withdrawals, trades and swaps go through a relayer so your public wallet never signs them. The relayer receives a finished proof and ciphertexts, decrypts the fee note addressed to it, checks it covers gas, waits a random delay, and submits. It cannot alter, redirect or front-run a note; it can only decline. Anyone can run one; the app picks the cheapest healthy relayer it knows. Fees are quoted per asset at <code>/info</code> and ERC-20 fees are priced through PancakeSwap or the launchpad curve.</>,
+    p: <>Sends, withdrawals, trades and swaps go through a relayer so your public wallet never signs them. The relayer receives a finished proof and ciphertexts, decrypts the fee note addressed to it, checks it covers gas, waits a random delay, and submits through a private endpoint rather than the public mempool, bundling several users' transactions into one <code>transactBatch</code> when they are due together. It cannot alter, redirect or front-run a note (every proof is bound to this chain, this pool and an expiry); it can only decline. Anyone can run one against the published <a className="text-steel hover:text-fg" href="https://github.com/imadegoodstuff/bunker/blob/launchpad/RELAYER.md" target="_blank" rel="noreferrer">relayer spec</a>; the app picks the cheapest healthy relayer it knows, and every operation can also be submitted from your own wallet. Fees are quoted per asset at <code>/info</code> and ERC-20 fees are priced through PancakeSwap or the launchpad curve.</>,
   },
   {
     h: "Launchpad",
@@ -50,7 +62,7 @@ const SECTIONS: { h: string; p: React.ReactNode }[] = [
   },
   {
     h: "Trust and limits",
-    p: <>A guardian key can pause new shields and lower the deposit cap; it cannot touch funds, block withdrawals or alter circuits. The indexer is a convenience: anyone can rebuild the tree from chain events. Amount and timing correlations are not hidden by cryptography; the interface nudges round denominations and patience. The proving keys come from a deterministic development setup, not a multi-party ceremony; a ceremony is the next step before the pool should hold serious value. The code is new and unaudited.</>,
+    p: <>A guardian key can pause new shields and lower the deposit cap, immediately; it cannot touch funds, block withdrawals or alter circuits. Everything else that is configurable (a compliance hook for a token, the guardian itself) belongs to a 24-hour timelock, so any change is public a day before it applies. The indexer is a convenience: anyone can rebuild the tree from chain events. Amount and timing correlations are not hidden by cryptography; the interface nudges round denominations and patience. The proving keys come from a deterministic development setup, not a multi-party ceremony; a ceremony is the next step before the pool should hold serious value. The code is new and unaudited.</>,
   },
   {
     h: "Android",

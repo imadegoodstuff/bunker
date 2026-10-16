@@ -54,7 +54,7 @@ export const POOL_V1_ADDRESS: EvmAddress | null = process.env.NEXT_PUBLIC_POOL_V
 export const LAUNCHPAD_V1_ADDRESS: EvmAddress | null = process.env.NEXT_PUBLIC_LAUNCHPAD_V1_ADDRESS ? getAddress(process.env.NEXT_PUBLIC_LAUNCHPAD_V1_ADDRESS) : MAINNET ? bscV1.launchpad : null;
 export const INDEXER_V1_URL: string | null = process.env.NEXT_PUBLIC_INDEXER_V1_URL || (MAINNET ? "https://bunker-indexer-v1.fly.dev" : null);
 /** The v1 -> v2 bridge: a v1 unshield into it becomes a v2 shield in the same transaction. */
-export const MIGRATE_EXIT_ADDRESS: EvmAddress | null = process.env.NEXT_PUBLIC_MIGRATE_EXIT_ADDRESS ? getAddress(process.env.NEXT_PUBLIC_MIGRATE_EXIT_ADDRESS) : MAINNET ? "0xE4E7B3AEC97b66263CC5CC08E931837aaf631f13" : null;
+export const MIGRATE_EXIT_ADDRESS: EvmAddress | null = process.env.NEXT_PUBLIC_MIGRATE_EXIT_ADDRESS ? getAddress(process.env.NEXT_PUBLIC_MIGRATE_EXIT_ADDRESS) : MAINNET ? "0xdD60ab615dDC94858E051F5c39d57B3FbceE114a" : null;
 export const LEGACY = !!(POOL_V1_ADDRESS && LAUNCHPAD_V1_ADDRESS && INDEXER_V1_URL);
 export const NETWORK_V1: NetworkConfigV1 | null = LEGACY
   ? {

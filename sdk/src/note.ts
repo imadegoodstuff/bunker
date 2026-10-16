@@ -6,6 +6,8 @@ import { MAX_U64, mod, bytesToBigIntBE, concatBytes, randomBytes } from "./field
 
 export interface Note {
   asset: bigint;
+  /** the token behind `asset` (BNB = address(0)); carried inside the ciphertext since v2.1, so a receiver can name the pool */
+  token?: `0x${string}`;
   value: bigint; // shares, u64
   gd: Point;
   pkd: Point;
@@ -59,9 +61,15 @@ export function addressToBytes32(addr: string): Uint8Array {
   return out;
 }
 
-export function newNote(asset: bigint, value: bigint, gd: Point, pkd: Point, memoRandom = true): Note {
+export function newNote(asset: bigint, value: bigint, gd: Point, pkd: Point, token?: `0x${string}`): Note {
   if (value < 0n || value > MAX_U64) throw new Error("value out of range");
-  return { asset, value, gd, pkd, ...freshRandomness() };
+  return { asset, token, value, gd, pkd, ...freshRandomness() };
+}
+
+/** A note of `token` (asset id derived), the usual way to make one. */
+export function noteFor(token: string, value: bigint, gd: Point, pkd: Point): Note {
+  const t = token.toLowerCase() as `0x${string}`;
+  return newNote(assetId(t), value, gd, pkd, t);
 }
 
 /** `ownerHash = Poseidon(g_d.x, g_d.y, pk_d.x, pk_d.y)`: the owner half of a v2 commitment (circuits/src/note.circom OwnerHash). */
@@ -84,6 +92,6 @@ export async function nullifier(nk: bigint, rho: bigint, position: number | bigi
 }
 
 /** A zero-value placeholder spend. The circuit skips its membership proof. */
-export function dummyNote(asset: bigint, gd: Point, pkd: Point): Note {
-  return { asset, value: 0n, gd, pkd, ...freshRandomness() };
+export function dummyNote(asset: bigint, gd: Point, pkd: Point, token?: `0x${string}`): Note {
+  return { asset, token, value: 0n, gd, pkd, ...freshRandomness() };
 }

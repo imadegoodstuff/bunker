@@ -18,6 +18,11 @@ export const ShieldedPoolAbi = [
         "type": "address"
       },
       {
+        "internalType": "address",
+        "name": "governance_",
+        "type": "address"
+      },
+      {
         "internalType": "uint256",
         "name": "emptyLeaf",
         "type": "uint256"
@@ -53,7 +58,27 @@ export const ShieldedPoolAbi = [
   },
   {
     "inputs": [],
+    "name": "BatchShield",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "CapNotLower",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ComplianceRejected",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "EmptyBatch",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "Expired",
     "type": "error"
   },
   {
@@ -181,6 +206,25 @@ export const ShieldedPoolAbi = [
       },
       {
         "indexed": false,
+        "internalType": "address",
+        "name": "hook",
+        "type": "address"
+      }
+    ],
+    "name": "ComplianceHookSet",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "indexed": false,
         "internalType": "uint256",
         "name": "amount",
         "type": "uint256"
@@ -218,6 +262,19 @@ export const ShieldedPoolAbi = [
       }
     ],
     "name": "Drain",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "governance",
+        "type": "address"
+      }
+    ],
+    "name": "GovernanceSet",
     "type": "event"
   },
   {
@@ -388,6 +445,24 @@ export const ShieldedPoolAbi = [
       },
       {
         "indexed": false,
+        "internalType": "int256",
+        "name": "publicAmount",
+        "type": "int256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "aspRoot",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "sender",
+        "type": "address"
+      },
+      {
+        "indexed": false,
         "internalType": "uint256[3]",
         "name": "commitments",
         "type": "uint256[3]"
@@ -539,6 +614,32 @@ export const ShieldedPoolAbi = [
   {
     "inputs": [],
     "name": "NATIVE_UNIT",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "PQ_ADDRESS_BYTES",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "REVISION",
     "outputs": [
       {
         "internalType": "uint256",
@@ -743,6 +844,25 @@ export const ShieldedPoolAbi = [
     "inputs": [
       {
         "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "complianceHook",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
         "name": "token",
         "type": "address"
       },
@@ -876,6 +996,16 @@ export const ShieldedPoolAbi = [
             "internalType": "struct ShieldedPool.Reshield",
             "name": "reshield",
             "type": "tuple"
+          },
+          {
+            "internalType": "uint64",
+            "name": "validUntil",
+            "type": "uint64"
+          },
+          {
+            "internalType": "bytes",
+            "name": "complianceData",
+            "type": "bytes"
           }
         ],
         "internalType": "struct ShieldedPool.ExtData",
@@ -891,7 +1021,7 @@ export const ShieldedPoolAbi = [
         "type": "uint256"
       }
     ],
-    "stateMutability": "pure",
+    "stateMutability": "view",
     "type": "function"
   },
   {
@@ -921,6 +1051,19 @@ export const ShieldedPoolAbi = [
         "internalType": "uint256",
         "name": "",
         "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "governance",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
       }
     ],
     "stateMutability": "view",
@@ -1245,6 +1388,37 @@ export const ShieldedPoolAbi = [
     "inputs": [
       {
         "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "hook",
+        "type": "address"
+      }
+    ],
+    "name": "setComplianceHook",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "g",
+        "type": "address"
+      }
+    ],
+    "name": "setGovernance",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
         "name": "g",
         "type": "address"
       }
@@ -1417,138 +1591,311 @@ export const ShieldedPoolAbi = [
       {
         "components": [
           {
-            "internalType": "uint256[2]",
-            "name": "a",
-            "type": "uint256[2]"
-          },
-          {
-            "internalType": "uint256[2][2]",
-            "name": "b",
-            "type": "uint256[2][2]"
-          },
-          {
-            "internalType": "uint256[2]",
-            "name": "c",
-            "type": "uint256[2]"
-          }
-        ],
-        "internalType": "struct ShieldedPool.Proof",
-        "name": "proof",
-        "type": "tuple"
-      },
-      {
-        "internalType": "address",
-        "name": "token",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256",
-        "name": "root",
-        "type": "uint256"
-      },
-      {
-        "internalType": "int256",
-        "name": "publicAmount",
-        "type": "int256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "aspRoot",
-        "type": "uint256"
-      },
-      {
-        "internalType": "address",
-        "name": "aspProvider",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256[]",
-        "name": "nullifiers",
-        "type": "uint256[]"
-      },
-      {
-        "internalType": "uint256[3]",
-        "name": "outCommitments",
-        "type": "uint256[3]"
-      },
-      {
-        "components": [
-          {
-            "internalType": "address",
-            "name": "recipient",
-            "type": "address"
+            "components": [
+              {
+                "internalType": "uint256[2]",
+                "name": "a",
+                "type": "uint256[2]"
+              },
+              {
+                "internalType": "uint256[2][2]",
+                "name": "b",
+                "type": "uint256[2][2]"
+              },
+              {
+                "internalType": "uint256[2]",
+                "name": "c",
+                "type": "uint256[2]"
+              }
+            ],
+            "internalType": "struct ShieldedPool.Proof",
+            "name": "proof",
+            "type": "tuple"
           },
           {
             "internalType": "address",
-            "name": "exitTarget",
+            "name": "token",
             "type": "address"
           },
           {
-            "internalType": "bytes",
-            "name": "exitData",
-            "type": "bytes"
+            "internalType": "uint256",
+            "name": "root",
+            "type": "uint256"
           },
           {
-            "internalType": "bytes",
-            "name": "ciphertext0",
-            "type": "bytes"
+            "internalType": "int256",
+            "name": "publicAmount",
+            "type": "int256"
           },
           {
-            "internalType": "bytes",
-            "name": "ciphertext1",
-            "type": "bytes"
+            "internalType": "uint256",
+            "name": "aspRoot",
+            "type": "uint256"
           },
           {
-            "internalType": "bytes",
-            "name": "ciphertext2",
-            "type": "bytes"
+            "internalType": "address",
+            "name": "aspProvider",
+            "type": "address"
           },
           {
-            "internalType": "bytes",
-            "name": "outCiphertext",
-            "type": "bytes"
+            "internalType": "uint256[]",
+            "name": "nullifiers",
+            "type": "uint256[]"
+          },
+          {
+            "internalType": "uint256[3]",
+            "name": "outCommitments",
+            "type": "uint256[3]"
           },
           {
             "components": [
               {
                 "internalType": "address",
-                "name": "token",
+                "name": "recipient",
                 "type": "address"
               },
               {
-                "internalType": "uint256",
-                "name": "ownerHash",
-                "type": "uint256"
-              },
-              {
-                "internalType": "uint256",
-                "name": "rho",
-                "type": "uint256"
-              },
-              {
-                "internalType": "uint256",
-                "name": "rcm",
-                "type": "uint256"
+                "internalType": "address",
+                "name": "exitTarget",
+                "type": "address"
               },
               {
                 "internalType": "bytes",
-                "name": "ciphertext",
+                "name": "exitData",
+                "type": "bytes"
+              },
+              {
+                "internalType": "bytes",
+                "name": "ciphertext0",
+                "type": "bytes"
+              },
+              {
+                "internalType": "bytes",
+                "name": "ciphertext1",
+                "type": "bytes"
+              },
+              {
+                "internalType": "bytes",
+                "name": "ciphertext2",
+                "type": "bytes"
+              },
+              {
+                "internalType": "bytes",
+                "name": "outCiphertext",
+                "type": "bytes"
+              },
+              {
+                "components": [
+                  {
+                    "internalType": "address",
+                    "name": "token",
+                    "type": "address"
+                  },
+                  {
+                    "internalType": "uint256",
+                    "name": "ownerHash",
+                    "type": "uint256"
+                  },
+                  {
+                    "internalType": "uint256",
+                    "name": "rho",
+                    "type": "uint256"
+                  },
+                  {
+                    "internalType": "uint256",
+                    "name": "rcm",
+                    "type": "uint256"
+                  },
+                  {
+                    "internalType": "bytes",
+                    "name": "ciphertext",
+                    "type": "bytes"
+                  }
+                ],
+                "internalType": "struct ShieldedPool.Reshield",
+                "name": "reshield",
+                "type": "tuple"
+              },
+              {
+                "internalType": "uint64",
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "internalType": "bytes",
+                "name": "complianceData",
                 "type": "bytes"
               }
             ],
-            "internalType": "struct ShieldedPool.Reshield",
-            "name": "reshield",
+            "internalType": "struct ShieldedPool.ExtData",
+            "name": "ext",
             "type": "tuple"
           }
         ],
-        "internalType": "struct ShieldedPool.ExtData",
-        "name": "ext",
+        "internalType": "struct ShieldedPool.TransactArgs",
+        "name": "a",
         "type": "tuple"
       }
     ],
     "name": "transact",
     "outputs": [],
     "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "components": [
+              {
+                "internalType": "uint256[2]",
+                "name": "a",
+                "type": "uint256[2]"
+              },
+              {
+                "internalType": "uint256[2][2]",
+                "name": "b",
+                "type": "uint256[2][2]"
+              },
+              {
+                "internalType": "uint256[2]",
+                "name": "c",
+                "type": "uint256[2]"
+              }
+            ],
+            "internalType": "struct ShieldedPool.Proof",
+            "name": "proof",
+            "type": "tuple"
+          },
+          {
+            "internalType": "address",
+            "name": "token",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "root",
+            "type": "uint256"
+          },
+          {
+            "internalType": "int256",
+            "name": "publicAmount",
+            "type": "int256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "aspRoot",
+            "type": "uint256"
+          },
+          {
+            "internalType": "address",
+            "name": "aspProvider",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256[]",
+            "name": "nullifiers",
+            "type": "uint256[]"
+          },
+          {
+            "internalType": "uint256[3]",
+            "name": "outCommitments",
+            "type": "uint256[3]"
+          },
+          {
+            "components": [
+              {
+                "internalType": "address",
+                "name": "recipient",
+                "type": "address"
+              },
+              {
+                "internalType": "address",
+                "name": "exitTarget",
+                "type": "address"
+              },
+              {
+                "internalType": "bytes",
+                "name": "exitData",
+                "type": "bytes"
+              },
+              {
+                "internalType": "bytes",
+                "name": "ciphertext0",
+                "type": "bytes"
+              },
+              {
+                "internalType": "bytes",
+                "name": "ciphertext1",
+                "type": "bytes"
+              },
+              {
+                "internalType": "bytes",
+                "name": "ciphertext2",
+                "type": "bytes"
+              },
+              {
+                "internalType": "bytes",
+                "name": "outCiphertext",
+                "type": "bytes"
+              },
+              {
+                "components": [
+                  {
+                    "internalType": "address",
+                    "name": "token",
+                    "type": "address"
+                  },
+                  {
+                    "internalType": "uint256",
+                    "name": "ownerHash",
+                    "type": "uint256"
+                  },
+                  {
+                    "internalType": "uint256",
+                    "name": "rho",
+                    "type": "uint256"
+                  },
+                  {
+                    "internalType": "uint256",
+                    "name": "rcm",
+                    "type": "uint256"
+                  },
+                  {
+                    "internalType": "bytes",
+                    "name": "ciphertext",
+                    "type": "bytes"
+                  }
+                ],
+                "internalType": "struct ShieldedPool.Reshield",
+                "name": "reshield",
+                "type": "tuple"
+              },
+              {
+                "internalType": "uint64",
+                "name": "validUntil",
+                "type": "uint64"
+              },
+              {
+                "internalType": "bytes",
+                "name": "complianceData",
+                "type": "bytes"
+              }
+            ],
+            "internalType": "struct ShieldedPool.ExtData",
+            "name": "ext",
+            "type": "tuple"
+          }
+        ],
+        "internalType": "struct ShieldedPool.TransactArgs[]",
+        "name": "batch",
+        "type": "tuple[]"
+      }
+    ],
+    "name": "transactBatch",
+    "outputs": [],
+    "stateMutability": "nonpayable",
     "type": "function"
   },
   {

@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import {PoseidonT3} from "poseidon-solidity/PoseidonT3.sol";
 import {PoseidonT6} from "poseidon-solidity/PoseidonT6.sol";
-import {ITransact2x3Verifier, ITransact4x3Verifier, IBunkerExit, IERC20, IERC20Metadata} from "./interfaces.sol";
+import {ITransact2x3Verifier, ITransact4x3Verifier, IBunkerExit, IComplianceHook, IERC20, IERC20Metadata} from "./interfaces.sol";
 
 /**
  * @title BUNKER shielded pool, protocol v2
@@ -25,16 +25,35 @@ import {ITransact2x3Verifier, ITransact4x3Verifier, IBunkerExit, IERC20, IERC20M
  *  - Address registry. An EOA can publish its shielded address, so anyone can
  *    pay 0x… privately without exchanging bunker1… strings out of band.
  *
+ * v2.1 (this revision; same note format, same tree, same share math):
+ *  - Hidden asset in-pool. The asset is a private witness; the proof binds it
+ *    to the public `token` only when value crosses the boundary
+ *    (`publicAmount != 0`). A private send names no token, so in-pool
+ *    transfers do not partition the anonymity set by asset.
+ *  - Intent binding. `extDataHash` covers `block.chainid` and this pool's
+ *    address, and `ext.validUntil` lets a proof expire: a transact cannot be
+ *    replayed on another chain or deployment, nor hoarded.
+ *  - `transactBatch`: a relayer lands several proofs in one transaction.
+ *  - Compliance seam. Governance (a timelock) may attach a per-token hook
+ *    consulted at the entrance only (`publicAmount > 0`); exits are never
+ *    gated and the hook can see nothing inside the pool. No hook is set at
+ *    deployment.
+ *  - Registry accepts post-quantum addresses (shielded address + ML-KEM-768
+ *    public key).
+ *
  * Everything below the shield/unshield boundary (sender, receiver, amount,
- * which notes were spent, what the relayer earned) is private; the boundary
- * itself is public, as in Zcash. Not upgradeable. The guardian can pause
- * shields and lower (never raise) a pool's TVL cap; nothing can stop
+ * which notes were spent, what the relayer earned, and for in-pool transfers
+ * the asset) is private; the boundary itself is public, as in Zcash. Not
+ * upgradeable: the verifiers are immutable and no role can move funds. The
+ * guardian can pause shields and lower (never raise) a pool's TVL cap;
+ * governance can set the guardian and the entrance hook; nothing can stop
  * `transact` with `publicAmount <= 0`.
  */
 contract ShieldedPool {
     // ---- constants (mirrored in sdk/src/field.ts and sdk/src/pool.ts)
 
     uint256 public constant VERSION = 2;
+    uint256 public constant REVISION = 1;
     uint256 public constant FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
     uint32 public constant LEVELS = 26;
     uint32 public constant ROOT_HISTORY = 128;
@@ -48,6 +67,8 @@ contract ShieldedPool {
     uint256 public constant NATIVE_UNIT = 1e9;
     /// @dev a shielded address on the wire: d (11 bytes) || compressed pk_d (32 bytes)
     uint256 public constant ADDRESS_BYTES = 43;
+    /// @dev a post-quantum shielded address: ADDRESS_BYTES || ML-KEM-768 encapsulation key (1184 bytes)
+    uint256 public constant PQ_ADDRESS_BYTES = 43 + 1184;
 
     // ---- types
 
@@ -81,12 +102,38 @@ contract ShieldedPool {
         bytes ciphertext2; // the relayer's fee note
         bytes outCiphertext;
         Reshield reshield;
+        /// @dev unix time after which the proof is void (0 = never). Bound by the proof like everything else here.
+        uint64 validUntil;
+        /// @dev opaque input for the entrance compliance hook (empty when none is set)
+        bytes complianceData;
     }
 
     struct Proof {
         uint256[2] a;
         uint256[2][2] b;
         uint256[2] c;
+    }
+
+    /**
+     * @param token         pool asset (address(0) = BNB). Ignored, and expected to be address(0), when `publicAmount == 0`.
+     * @param root          commitment-tree root the proof was made against (must be in the ring, or become so after an auto-drain)
+     * @param publicAmount  signed shares: > 0 shield (msg.sender deposits), < 0 unshield, 0 private send (asset stays hidden)
+     * @param aspRoot       association-set root or 0
+     * @param aspProvider   whose ring `aspRoot` must be in (ignored when aspRoot == 0)
+     * @param nullifiers    2 or 4 nullifiers
+     * @param outCommitments the three new leaves: payment, change, relayer fee
+     * @param ext           recipient / exit / reshield / ciphertexts / expiry, bound by the proof
+     */
+    struct TransactArgs {
+        Proof proof;
+        address token;
+        uint256 root;
+        int256 publicAmount;
+        uint256 aspRoot;
+        address aspProvider;
+        uint256[] nullifiers;
+        uint256[3] outCommitments;
+        ExtData ext;
     }
 
     struct AspRoots {
@@ -99,8 +146,13 @@ contract ShieldedPool {
 
     ITransact2x3Verifier public immutable verifier2x3;
     ITransact4x3Verifier public immutable verifier4x3;
+    /// @notice emergency role: pause shields, lower caps. No delay, no access to funds.
     address public guardian;
+    /// @notice policy role (a timelock): sets the guardian and the per-token entrance hook, hands itself on.
+    address public governance;
     bool public shieldPaused;
+    /// @notice entrance compliance hook per token (address(0) = none). Consulted on shields only.
+    mapping(address => address) public complianceHook;
 
     uint256[LEVELS] public zeros;
     uint256[LEVELS] public filledSubtrees;
@@ -124,7 +176,13 @@ contract ShieldedPool {
 
     event PoolCreated(address indexed token, uint8 decimals, uint256 unit, uint256 tvlCap);
     /// @dev `firstIndex` is the leaf index of commitment0; the three leaves are queued, `Drain` says when they entered the tree.
-    event Transact(address indexed token, uint32 indexed firstIndex, uint256[3] commitments, bytes ciphertext0, bytes ciphertext1, bytes ciphertext2, bytes outCiphertext);
+    /// `publicAmount == 0` is a private send: `token` is address(0) and says nothing about the notes' asset.
+    /// @dev `token` is zero and `publicAmount` is 0 for an in-pool send (the asset stays hidden). `aspRoot` and `sender`
+    ///      let association-set providers track lineage: a shield's sender is its depositor, and a transaction that
+    ///      proved membership against `aspRoot` hands that standing on to its outputs.
+    event Transact(
+        address indexed token, uint32 indexed firstIndex, int256 publicAmount, uint256 aspRoot, address sender, uint256[3] commitments, bytes ciphertext0, bytes ciphertext1, bytes ciphertext2, bytes outCiphertext
+    );
     /// @dev A note minted by the pool for an exit hook's proceeds. `shares` is public; who owns it is not.
     event OpenNote(address indexed token, uint32 indexed index, uint256 commitment, uint256 shares, uint256 ownerHash, bytes ciphertext);
     event Drain(uint32 indexed fromIndex, uint32 count, uint256 newRoot, uint32 rootIndex);
@@ -137,6 +195,8 @@ contract ShieldedPool {
     event ShieldPausedSet(bool paused);
     event TvlCapLowered(address indexed token, uint256 cap);
     event GuardianSet(address guardian);
+    event GovernanceSet(address governance);
+    event ComplianceHookSet(address indexed token, address hook);
 
     // ---- errors (sdk/src/errors.ts mirrors these by name)
 
@@ -164,6 +224,10 @@ contract ShieldedPool {
     error BadAddress();
     error AmountTooSmall();
     error NothingQueued();
+    error Expired();
+    error ComplianceRejected();
+    error BatchShield();
+    error EmptyBatch();
 
     modifier nonReentrant() {
         if (_lock != 1) revert Reentrancy();
@@ -173,10 +237,11 @@ contract ShieldedPool {
     }
 
     /// @param emptyLeaf Poseidon(reduce("bunker_empty")), the tree's empty leaf (sdk/src/merkle.ts EMPTY_LEAF_PREIMAGE)
-    constructor(address v2x3, address v4x3, address guardian_, uint256 emptyLeaf, uint256 nativeTvlCap) {
+    constructor(address v2x3, address v4x3, address guardian_, address governance_, uint256 emptyLeaf, uint256 nativeTvlCap) {
         verifier2x3 = ITransact2x3Verifier(v2x3);
         verifier4x3 = ITransact4x3Verifier(v4x3);
         guardian = guardian_;
+        governance = governance_;
         uint256 z = emptyLeaf;
         for (uint32 i = 0; i < LEVELS; i++) {
             zeros[i] = z;
@@ -230,8 +295,9 @@ contract ShieldedPool {
     // ---- registry
 
     /// @notice Publish the shielded address payments to `msg.sender` should be encrypted to. Overwrites; empty bytes clears.
+    /// Either a classic address (ADDRESS_BYTES) or a post-quantum one (PQ_ADDRESS_BYTES: the same address followed by an ML-KEM-768 encapsulation key).
     function register(bytes calldata shieldedAddress) external {
-        if (shieldedAddress.length != 0 && shieldedAddress.length != ADDRESS_BYTES) revert BadAddress();
+        if (shieldedAddress.length != 0 && shieldedAddress.length != ADDRESS_BYTES && shieldedAddress.length != PQ_ADDRESS_BYTES) revert BadAddress();
         registry[msg.sender] = shieldedAddress;
         emit Registered(msg.sender, shieldedAddress);
     }
@@ -366,8 +432,10 @@ contract ShieldedPool {
 
     // ---- transact (SPEC §6, §7, §11)
 
-    function extDataHash(ExtData calldata ext) public pure returns (uint256) {
-        return uint256(sha256(abi.encode(ext))) % FIELD;
+    /// @notice What the proof binds: `sha256(abi.encode(block.chainid, address(this), ext)) mod p`. The chain and the
+    /// pool are mixed in here rather than carried in calldata, so a proof is void anywhere but on this deployment.
+    function extDataHash(ExtData calldata ext) public view returns (uint256) {
+        return uint256(sha256(abi.encode(block.chainid, address(this), ext))) % FIELD;
     }
 
     /// @notice Commitment of a note whose owner is given as `ownerHash = Poseidon(g_d, pk_d)` (what `OpenNote` mints).
@@ -375,84 +443,92 @@ contract ShieldedPool {
         return PoseidonT6.hash([asset, shares, ownerHash, rho, rcm]);
     }
 
+    /// @notice One shielded action. See `TransactArgs`.
+    function transact(TransactArgs calldata a) external payable nonReentrant {
+        _transact(a, msg.value);
+    }
+
     /**
-     * @param token         pool asset (address(0) = BNB)
-     * @param root          commitment-tree root the proof was made against (must be in the ring, or become so after an auto-drain)
-     * @param publicAmount  signed shares: > 0 shield (msg.sender deposits), < 0 unshield, 0 private send
-     * @param aspRoot       association-set root or 0
-     * @param aspProvider   whose ring `aspRoot` must be in (ignored when aspRoot == 0)
-     * @param nullifiers    2 or 4 nullifiers
-     * @param outCommitments the three new leaves: payment, change, relayer fee
-     * @param ext           recipient / exit / reshield / ciphertexts, bound by the proof
+     * @notice Several shielded actions in one transaction (a relayer landing its
+     * queue at once). Shields are excluded: they carry value and a depositor,
+     * which a batch has no way to attribute. One failing item reverts the batch.
      */
-    function transact(
-        Proof calldata proof,
-        address token,
-        uint256 root,
-        int256 publicAmount,
-        uint256 aspRoot,
-        address aspProvider,
-        uint256[] calldata nullifiers,
-        uint256[3] calldata outCommitments,
-        ExtData calldata ext
-    ) external payable nonReentrant {
-        Pool storage pool = _pools[token];
-        if (!pool.exists) revert NotInitialized();
-        if (nullifiers.length != 2 && nullifiers.length != 4) revert MalformedProof();
-        if (!isKnownRoot(root)) {
-            _drain(AUTO_DRAIN);
-            if (!isKnownRoot(root)) revert UnknownRoot();
+    function transactBatch(TransactArgs[] calldata batch) external nonReentrant {
+        if (batch.length == 0) revert EmptyBatch();
+        for (uint256 i = 0; i < batch.length; i++) {
+            if (batch[i].publicAmount > 0) revert BatchShield();
+            _transact(batch[i], 0);
         }
-        if (aspRoot != 0 && !isKnownAspRoot(aspProvider, aspRoot)) revert UnknownAspRoot();
+    }
+
+    function _transact(TransactArgs calldata a, uint256 value) internal {
+        ExtData calldata ext = a.ext;
+        int256 publicAmount = a.publicAmount;
+        if (a.nullifiers.length != 2 && a.nullifiers.length != 4) revert MalformedProof();
+        if (ext.validUntil != 0 && block.timestamp > ext.validUntil) revert Expired();
+        if (!isKnownRoot(a.root)) {
+            _drain(AUTO_DRAIN);
+            if (!isKnownRoot(a.root)) revert UnknownRoot();
+        }
+        if (a.aspRoot != 0 && !isKnownAspRoot(a.aspProvider, a.aspRoot)) revert UnknownAspRoot();
         if (publicAmount >= int256(uint256(1) << 64) || publicAmount <= -int256(uint256(1) << 64)) revert PublicAmountOutOfRange();
 
-        // ---- proof
+        // ---- proof. The asset is public only when value crosses the boundary.
         {
             uint256 pa = publicAmount >= 0 ? uint256(publicAmount) : FIELD - uint256(-publicAmount);
-            uint256 asset = assetId(token);
+            uint256 assetPublic = publicAmount == 0 ? 0 : assetId(a.token);
             uint256 extHash = extDataHash(ext);
             bool ok;
-            if (nullifiers.length == 2) {
-                uint256[10] memory input = [root, pa, asset, extHash, aspRoot, nullifiers[0], nullifiers[1], outCommitments[0], outCommitments[1], outCommitments[2]];
-                ok = verifier2x3.verifyProof(proof.a, proof.b, proof.c, input);
+            if (a.nullifiers.length == 2) {
+                uint256[10] memory input = [a.root, pa, assetPublic, extHash, a.aspRoot, a.nullifiers[0], a.nullifiers[1], a.outCommitments[0], a.outCommitments[1], a.outCommitments[2]];
+                ok = verifier2x3.verifyProof(a.proof.a, a.proof.b, a.proof.c, input);
             } else {
                 uint256[12] memory input = [
-                    root, pa, asset, extHash, aspRoot, nullifiers[0], nullifiers[1], nullifiers[2], nullifiers[3], outCommitments[0], outCommitments[1], outCommitments[2]
+                    a.root, pa, assetPublic, extHash, a.aspRoot, a.nullifiers[0], a.nullifiers[1], a.nullifiers[2], a.nullifiers[3], a.outCommitments[0], a.outCommitments[1], a.outCommitments[2]
                 ];
-                ok = verifier4x3.verifyProof(proof.a, proof.b, proof.c, input);
+                ok = verifier4x3.verifyProof(a.proof.a, a.proof.b, a.proof.c, input);
             }
             if (!ok) revert InvalidProof();
         }
 
         // ---- nullifiers (never deferred)
-        for (uint256 i = 0; i < nullifiers.length; i++) {
-            if (nullifierSpent[nullifiers[i]]) revert NullifierSpent();
-            for (uint256 j = i + 1; j < nullifiers.length; j++) {
-                if (nullifiers[i] == nullifiers[j]) revert NullifierSpent();
+        for (uint256 i = 0; i < a.nullifiers.length; i++) {
+            if (nullifierSpent[a.nullifiers[i]]) revert NullifierSpent();
+            for (uint256 j = i + 1; j < a.nullifiers.length; j++) {
+                if (a.nullifiers[i] == a.nullifiers[j]) revert NullifierSpent();
             }
-            nullifierSpent[nullifiers[i]] = true;
-            emit Nullified(nullifiers[i]);
+            nullifierSpent[a.nullifiers[i]] = true;
+            emit Nullified(a.nullifiers[i]);
         }
 
         // ---- outputs are queued before any external call
-        uint32 first = _enqueue(outCommitments[0]);
-        _enqueue(outCommitments[1]);
-        _enqueue(outCommitments[2]);
-        emit Transact(token, first, outCommitments, ext.ciphertext0, ext.ciphertext1, ext.ciphertext2, ext.outCiphertext);
+        uint32 first = _enqueue(a.outCommitments[0]);
+        _enqueue(a.outCommitments[1]);
+        _enqueue(a.outCommitments[2]);
+        emit Transact(publicAmount == 0 ? address(0) : a.token, first, publicAmount, a.aspRoot, msg.sender, a.outCommitments, ext.ciphertext0, ext.ciphertext1, ext.ciphertext2, ext.outCiphertext);
 
         // ---- value flow
+        if (publicAmount == 0) {
+            if (value != 0) revert ValueMismatch();
+            return;
+        }
+        address token = a.token;
+        Pool storage pool = _pools[token];
+        if (!pool.exists) revert NotInitialized();
         if (publicAmount > 0) {
             if (shieldPaused) revert ShieldPausedError();
             uint256 shares = uint256(publicAmount);
             uint256 amount = amountForMint(pool, shares);
             if (pool.totalAssets + amount > pool.tvlCap) revert TvlCapExceeded();
+            address hook = complianceHook[token];
+            if (hook != address(0) && !IComplianceHook(hook).onShield(token, msg.sender, amount * pool.unit, ext.complianceData)) revert ComplianceRejected();
             pool.totalAssets += amount;
             pool.totalShares += shares;
             pool.totalIn += amount;
-            _moveIn(token, pool.unit, amount);
+            _moveIn(token, pool.unit, amount, value);
             emit Shield(token, amount);
-        } else if (publicAmount < 0) {
-            if (msg.value != 0) revert ValueMismatch();
+        } else {
+            if (value != 0) revert ValueMismatch();
             uint256 shares = uint256(-publicAmount);
             uint256 amount = amountForBurn(pool, shares);
             if (pool.totalOut + amount > pool.totalIn) revert Turnstile();
@@ -470,8 +546,6 @@ contract ShieldedPool {
                 IBunkerExit(ext.exitTarget).onExit(token, amount * pool.unit, msg.sender, ext.exitData);
                 if (reshield) _reshield(ext.reshield, _balance(ext.reshield.token) - before);
             }
-        } else {
-            if (msg.value != 0) revert ValueMismatch();
         }
     }
 
@@ -500,11 +574,27 @@ contract ShieldedPool {
         if (pool.totalShares == 0) revert NotInitialized(); // nothing to accrue to; never strand a donation
         pool.totalAssets += amount;
         pool.totalIn += amount;
-        _moveIn(token, pool.unit, amount);
+        _moveIn(token, pool.unit, amount, msg.value);
         emit Donate(token, amount);
     }
 
-    // ---- guardian
+    // ---- governance (a timelock): policy, never funds
+
+    /// @notice Attach (or clear, with address(0)) the entrance hook of `token`. Only shields consult it.
+    function setComplianceHook(address token, address hook) external {
+        if (msg.sender != governance) revert Unauthorized();
+        complianceHook[token] = hook;
+        emit ComplianceHookSet(token, hook);
+    }
+
+    /// @notice Hand governance on, or to address(0) to freeze policy forever.
+    function setGovernance(address g) external {
+        if (msg.sender != governance) revert Unauthorized();
+        governance = g;
+        emit GovernanceSet(g);
+    }
+
+    // ---- guardian: emergency brake, no delay
 
     function setShieldPaused(bool paused) external {
         if (msg.sender != guardian) revert Unauthorized();
@@ -521,9 +611,9 @@ contract ShieldedPool {
         emit TvlCapLowered(token, cap);
     }
 
-    /// @notice Hand the guardian role on, or to address(0) to burn it.
+    /// @notice Hand the guardian role on (the guardian itself or governance), or to address(0) to burn it.
     function setGuardian(address g) external {
-        if (msg.sender != guardian) revert Unauthorized();
+        if (msg.sender != guardian && msg.sender != governance) revert Unauthorized();
         guardian = g;
         emit GuardianSet(g);
     }
@@ -534,14 +624,14 @@ contract ShieldedPool {
         return token == address(0) ? address(this).balance : IERC20(token).balanceOf(address(this));
     }
 
-    function _moveIn(address token, uint256 unit, uint256 amount) internal {
+    function _moveIn(address token, uint256 unit, uint256 amount, uint256 value) internal {
         uint256 wei_ = amount * unit;
         if (token == address(0)) {
-            if (msg.value < wei_) revert ValueMismatch();
-            uint256 back = msg.value - wei_;
+            if (value < wei_) revert ValueMismatch();
+            uint256 back = value - wei_;
             if (back > 0) _sendValue(msg.sender, back);
         } else {
-            if (msg.value != 0) revert ValueMismatch();
+            if (value != 0) revert ValueMismatch();
             if (wei_ == 0) return;
             uint256 before = IERC20(token).balanceOf(address(this));
             _call(token, abi.encodeCall(IERC20.transferFrom, (msg.sender, address(this), wei_)));

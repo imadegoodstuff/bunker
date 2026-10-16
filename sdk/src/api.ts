@@ -23,9 +23,13 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 
 /** One leaf. `kind: "open"` rows are notes the pool minted for exit proceeds: `shares` and `ownerHash` are public. */
 export interface CommitmentRow {
-  index: number; commitment: string; token: string; ciphertext: string; txHash: string; block: number; blockTime: number | null;
+  /** `token` is null for the outputs of a private send: the asset is inside the ciphertext */
+  index: number; commitment: string; token: string | null; ciphertext: string; txHash: string; block: number; blockTime: number | null;
   kind?: "note" | "open"; shares?: string | null; ownerHash?: string | null;
 }
+/** The association set the indexer maintains (SPEC §10): every leaf except those a flagged depositor created. */
+export interface AspRootRow { provider: string | null; root: string | null; leaves: number; excluded: number; updatedAt: number | null; sources: string[] }
+export interface AspPathRow { included: boolean; root: string; elements: string[]; indices: number[] }
 export interface CommitmentsPage { from: number; next: number; total: number; items: CommitmentRow[] }
 export interface RegistryRow { owner: string; shieldedAddress: string | null; block: number | null }
 export interface IndexerHealth {
@@ -58,6 +62,10 @@ export class IndexerApi {
   uploadMeta(m: LaunchMetaInput) { return json<{ uri: string; image: string; header: string | null }>(`${this.url}/meta`, { method: "POST", body: JSON.stringify(m) }); }
   /** The shielded address an EOA registered on-chain (the wallet re-checks the chain before paying). */
   registry(owner: string) { return json<RegistryRow>(`${this.url}/registry/${owner}`); }
+  /** The current association-set root (the wallet checks it is published on-chain before relying on it). */
+  aspRoot() { return json<AspRootRow>(`${this.url}/asp/root`); }
+  /** Membership path of a commitment in the current association set. */
+  aspPath(commitment: bigint | string) { return json<AspPathRow>(`${this.url}/asp/path/${typeof commitment === "bigint" ? commitment.toString(16) : commitment}`); }
 }
 
 // ---- relayer
@@ -77,6 +85,14 @@ export interface RelayerInfo {
   /** leaves waiting for a drain, and whether this relayer drains as a keeper */
   pending?: number;
   drains?: boolean;
+  /** `ShieldedPool.REVISION` the relayer speaks */
+  revision?: number;
+  /** association-set policy: who publishes roots through this relayer, and whether it only relays proofs that carry membership */
+  asp?: { provider: string; required: boolean; publishes: boolean } | null;
+  /** how the relayer submits: "private" = through an MEV-protected RPC (no public mempool), "public" otherwise */
+  submit?: "private" | "public";
+  /** whether this relayer lands queued proofs together with `transactBatch` */
+  batches?: boolean;
 }
 export interface AssetQuote {
   token: string; decimals: number; pool: boolean; unit?: string; supported: boolean; reason?: string;

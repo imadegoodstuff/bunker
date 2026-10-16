@@ -1,6 +1,6 @@
 # BUNKER protocol specification
 
-Version 0.2 (draft). This document is normative for the circuits in `circuits/`, the contracts in `contracts/contracts/`, and the client library in `sdk/`.
+Version 0.2.1 (draft; protocol v2, revision 1). This document is normative for the circuits in `circuits/`, the contracts in `contracts/contracts/`, and the client library in `sdk/`. Revision 1 changes, relative to the first v2 deployment: the asset is private inside the pool (§6, §8), the intent is bound to chain and pool and may expire (§7), several proofs can share one transaction (§7), note ciphertexts carry the token and a view tag and have a post-quantum hybrid form (§12), the association set is specified end to end (§10), the configurable surface sits behind a timelock (§19), and the owner can produce selective disclosures (§20).
 
 BUNKER is a shielded-note system on BNB Smart Chain. It follows the Zcash Sapling construction (notes, commitments, nullifiers, diversified addresses, incoming/outgoing viewing keys) and adapts it to what the EVM verifies cheaply: Groth16 over BN254 through the `ecAdd`/`ecMul`/`ecPairing` precompiles, Poseidon in Solidity (`poseidon-solidity`), and one contract call per private action.
 
@@ -110,14 +110,16 @@ Public inputs, in order:
 ```
 root            : F_p     commitment tree root
 public_amount   : F_p     out_total - in_total encoded as value for positive, p - value for negative
-asset           : F_p
-ext_data_hash   : F_p     SHA-256(abi.encode(ext_data)) mod p, see §7
+asset_public    : F_p     the asset, when value crosses the boundary; 0 for a private send
+ext_data_hash   : F_p     SHA-256(abi.encode(chainid, pool, ext_data)) mod p, see §7
 asp_root        : F_p     association set root, 0 to disable (§10)
 nullifiers[nIns]: F_p
 out_cms[nOuts]  : F_p
 ```
 
-Private inputs: `ask, nsk`; per spend `value_i, g_d_i, pk_d_i, rho_i, rcm_i, path_elements_i[levels], path_index_i, asp_path_elements_i[levels], asp_path_index_i`; per output `value_j, g_d_j, pk_d_j, rho_j, rcm_j`.
+Private inputs: `ask, nsk, asset`; per spend `value_i, g_d_i, pk_d_i, rho_i, rcm_i, path_elements_i[levels], path_index_i, asp_path_elements_i[levels], asp_path_index_i`; per output `value_j, g_d_j, pk_d_j, rho_j, rcm_j`.
+
+The asset is a *private* witness. Every spent and every created note is committed under the same `asset` (constraints 3 and 6), and `(asset_public − asset) · public_amount = 0`: when value enters or leaves the pool the public asset must be the real one, and when it does not (`public_amount = 0`) nothing about the asset is published. The contract supplies `asset_public = assetId(token)` for a shield or an unshield and `0` for a send, and emits `token = address(0)` for a send; a receiver learns the token from inside the note (§12). `circuits/test/adversarial.test.mjs` checks both halves: a wrong `asset_public` on an unshield is unsatisfiable, and a send proves with `asset_public = 0` while a foreign-asset output still breaks its commitment.
 
 Constraints:
 
@@ -153,29 +155,35 @@ struct ExtData {
   bytes   ciphertext2;    // output 2: the relayer's fee note, encrypted to the relayer's bunker1… address
   bytes   outCiphertext;  // sender-side record under ovk
   Reshield reshield;
+  uint64  validUntil;     // unix seconds after which the pool refuses the call (Expired); 0 = never
+  bytes   complianceData; // opaque; handed to the token's compliance hook on a shield (§19), unused otherwise
 }
-ext_data_hash = SHA-256(abi.encode(ext)) mod p
+ext_data_hash = SHA-256(abi.encode(block.chainid, address(pool), ext)) mod p
 ```
 
-The contract recomputes `ext_data_hash` from calldata before verifying the proof (`ShieldedPool.extDataHash`). A relayer therefore cannot alter the recipient, exit, reshield or ciphertexts. **There is no public relayer fee.** The relayer is paid with output 2, a note like any other: it publishes its shielded address at `/info`, decrypts `ciphertext2` with its own `ivk` before accepting a job, recomputes the commitment against `outCommitments[2]`, and prices the note in the asset (`relayer/src/index.ts`). On-chain nothing says what the fee was or who was paid; a withdrawal delivers exactly `|public_amount|` to `recipient`. Ciphertext lengths are not fixed: outputs the sender has no use for are value 0 and sent with an empty ciphertext (`sdk/src/wallet.ts`).
+The contract recomputes `ext_data_hash` from calldata before verifying the proof (`ShieldedPool.extDataHash`). A relayer therefore cannot alter the recipient, exit, reshield or ciphertexts. Because the chain id and the pool address are inside the hash, a proof made for one deployment is unsatisfiable on any other (a fork, a testnet, a second pool), and because `validUntil` is inside it a proof cannot be held back and submitted at a time of the holder's choosing: the SDK sets `validUntil = now + 2 h` by default (`DEFAULT_VALIDITY_S`), long enough for a relayer's delay window and short enough not to be hoarded. **There is no public relayer fee.** The relayer is paid with output 2, a note like any other: it publishes its shielded address at `/info`, decrypts `ciphertext2` with its own `ivk` before accepting a job, recomputes the commitment against `outCommitments[2]`, and prices the note in the asset (`relayer/src/index.ts`). On-chain nothing says what the fee was or who was paid; a withdrawal delivers exactly `|public_amount|` to `recipient`. Ciphertext lengths are not fixed: outputs the sender has no use for are value 0 and sent with an empty ciphertext (`sdk/src/wallet.ts`).
 
 ```solidity
-function transact(
-  Proof calldata proof,          // a: G1, b: G2, c: G1 as uint256 words (snarkjs order, B coordinates swapped per EIP-197)
-  address token,                 // pool asset, address(0) = BNB
-  uint256 root,                  // must be in the 128-root ring
-  int256  publicAmount,          // signed shares: > 0 shield, < 0 unshield, 0 private send
-  uint256 aspRoot,               // 0 = none
-  address aspProvider,           // whose ring aspRoot must be in
-  uint256[] calldata nullifiers, // 2 or 4
-  uint256[3] calldata outCommitments,
-  ExtData calldata ext
-) external payable;
+struct TransactArgs {
+  Proof    proof;                // a: G1, b: G2, c: G1 as uint256 words (snarkjs order, B coordinates swapped per EIP-197)
+  address  token;                // pool asset, address(0) = BNB; ignored (and conventionally zero) when publicAmount == 0
+  uint256  root;                 // must be in the 128-root ring
+  int256   publicAmount;         // signed shares: > 0 shield, < 0 unshield, 0 private send
+  uint256  aspRoot;              // 0 = none
+  address  aspProvider;          // whose ring aspRoot must be in
+  uint256[] nullifiers;          // 2 or 4
+  uint256[3] outCommitments;
+  ExtData  ext;
+}
+function transact(TransactArgs calldata a) external payable;
+function transactBatch(TransactArgs[] calldata batch) external;   // several proofs, one transaction; no shields (BatchShield)
 ```
 
-For a BNB shield `msg.value` must equal `amountForMint(shares) × unit`; for an ERC-20 shield the contract pulls exactly that amount with `transferFrom` and reverts with `ShortDelivery` unless its balance grew by it (fee-on-transfer and rebasing tokens are thereby refused). Memos inside note ciphertexts are padded to a 64-byte bucket; `MEMO_MAX = 64`. Note ciphertexts begin with a version byte, `0x02` for this protocol.
+For a BNB shield `msg.value` must equal `amountForMint(shares) × unit`; for an ERC-20 shield the contract pulls exactly that amount with `transferFrom` and reverts with `ShortDelivery` unless its balance grew by it (fee-on-transfer and rebasing tokens are thereby refused). Memos inside note ciphertexts are padded to a 64-byte bucket; `MEMO_MAX = 64`. Note ciphertexts begin with a version byte: `0x03` (classic) or `0x04` (post-quantum hybrid) for this revision; `0x02` ciphertexts of the first v2 deployment remain decryptable (§12).
 
-Events: `Transact(token, firstIndex, commitments[3], ciphertext0, ciphertext1, ciphertext2, outCiphertext)`, `OpenNote(token, index, cm, shares, ownerHash, ciphertext)` for a reshielded exit (§11), `Drain(fromIndex, count, newRoot, rootIndex)`, `Registered(owner, shieldedAddress)` (§16), `Nullified(nf)`, `Shield/Unshield/Donate(token, amount)`. The indexer rebuilds the tree and every wallet's view from `Transact`, `OpenNote` and `Drain`; anyone can.
+`transactBatch` runs each element exactly as `transact` would (same checks, same events, one `Transact` per element, all-or-nothing); it exists so a relayer can put several users' sends and withdrawals in one transaction, which removes the one-transaction-per-user shape from the public record. Shields are excluded because a shield names its depositor; the batch submitter would otherwise be that depositor for all of them.
+
+Events: `Transact(token, firstIndex, publicAmount, aspRoot, sender, commitments[3], ciphertext0, ciphertext1, ciphertext2, outCiphertext)` (`token` is zero and `publicAmount` is 0 for a send; `sender` is `msg.sender`, i.e. the depositor of a shield or the submitter of anything else; `aspRoot` is what the proof cited, for §10), `OpenNote(token, index, cm, shares, ownerHash, ciphertext)` for a reshielded exit (§11), `Drain(fromIndex, count, newRoot, rootIndex)`, `Registered(owner, shieldedAddress)` (§16), `Nullified(nf)`, `Shield/Unshield/Donate(token, amount)`, `AspRootPublished(provider, root)`, `GovernanceSet`, `ComplianceHookSet(token, hook)`. The indexer rebuilds the tree and every wallet's view from `Transact`, `OpenNote` and `Drain`; anyone can.
 
 ## 8. Assets
 
@@ -185,7 +193,7 @@ An asset is an ERC-20 or native BNB (`address(0)`). `asset = SHA-256("bunker_ass
 
 **Pools are permissionless.** `createPool(token, unitExp, tvlCap)` opens a pool for any ERC-20 once; the first shield of a token opens it. The BNB pool exists from construction.
 
-**Anonymity is per asset, not per tree.** `asset` is a public input of every `transact`, so each transaction reveals which asset it moves; the anonymity set of a withdrawal is the set of unspent notes of that asset. The app reports set sizes per asset for this reason.
+**What the asset reveals.** Entering and leaving the pool names the asset (`asset_public`, the `token` argument, the `Shield`/`Unshield` events); a transfer inside the pool does not (§6). The anonymity set of a *withdrawal* is therefore the set of unspent notes of that asset, while a *send* is indistinguishable from any other send in any asset. The app reports set sizes per asset for this reason. (In the first v2 deployment the asset was public in every transaction; revision 1 removed it from sends.)
 
 ## 9. Shares and donations
 
@@ -204,6 +212,16 @@ Shield mints shares; unshield burns them. Anyone may call `donate(token, amount)
 
 An association set provider (ASP) publishes a Merkle root over commitments it has approved with `publishAspRoot(root)`; the contract keeps the last 32 roots per provider address. A spender may include `(aspRoot, aspProvider)` in a proof to show its inputs are in the set. Using an ASP is always optional for the spender; recipients and relayers decide whether to require it. A spender whose note is in no set can always exit publicly with `aspRoot = 0`.
 
+**The set.** The association set is a Poseidon Merkle tree of the same depth and zero leaf as the pool's tree, over a subset of the pool's leaves, so the circuit verifies membership in it with the same `MerkleCheck` it uses for the pool (constraint 5 of §6). Which leaves are in it is a policy of the provider, computed from public events only. The reference provider (`indexer/src/asp.ts`, published on-chain by the relayer's EOA) uses this rule, per `Transact` event, in leaf order:
+
+- a shield (`publicAmount > 0`): all leaves of the transaction are in the set unless `sender` (the depositor) is on the provider's denylist. The default denylist is OFAC's SDN digital-currency addresses, refreshed every six hours; operators may add sources (`ASP_DENYLIST_URLS`) and addresses (`ASP_DENYLIST`);
+- any other transaction: its leaves are in the set when the proof it carried cited a root this provider itself published earlier (`aspRoot ≠ 0` and in the provider's history), because the inputs were then in the set and the outputs inherit that standing. A send or withdrawal that cited no root breaks the lineage: the provider cannot see which notes it spent, so its outputs are out until re-vouched for;
+- an open note (§11) follows the transaction that minted it (the `Transact` of the same transaction with the greatest `firstIndex` below the open note's index).
+
+A denylist that grows later removes a depositor's leaves on the next rebuild; standing already handed down through a proof is not revoked retroactively (the proof was valid against a root that existed, and the set cannot tell which notes it spent). Every root the provider ever produced stays acceptable for lineage; on-chain only the last 32 are citable. The indexer serves `GET /asp/root` (`provider, root, leaves, excluded, updatedAt, sources, policy`) and `GET /asp/path/:commitment` (`included, root, elements[], indices[]`); a wallet checks `isKnownAspRoot(provider, root)` on the pool before proving, and the relayer publishes a new root within a minute of the indexer producing one. The SDK makes a compliant withdrawal with `unshield(token, amount, to, { compliant: true })`, and a relayer may require it (`ASP_REQUIRED=1`, advertised as `asp.required` at `/info`).
+
+What this does and does not do: a compliant withdrawal proves "every note I am spending descends, through transactions that were themselves compliant, from a deposit made by an address that was not sanctioned at the time", and names none of those notes or deposits. It does not prove anything about the withdrawer's identity, and it cannot be demanded by anyone: the spender chooses to carry it, and a recipient or venue chooses whether to ask for it.
+
 ## 11. Exits
 
 If `exitTarget != address(0)`, the contract first pays the unshielded amount to `recipient` exactly as for a plain unshield, then calls `IBunkerExit(exitTarget).onExit(token, amount, msg.sender, exitData)` in the same transaction. `recipient`, `exitTarget`, `exitData` and `reshield` are all under `ext_data_hash`, so a relayer can neither redirect the funds nor change what the exit contract is told. The exit contract sees the funds already at `recipient` (normally itself) and acts on them; if it reverts, the whole transaction reverts and nothing was spent. The pool is `nonReentrant` across the call and accepts plain BNB (`receive()`) only while that call is in progress.
@@ -218,11 +236,25 @@ For each output note the sender samples `esk` and computes
 epk          = [esk] g_d
 shared       = [8·esk] pk_d               = [8·ivk] epk on the receiver side   (cofactor-cleared, Sapling KA.Agree)
 K_enc        = H_blake("bunkerNoteEncKey", compress(shared) || compress(epk))
-ciphertext   = compress(epk) || ChaCha20-Poly1305(K_enc, nonce = 0, plaintext)
-plaintext    = d || value (8 LE) || rseed (32) || memo
+tag          = H_blake("bunkerViewTag___", compress(shared) || compress(epk))[0]      one byte
+ciphertext   = 0x03 || tag || compress(epk) || ChaCha20-Poly1305(K_enc, nonce = 0, plaintext)
+plaintext    = d || value (8 LE) || rseed (32) || token (20) || memo
 ```
 
-A ciphertext without a memo is `32 + 16 + 11 + 8 + 32 = 99` bytes; with a memo, 163. The receiver trial-decrypts every ciphertext in every `Transact` event with `ivk` and accepts a note only if the recomputed `cm` matches the leaf. The sender additionally encrypts `(pk_d, esk)` under `K_out = H_blake("bunkerOutKey____", ovk || cm)` so that holders of `ovk` can reconstruct outgoing notes. Trial decryption happens on the client; the indexer serves raw ciphertexts and never holds keys.
+A ciphertext without a memo is `1 + 1 + 32 + 16 + 71 = 121` bytes; with a memo, 185. The receiver trial-decrypts every ciphertext in every `Transact` event with `ivk` and accepts a note only if the recomputed `cm` matches the leaf. The *view tag* lets it skip the AEAD and the parse for the ≈255/256 of ciphertexts that are not its own after the one scalar multiplication (the ECDH itself is still per ciphertext; the tag saves the symmetric half, as in Sapling's ZIP 212 tags). The `token` inside the plaintext is what tells the receiver which pool a privately sent note belongs to, since a send publishes no asset on-chain (§6); the wallet recomputes `asset = assetId(token)` and accepts the note only if the commitment matches, so a lying token field can only make the note unreadable. The sender additionally encrypts `(pk_d, esk)` under `K_out = H_blake("bunkerOutKey____", ovk || cm)` so that holders of `ovk` can reconstruct outgoing notes. Trial decryption happens on the client; the indexer serves raw ciphertexts and never holds keys.
+
+Version `0x02` ciphertexts (the first v2 deployment: no tag, no token) are still decrypted; the wallet takes the asset of such a note from the token the chain published for it.
+
+**Post-quantum hybrid (`0x04`).** A `bunkerq1…` address (§3) is a diversified address with an ML-KEM-768 public key attached, `kem_pk = ML-KEM-768.KeyGen(H_blake("bunkerKemRoot___", ivk || d))`, derived per diversifier from `ivk` so that a watch-only wallet can decrypt and two addresses of one wallet stay unlinkable. For such an address the sender produces
+
+```
+(kem_ct, kem_ss) = ML-KEM-768.Encaps(kem_pk)
+K1               = K_enc as above                                     (classic, from the ECDH only)
+K2               = H_blake("bunkerNoteEncPQ_", compress(shared) || compress(epk) || kem_ss)
+ciphertext       = 0x04 || tag || compress(epk) || kem_ct (1088) || ChaCha20-Poly1305(K1, nonce = 1, d) || ChaCha20-Poly1305(K2, nonce = 0, value || rseed || token || memo)
+```
+
+The diversifier is sealed under the classic key alone because the receiver needs `d` to know *which* KEM secret key to decapsulate with; everything of value sits under `K2`, which an adversary needs both the ECDH secret and the KEM secret to reach. Against a classical adversary the construction is exactly as strong as `0x03`; against a quantum adversary who later breaks the curve, the amount, randomness, token and memo of a hybrid note remain confidential, and what leaks is the diversifier `d` (that a note went to *some* address of a wallet whose `d` is known). Note confidentiality is the only thing a quantum adversary attacks here that is not already public: the commitment, nullifier and proof are hashes and a Groth16 proof, whose soundness (not zero-knowledge) is what a quantum adversary could break, and that is the turnstile's job (§14). A hybrid ciphertext without a memo is `1 + 1 + 32 + 1088 + 27 + 16 + 60 = 1225` bytes; the receiver recognises it by the version byte, so classic and hybrid notes share one tree and one scanner.
 
 ## 13. The launchpad
 
@@ -268,7 +300,7 @@ fee_bps ∈ [0, 500],          moves at most 100 bps toward the target per epoch
 
 For every pool, `totalOut ≤ totalIn` is checked on every negative `publicAmount` (`Turnstile`). `totalIn` counts shields and donations; `totalOut` counts unshields. Should a proof-system flaw let an attacker forge notes, it can at most drain what honest users deposited into that asset's pool, never more, and the drain is visible and measurable.
 
-The contracts are not upgradeable and have no owner. A guardian key can pause shields (`setShieldPaused`) and lower, never raise, a pool's TVL cap (`lowerTvlCap`), and can hand the role on or burn it (`setGuardian(address(0))`). Nothing can pause `transact` with `publicAmount ≤ 0`, `donate`, or any launchpad function. A new circuit or proof system means a new pool contract; moving funds between pools is an unshield from the old and a shield into the new, as public as any shield.
+The contracts are not upgradeable and have no owner. A guardian key can pause shields (`setShieldPaused`) and lower, never raise, a pool's TVL cap (`lowerTvlCap`), and can hand the role on or burn it (`setGuardian(address(0))`); a governance address behind a timelock holds the rest of the configurable surface (§19). Nothing can pause `transact` with `publicAmount ≤ 0`, `donate`, or any launchpad function. A new circuit or proof system means a new pool contract; moving funds between pools is an unshield from the old and a shield into the new, as public as any shield.
 
 ## 15. Gas
 
@@ -292,4 +324,17 @@ The pairing check is ≈ 180 k. Tree hashing moved out of `transact` into `drain
 
 ## 18. Viewing keys
 
-A full viewing key is the bech32m string `bunkerview1…` over `ak || nk || ovk` (96 bytes). It derives `ivk` and therefore every diversified address, decrypts every incoming note and every outgoing record, computes every nullifier (so it knows what is spent), and cannot produce a proof. `BunkerClient.connect({ viewingKey })` yields a watch-only client with the same `sync` and `balance` as a spending one.
+A full viewing key is the bech32m string `bunkerview1…` over `ak || nk || ovk` (96 bytes). It derives `ivk` and therefore every diversified address, decrypts every incoming note and every outgoing record, computes every nullifier (so it knows what is spent), and cannot produce a proof. `BunkerClient.connect({ viewingKey })` yields a watch-only client with the same `sync` and `balance` as a spending one. A viewing key also derives every ML-KEM key of the wallet (§12), so a watch-only device reads hybrid notes too.
+
+## 19. Governance: guardian, timelock, compliance hooks
+
+Two roles, deliberately unequal:
+
+- the **guardian** acts immediately and can only make the pool *more* conservative: pause shields, lower a TVL cap, hand itself on or burn itself;
+- **governance** is a `Timelock` contract (`contracts/contracts/Timelock.sol`: minimum delay 1 day, maximum 30 days, 14-day grace, queue and cancel by its admin, execute by anyone once due, admin changes only through a queued self-call). It can `setComplianceHook(token, hook)` and `setGovernance(next)`, and may also replace the guardian. Every change is therefore visible on-chain at least a day before it takes effect, and anyone who disagrees has that day to withdraw.
+
+A **compliance hook** is a per-token contract `IComplianceHook.onShield(token, depositor, amountWei, complianceData) returns (bool)` consulted *only on a shield* of that token; a `false` reverts the shield with `ComplianceRejected`. `complianceData` is whatever the depositor put in `ext.complianceData` (an attestation, a credential, nothing). The hook sees who is depositing and how much, which the chain shows anyway, and nothing else; it has no say over sends, withdrawals, exits or drains, which no role can block (§14). No hook is set at deployment. This is the seam a regulated issuer (a tokenised stock, a stablecoin) can plug its own entry rule into without the pool knowing anything about that rule, and the shape NewL1's privacy layer specifies for the same purpose.
+
+## 20. Selective disclosure
+
+The owner of a vault can prove facts about it to a counterparty of their choosing without giving that counterparty anything the chain does not already hold, and without anyone else being able to produce the same document. `BunkerClient.disclosure()` writes a JSON document (`format: "bunker-disclosure/1"`) listing chosen notes (all by default) with their openings: for each, `commitment, position, token, shares, receivedBlock/At, spent, spentBlock/At, nullifier (if spent), memo` and `opening = { g_d, pk_d, rseed }`. The reader recomputes `cm = Poseidon(assetId(token), shares, Poseidon(g_d, pk_d), rho(rseed), rcm(rseed))` (§4) and checks it is leaf `position` of the pool's tree, which anyone can rebuild from events; a spent note's nullifier is checked against `Nullified`. That establishes exactly those notes, their amounts and their timing, and nothing about any note not listed. `scope: "full"` additionally includes the full viewing key (§18), with which the reader rescans the chain and reproduces the whole history independently rather than trusting the list to be complete. Neither form touches the chain or weakens anyone else's privacy; both are things only the key holder can produce.

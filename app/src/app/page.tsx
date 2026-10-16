@@ -6,8 +6,8 @@ import { Walkthrough } from "@/components/landing/Walkthrough";
 import { GITHUB } from "@/lib/config";
 
 const PILLARS = [
-  { n: "01", t: "One pool, every asset", d: "BNB and any ERC-20 share one Merkle tree. A withdrawal hides among everything ever shielded, not only among the same token." },
-  { n: "02", t: "Proofs on your device, fees in notes", d: "Groth16 proofs are generated in the browser. Every transaction has three shielded outputs, payment, change and the relayer's fee, so even what you paid to be relayed is private." },
+  { n: "01", t: "One pool, every asset", d: "BNB and any ERC-20 share one Merkle tree. Inside the pool a transfer publishes no asset at all; only the way in and the way out name a token, and a withdrawal hides among everything ever shielded in that token." },
+  { n: "02", t: "Proofs on your device, fees in notes", d: "Groth16 proofs are generated in the browser. Every transaction has three shielded outputs, payment, change and the relayer's fee, so even what you paid to be relayed is private. Hybrid post-quantum note encryption is one switch away." },
   { n: "03", t: "Trade and swap without leaving", d: "Buy on a bonding curve or swap on PancakeSwap from shielded funds. The pool pays the venue and the venue pays the pool back, in one transaction; the result is a fresh note of yours." },
   { n: "04", t: "Pay a plain address, privately", d: "Register your vault under your 0x account once. Anyone can then pay the address they already know, and the money lands shielded, unlinkable to them." },
 ];
@@ -91,9 +91,10 @@ export default function Landing() {
           </div>
           <ul className="space-y-4 text-sm text-mute leading-relaxed">
             <li className="pl-4 border-l rule"><b className="text-fg">Amounts and timing leak.</b> Shield 3.1415 BNB and withdraw 3.1415 BNB an hour later and anyone can connect the two. Use round amounts and wait.</li>
-            <li className="pl-4 border-l rule"><b className="text-fg">The relayer is a server.</b> It cannot steal or deanonymise notes, but it can refuse to serve you. You can always submit a transaction yourself.</li>
-            <li className="pl-4 border-l rule"><b className="text-fg">There is a guardian.</b> One key can pause new shields and lower the deposit cap. It cannot touch funds, block withdrawals, or change the circuits.</li>
-            <li className="pl-4 border-l rule"><b className="text-fg">Not audited.</b> The circuits, contracts and this site are open source and new. Treat the pool as experimental software.</li>
+            <li className="pl-4 border-l rule"><b className="text-fg">The relayer is a server.</b> It cannot steal or deanonymise notes, but it can refuse to serve you. Every operation, including sends and swaps, can be submitted from your own wallet instead, and anyone can run a relayer against the published spec.</li>
+            <li className="pl-4 border-l rule"><b className="text-fg">Compliance is opt-in and provable, not a backdoor.</b> A withdrawal can carry a proof that the notes it spends descend from deposits an association set vouches for (sanctioned depositors excluded), without naming which. You can also export a signed disclosure of your own history for whoever you choose. Nobody else can.</li>
+            <li className="pl-4 border-l rule"><b className="text-fg">There is a guardian and a timelock.</b> One key can pause new shields and lower the deposit cap, immediately. Anything else that is configurable (a compliance hook on deposits, the guardian itself) goes through a 24-hour timelock, in public. Nothing can touch funds, block withdrawals, or change the circuits.</li>
+            <li className="pl-4 border-l rule"><b className="text-fg">Not audited; the setup is not a ceremony.</b> The circuits, contracts and this site are open source and new, and the current proving keys come from a deterministic development setup rather than a multi-party ceremony. Treat the pool as experimental software.</li>
           </ul>
         </div>
       </section>

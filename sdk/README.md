@@ -163,10 +163,11 @@ relayer or indexer, or build a different wallet.
 | | |
 |---|---|
 | chain | BNB Smart Chain (56) |
-| protocol | v2 |
-| pool | `0x0c5d2bB3867ADfea4506801df95Fd9895bda105a` |
-| launchpad | `0x3aBa205aEE7D6673F3EC640f9f79bDC48C8E093D` |
-| swap exit | `0x2E17431d3D7df13168522F03D71268bA73bDF6f8` |
+| protocol | v2, revision 1 |
+| pool | `0x19D7Ae0287507A9A16E3F5c726E1d2dA62787A39` |
+| launchpad | `0xC0016aFC627FF96041a64347485F58B4ed1DD94E` |
+| swap exit | `0x7Ebe074b0378860C0f088ace26158Af737f05126` |
+| timelock (governance) | `0x70c3898970E3D440cD94B16DDD72Dca46120C954` |
 | v1 pool (read-only in this SDK, `bscV1`) | `0xD327D391Ba9f5924F4fD82AB0cd23A2b4F5812bF` |
 | indexer | https://bunker-indexer.fly.dev |
 | relayer | https://bunker-relayer.fly.dev |

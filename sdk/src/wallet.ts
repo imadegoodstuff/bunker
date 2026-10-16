@@ -4,7 +4,7 @@ import { BabyJub, type Point } from "./crypto.js";
 import { MAX_U64 } from "./field.js";
 import { encryptNote, encryptOutgoing, tryDecryptNote, NOTE_CIPHERTEXT_LEN_NO_MEMO } from "./encryption.js";
 import { extDataHash, NO_EXIT, NO_RESHIELD, ZERO_ADDRESS, type EvmAddress, type ExtData, type Reshield } from "./extdata.js";
-import { fullViewingKey, groupHash, newAddress, spendingKeyFromSeed, type Address, type FullViewingKey, type SpendingKey } from "./keys.js";
+import { fullViewingKey, groupHash, newAddress, spendingKeyFromSeed, toPqAddress, type Address, type FullViewingKey, type PqAddress, type SpendingKey } from "./keys.js";
 import { MerkleTree } from "./merkle.js";
 import { assetId, noteCommitment, nullifier, openNoteCommitment, ownerHash, freshRandomness, type Note, type SpendableNote } from "./note.js";
 import { prove, type CircuitArtifacts, type CircuitName, type SpendInput, type TransactProof } from "./prover.js";
@@ -32,6 +32,10 @@ export interface LedgerEntry {
   spentBlock: number | null;
   spentAt: number | null;
   memo?: Uint8Array;
+  /** the token behind `asset`, when the note named it (v2.1 ciphertexts do) */
+  token?: EvmAddress;
+  /** the note's opening: with it anyone can recompute `commitment` (selective disclosure, SPEC §13) */
+  opening: { gd: Point; pkd: Point; rseed: Uint8Array };
 }
 
 /** A nullifier seen on-chain, with where (and optionally when) it appeared. */
@@ -54,6 +58,9 @@ export interface WalletState {
 }
 
 export type TransactKind = "shield" | "send" | "unshield" | "exit";
+
+/** How long a built proof stays valid by default: long enough for a relayer's delay window, short enough not to be hoarded. */
+export const DEFAULT_VALIDITY_S = 2 * 3600;
 
 export interface BuiltTransact {
   proof: TransactProof;
@@ -112,6 +119,11 @@ export class ShieldedWallet {
     return newAddress(this.bjj, this.fvk.ivk);
   }
 
+  /** A fresh post-quantum address: the same wallet, with the ML-KEM-768 key of its diversifier attached. */
+  pqAddress(): PqAddress {
+    return toPqAddress(this.fvk.ivk, this.address());
+  }
+
   selfPoint(): { gd: Point; pkd: Point } {
     const a = this.address();
     return { gd: groupHash(this.bjj, a.d)!, pkd: a.pkd };
@@ -126,14 +138,22 @@ export class ShieldedWallet {
     return this.inserted;
   }
 
-  /** Try to decrypt an on-chain output; if it is ours, remember it. */
-  async scan(out: IndexedOutput, asset: bigint): Promise<SpendableNote | null> {
+  /**
+   * Try to decrypt an on-chain output; if it is ours, remember it. The asset
+   * comes from inside the ciphertext (a private send names no token on-chain);
+   * `assetHint` is the token the chain did publish, if any, and only serves
+   * legacy (v2.0) ciphertexts that carry no token of their own.
+   */
+  async scan(out: IndexedOutput, assetHint?: bigint | null): Promise<SpendableNote | null> {
     const r = tryDecryptNote(this.bjj, this.fvk.ivk, out.ciphertext);
     if (!r) return null;
     const gd = groupHash(this.bjj, r.plaintext.d);
     if (!gd) return null;
     const pkd = this.bjj.mulScalar(gd, this.fvk.ivk);
-    const note: Note = { asset, value: r.plaintext.value, gd, pkd, rseed: r.plaintext.rseed, rho: r.plaintext.rho, rcm: r.plaintext.rcm };
+    const token = r.plaintext.token ?? undefined;
+    const asset = token ? assetId(token) : assetHint;
+    if (asset === undefined || asset === null) return null;
+    const note: Note = { asset, token, value: r.plaintext.value, gd, pkd, rseed: r.plaintext.rseed, rho: r.plaintext.rho, rcm: r.plaintext.rcm };
     const cm = await noteCommitment(note);
     if (cm !== out.commitment) return null;
     return this.remember(note, cm, out.index, r.plaintext.memo, out);
@@ -141,9 +161,9 @@ export class ShieldedWallet {
 
   /**
    * Try to claim an open note. The ciphertext tells us the address and the
-   * randomness; the amount is public; the commitment must match both.
+   * randomness; the amount and the token are public; the commitment must match all of it.
    */
-  async scanOpenNote(ev: IndexedOpenNote, asset: bigint): Promise<SpendableNote | null> {
+  async scanOpenNote(ev: IndexedOpenNote, asset: bigint, token?: EvmAddress): Promise<SpendableNote | null> {
     const r = tryDecryptNote(this.bjj, this.fvk.ivk, ev.ciphertext);
     if (!r) return null;
     const gd = groupHash(this.bjj, r.plaintext.d);
@@ -152,7 +172,7 @@ export class ShieldedWallet {
     if ((await ownerHash(gd, pkd)) !== ev.ownerHash) return null;
     const cm = await openNoteCommitment(asset, ev.shares, ev.ownerHash, r.plaintext.rho, r.plaintext.rcm);
     if (cm !== ev.commitment) return null;
-    const note: Note = { asset, value: ev.shares, gd, pkd, rseed: r.plaintext.rseed, rho: r.plaintext.rho, rcm: r.plaintext.rcm };
+    const note: Note = { asset, token: token ?? r.plaintext.token ?? undefined, value: ev.shares, gd, pkd, rseed: r.plaintext.rseed, rho: r.plaintext.rho, rcm: r.plaintext.rcm };
     return this.remember(note, cm, ev.index, undefined, ev);
   }
 
@@ -165,8 +185,9 @@ export class ShieldedWallet {
       this.notes.set(key, sn);
       this.nullifierOf.set(key, nf);
       const entry: LedgerEntry = {
-        commitment: cm, nullifier: nf, asset: note.asset, value: note.value, position: index, memo,
+        commitment: cm, nullifier: nf, asset: note.asset, value: note.value, position: index, memo, token: note.token,
         receivedBlock: where?.block ?? null, receivedAt: where?.blockTime ?? null, spentBlock: null, spentAt: null,
+        opening: { gd: note.gd, pkd: note.pkd, rseed: note.rseed },
       };
       this.ledger.push(entry);
       this.ledgerByNf.set(nf.toString(16), entry);
@@ -255,9 +276,15 @@ export class ShieldedWallet {
     asset: bigint;
     /** pool contract */
     poolAddress: EvmAddress;
+    /** the chain the pool lives on; mixed into `extDataHash` so the proof is void elsewhere */
+    chainId: number | bigint;
     /** asset address, ZERO_ADDRESS for BNB */
     token: EvmAddress;
     pool: PoolState;
+    /** unix seconds after which the pool refuses this proof; default now + 2 h, 0 = never */
+    validUntil?: bigint;
+    /** input for the token's entrance compliance hook (shields only) */
+    complianceData?: Uint8Array;
     /** the tree of *inserted* leaves (see `markInserted`); its root must be known on-chain */
     tree: MerkleTree;
     artifacts: Record<CircuitName, CircuitArtifacts>;
@@ -288,20 +315,21 @@ export class ShieldedWallet {
 
     let publicShares = 0n;
     let inputs: SpendableNote[] = [];
-    let toAddr: Address = self;
+    let toAddr: Address | PqAddress = self;
     let toGd: Point = selfGd;
     let payment: Note;
     let change: Note;
+    const token = opts.token.toLowerCase() as EvmAddress;
     const feeShares = relayerFee > 0n ? sharesForWithdraw(pool, relayerFee) : 0n;
-    const dummy = (): Note => ({ asset, value: 0n, gd: selfGd, pkd: self.pkd, ...freshRandomness() });
-    const feeNote: Note = feeShares > 0n ? { asset, value: feeShares, gd: groupHash(this.bjj, opts.relayerAddress!.d)!, pkd: opts.relayerAddress!.pkd, ...freshRandomness() } : dummy();
+    const dummy = (): Note => ({ asset, token, value: 0n, gd: selfGd, pkd: self.pkd, ...freshRandomness() });
+    const feeNote: Note = feeShares > 0n ? { asset, token, value: feeShares, gd: groupHash(this.bjj, opts.relayerAddress!.d)!, pkd: opts.relayerAddress!.pkd, ...freshRandomness() } : dummy();
 
     if (kind === "shield") {
       publicShares = sharesForDeposit(pool, opts.amount);
       if (publicShares <= 0n) throw new Error("amount too small");
       toAddr = opts.to ?? self;
       toGd = groupHash(this.bjj, toAddr.d)!;
-      payment = { asset, value: publicShares, gd: toGd, pkd: toAddr.pkd, ...freshRandomness() };
+      payment = { asset, token, value: publicShares, gd: toGd, pkd: toAddr.pkd, ...freshRandomness() };
       change = dummy();
     } else if (kind === "send") {
       if (!opts.to) throw new Error("recipient address required");
@@ -310,8 +338,8 @@ export class ShieldedWallet {
       const inSum = inputs.reduce((a, n) => a + n.value, 0n);
       toAddr = opts.to;
       toGd = groupHash(this.bjj, toAddr.d)!;
-      payment = { asset, value: sharesOut, gd: toGd, pkd: toAddr.pkd, ...freshRandomness() };
-      change = { asset, value: inSum - sharesOut - feeShares, gd: selfGd, pkd: self.pkd, ...freshRandomness() };
+      payment = { asset, token, value: sharesOut, gd: toGd, pkd: toAddr.pkd, ...freshRandomness() };
+      change = { asset, token, value: inSum - sharesOut - feeShares, gd: selfGd, pkd: self.pkd, ...freshRandomness() };
     } else {
       if (kind === "unshield" && !opts.recipient) throw new Error("public recipient required");
       if (kind === "exit" && !opts.exitTarget) throw new Error("exitTarget required");
@@ -319,7 +347,7 @@ export class ShieldedWallet {
       inputs = this.selectInputs(asset, sharesOut + feeShares);
       const inSum = inputs.reduce((a, n) => a + n.value, 0n);
       publicShares = -sharesOut;
-      payment = { asset, value: inSum - sharesOut - feeShares, gd: selfGd, pkd: self.pkd, ...freshRandomness() };
+      payment = { asset, token, value: inSum - sharesOut - feeShares, gd: selfGd, pkd: self.pkd, ...freshRandomness() };
       change = dummy();
     }
     const outputs: Note[] = [payment, change, feeNote];
@@ -341,7 +369,8 @@ export class ShieldedWallet {
       const addr = newAddress(this.bjj, this.fvk.ivk);
       const gd = groupHash(this.bjj, addr.d)!;
       const rnd = freshRandomness();
-      reshieldNote = { asset: assetId(opts.reshield.token), value: 0n, gd, pkd: addr.pkd, ...rnd };
+      const rt = opts.reshield.token.toLowerCase() as EvmAddress;
+      reshieldNote = { asset: assetId(rt), token: rt, value: 0n, gd, pkd: addr.pkd, ...rnd };
       reshield = {
         token: opts.reshield.token,
         ownerHash: await ownerHash(gd, addr.pkd),
@@ -361,8 +390,10 @@ export class ShieldedWallet {
       ciphertext2: c2,
       outCiphertext: outCipher,
       reshield,
+      validUntil: opts.validUntil ?? BigInt(Math.floor(Date.now() / 1000) + DEFAULT_VALIDITY_S),
+      complianceData: kind === "shield" ? (opts.complianceData ?? new Uint8Array(0)) : new Uint8Array(0),
     };
-    const extHash = extDataHash(ext);
+    const extHash = extDataHash(ext, opts.chainId, opts.poolAddress);
 
     const spendInputs: SpendInput[] = [];
     for (const n of inputs) {

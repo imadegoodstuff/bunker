@@ -12,7 +12,7 @@ export class Db {
       CREATE TABLE IF NOT EXISTS commitments (
         idx INTEGER PRIMARY KEY,
         commitment TEXT NOT NULL,
-        token TEXT NOT NULL,
+        token TEXT,
         ciphertext BLOB NOT NULL,
         tx_hash TEXT NOT NULL,
         block INTEGER NOT NULL,
@@ -123,7 +123,36 @@ export class Db {
         PRIMARY KEY (tx_hash, log_index)
       );
       CREATE INDEX IF NOT EXISTS fee_events_token_block ON fee_events(token, block);
+      -- one row per Transact event: who sent it and which association-set root (if any) its proof was made against.
+      -- The association set is derived from this (see asp.ts): a shield's outputs are vouched for when the depositor
+      -- is clean; a non-shield's outputs when it proved its inputs against a root this indexer had published.
+      CREATE TABLE IF NOT EXISTS transacts (
+        tx_hash TEXT NOT NULL,
+        first_idx INTEGER PRIMARY KEY,
+        sender TEXT NOT NULL,
+        public_amount TEXT NOT NULL,
+        asp_root TEXT NOT NULL,
+        block INTEGER NOT NULL
+      );
     `);
+    // v2.1: a private send publishes no asset, so the token column became nullable. SQLite cannot relax NOT NULL in
+    // place; a database created before this version is rebuilt from the chain (the scan is cheap and idempotent).
+    const col = (this.db.prepare("PRAGMA table_info(commitments)").all() as { name: string; notnull: number }[]).find((c) => c.name === "token");
+    if (col && col.notnull) {
+      this.db.exec("DROP TABLE commitments; DROP TABLE out_ciphertexts; DROP TABLE drains; DROP TABLE roots; DROP TABLE nullifiers; DROP TABLE flows; DELETE FROM meta WHERE k = 'last_block'");
+      this.db.exec(`
+        CREATE TABLE commitments (
+          idx INTEGER PRIMARY KEY, commitment TEXT NOT NULL, token TEXT, ciphertext BLOB NOT NULL, tx_hash TEXT NOT NULL, block INTEGER NOT NULL, block_time INTEGER,
+          kind TEXT NOT NULL DEFAULT 'note', shares TEXT, owner_hash TEXT
+        );
+        CREATE TABLE out_ciphertexts (tx_hash TEXT NOT NULL, first_idx INTEGER PRIMARY KEY, ciphertext BLOB NOT NULL);
+        CREATE TABLE drains (tx_hash TEXT NOT NULL, log_index INTEGER NOT NULL, from_idx INTEGER NOT NULL, count INTEGER NOT NULL, root TEXT NOT NULL, block INTEGER NOT NULL, block_time INTEGER, PRIMARY KEY (tx_hash, log_index));
+        CREATE TABLE roots (seq INTEGER PRIMARY KEY AUTOINCREMENT, root TEXT NOT NULL UNIQUE, next_index INTEGER NOT NULL, tx_hash TEXT NOT NULL, block INTEGER NOT NULL);
+        CREATE TABLE nullifiers (nullifier TEXT PRIMARY KEY, tx_hash TEXT NOT NULL, block INTEGER NOT NULL);
+        CREATE TABLE flows (tx_hash TEXT NOT NULL, log_index INTEGER NOT NULL, kind TEXT NOT NULL, token TEXT NOT NULL, amount TEXT NOT NULL, block INTEGER NOT NULL, block_time INTEGER, PRIMARY KEY (tx_hash, log_index));
+        CREATE INDEX IF NOT EXISTS flows_token_block ON flows(token, block);
+      `);
+    }
   }
 
   getMeta(k: string): string | undefined {
@@ -136,10 +165,26 @@ export class Db {
 
   // ---- pool
 
-  insertCommitment(idx: number, commitment: string, token: string, ciphertext: Uint8Array, txHash: string, block: number, blockTime: number | null) {
+  insertCommitment(idx: number, commitment: string, token: string | null, ciphertext: Uint8Array, txHash: string, block: number, blockTime: number | null) {
     this.db
       .prepare("INSERT OR IGNORE INTO commitments(idx, commitment, token, ciphertext, tx_hash, block, block_time) VALUES(?,?,?,?,?,?,?)")
       .run(idx, commitment, token, ciphertext, txHash, block, blockTime);
+  }
+  insertTransact(txHash: string, firstIdx: number, sender: string, publicAmount: string, aspRoot: string, block: number) {
+    this.db.prepare("INSERT OR IGNORE INTO transacts(tx_hash, first_idx, sender, public_amount, asp_root, block) VALUES(?,?,?,?,?,?)").run(txHash, firstIdx, sender, publicAmount, aspRoot, block);
+  }
+  /** Every Transact in leaf order, joined with the leaves it produced (incl. open notes of the same tx). */
+  transacts() {
+    return this.db.prepare("SELECT tx_hash, first_idx, sender, public_amount, asp_root, block FROM transacts ORDER BY first_idx").all() as {
+      tx_hash: string; first_idx: number; sender: string; public_amount: string; asp_root: string; block: number;
+    }[];
+  }
+  /** Leaf index → commitment for every leaf, in order. */
+  allLeaves() {
+    return this.db.prepare("SELECT idx, commitment, tx_hash, kind FROM commitments ORDER BY idx").all() as { idx: number; commitment: string; tx_hash: string; kind: string }[];
+  }
+  commitmentByHex(commitment: string) {
+    return this.db.prepare("SELECT idx, tx_hash FROM commitments WHERE commitment = ?").get(commitment) as { idx: number; tx_hash: string } | undefined;
   }
   insertOpenNote(idx: number, commitment: string, token: string, shares: string, ownerHash: string, ciphertext: Uint8Array, txHash: string, block: number, blockTime: number | null) {
     this.db
@@ -179,7 +224,7 @@ export class Db {
   commitments(from: number, limit: number) {
     return this.db
       .prepare("SELECT idx, commitment, token, ciphertext, tx_hash, block, block_time, kind, shares, owner_hash FROM commitments WHERE idx >= ? ORDER BY idx LIMIT ?")
-      .all(from, limit) as { idx: number; commitment: string; token: string; ciphertext: Uint8Array; tx_hash: string; block: number; block_time: number | null; kind: string; shares: string | null; owner_hash: string | null }[];
+      .all(from, limit) as { idx: number; commitment: string; token: string | null; ciphertext: Uint8Array; tx_hash: string; block: number; block_time: number | null; kind: string; shares: string | null; owner_hash: string | null }[];
   }
   outCiphertexts(fromIdx: number, limit: number) {
     return this.db

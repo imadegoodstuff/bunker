@@ -3,6 +3,7 @@ import { blake2b } from "@noble/hashes/blake2.js";
 import { scryptAsync } from "@noble/hashes/scrypt.js";
 import bech32pkg from "bech32";
 const { bech32m } = bech32pkg;
+import { ml_kem768 } from "@noble/post-quantum/ml-kem.js";
 import { BabyJub, poseidon, type Point } from "./crypto.js";
 import { P, mod, bytesToBigIntLE, concatBytes, randomBytes } from "./field.js";
 
@@ -48,6 +49,44 @@ export interface FullViewingKey {
 export interface Address {
   d: Uint8Array; // 11 bytes
   pkd: Point;
+}
+
+/**
+ * A post-quantum address: the same (d, pk_d) plus the ML-KEM-768 encapsulation
+ * key of this diversifier. Notes sent to it use the hybrid envelope
+ * (encryption.ts, version 0x04). Encoded `bunkerq1…`; 1227 raw bytes.
+ */
+export interface PqAddress extends Address {
+  kemPk: Uint8Array; // 1184 bytes
+}
+
+export const KEM_PUBLIC_KEY_BYTES = 1184;
+export const ADDRESS_BYTES = 43;
+export const PQ_ADDRESS_BYTES = ADDRESS_BYTES + KEM_PUBLIC_KEY_BYTES;
+const PERSON_KEM = new TextEncoder().encode("bunkerKemRoot___");
+
+export function isPqAddress(a: Address): a is PqAddress {
+  return (a as PqAddress).kemPk instanceof Uint8Array && (a as PqAddress).kemPk.length === KEM_PUBLIC_KEY_BYTES;
+}
+
+/**
+ * The ML-KEM-768 key pair of one diversified address, derived from ivk and d:
+ * keygen seed = BLAKE2b-512(LE(ivk) || d, personal "bunkerKemRoot___"). Every
+ * holder of the incoming viewing key can derive it (a watch-only wallet reads
+ * hybrid notes too); a different d gives an unrelated key, so publishing the
+ * encapsulation key links nothing across addresses.
+ */
+export function kemKeyPairFor(ivk: bigint, d: Uint8Array): { publicKey: Uint8Array; secretKey: Uint8Array } {
+  const ivkBytes = new Uint8Array(32);
+  let v = ivk;
+  for (let i = 0; i < 32; i++) { ivkBytes[i] = Number(v & 0xffn); v >>= 8n; }
+  const seed = blake2b(concatBytes(ivkBytes, d), { dkLen: 64, personalization: PERSON_KEM });
+  return ml_kem768.keygen(seed);
+}
+
+/** Upgrade an address of ours to its post-quantum form. */
+export function toPqAddress(ivk: bigint, a: Address): PqAddress {
+  return { d: a.d, pkd: a.pkd, kemPk: kemKeyPairFor(ivk, a.d).publicKey };
 }
 
 function expand(sk: Uint8Array, tag: number): Uint8Array {
@@ -340,27 +379,36 @@ export function addressAtIndex(bjj: BabyJub, ivk: bigint, index: number): Addres
   throw new Error("no valid diversifier near index");
 }
 
-export function encodeAddress(bjj: BabyJub, addr: Address, hrp: "bunker" | "tbunker" = "bunker"): string {
-  const payload = concatBytes(addr.d, bjj.compress(addr.pkd));
-  return bech32m.encode(hrp, bech32m.toWords(payload), 120);
+/** bech32m length limit: a post-quantum address is ~1,970 characters. */
+const ADDRESS_STRING_LIMIT = 2100;
+
+/** `bunker1…` for a classic address, `bunkerq1…` for a post-quantum one (same wallet, same funds; only the envelope differs). */
+export function encodeAddress(bjj: BabyJub, addr: Address | PqAddress, hrp: "bunker" | "tbunker" = "bunker"): string {
+  const pq = isPqAddress(addr);
+  return bech32m.encode(pq ? `${hrp}q` : hrp, bech32m.toWords(addressToBytes(bjj, addr)), ADDRESS_STRING_LIMIT);
 }
 
-export function decodeAddress(bjj: BabyJub, s: string): { hrp: string; address: Address } {
-  const { prefix, words } = bech32m.decode(s, 120);
-  return { hrp: prefix, address: addressFromBytes(bjj, new Uint8Array(bech32m.fromWords(words))) };
+export function decodeAddress(bjj: BabyJub, s: string): { hrp: string; address: Address | PqAddress } {
+  const { prefix, words } = bech32m.decode(s.trim(), ADDRESS_STRING_LIMIT);
+  const hrp = prefix.endsWith("q") ? prefix.slice(0, -1) : prefix;
+  const address = addressFromBytes(bjj, new Uint8Array(bech32m.fromWords(words)));
+  if (prefix.endsWith("q") !== isPqAddress(address)) throw new Error("address prefix does not match its payload");
+  return { hrp, address };
 }
 
-/** The 43 raw bytes (d || compressed pk_d) a `bunker1…` string carries; what `ShieldedPool.register` stores. */
-export function addressToBytes(bjj: BabyJub, addr: Address): Uint8Array {
-  return concatBytes(addr.d, bjj.compress(addr.pkd));
+/** The raw bytes a `bunker1…` / `bunkerq1…` string carries (43, or 1227 with the ML-KEM key); what `ShieldedPool.register` stores. */
+export function addressToBytes(bjj: BabyJub, addr: Address | PqAddress): Uint8Array {
+  const base = concatBytes(addr.d, bjj.compress(addr.pkd));
+  return isPqAddress(addr) ? concatBytes(base, addr.kemPk) : base;
 }
 
-export function addressFromBytes(bjj: BabyJub, payload: Uint8Array): Address {
-  if (payload.length !== 43) throw new Error("bad address length");
+export function addressFromBytes(bjj: BabyJub, payload: Uint8Array): Address | PqAddress {
+  if (payload.length !== ADDRESS_BYTES && payload.length !== PQ_ADDRESS_BYTES) throw new Error("bad address length");
   const d = payload.slice(0, 11);
   if (!groupHash(bjj, d)) throw new Error("bad diversifier");
-  const pkd = bjj.decompress(payload.slice(11));
+  const pkd = bjj.decompress(payload.slice(11, 43));
   if (!pkd) throw new Error("bad address point");
   if (!bjj.inSubgroup(pkd)) throw new Error("address point not in subgroup");
+  if (payload.length === PQ_ADDRESS_BYTES) return { d, pkd, kemPk: payload.slice(43) };
   return { d, pkd };
 }

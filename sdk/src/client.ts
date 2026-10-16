@@ -15,7 +15,7 @@ import { bsc as bscChain, bscTestnet, hardhat, type Chain } from "viem/chains";
 import { AgentsApi, ApiError, IndexerApi, RelayerApi, type LaunchRow, type RelayJob, type RelayerInfo } from "./api.js";
 import { STALE_ROOT_ERRORS } from "./errors.js";
 import type { EvmAddress } from "./extdata.js";
-import { addressAtIndex, addressFromBytes, addressToBytes, decodeAddress, decodeViewingKey, encodeAddress, encodeViewingKey, seedFromBackup, seedFromSignature, seedToBackup, SPENDING_KEY_MESSAGE, type Address } from "./keys.js";
+import { addressAtIndex, addressFromBytes, addressToBytes, decodeAddress, decodeViewingKey, encodeAddress, encodeViewingKey, seedFromBackup, seedFromSignature, seedToBackup, toPqAddress, SPENDING_KEY_MESSAGE, type Address } from "./keys.js";
 import {
   EXIT_BUY, EXIT_SELL, exitData, launchCall, quotePrivateBuy, quotePrivateSell, readCurve, readParams, rolled, swapExitData, worstFeeBps,
   LaunchpadAbi, type CurveState, type LaunchpadParams,
@@ -52,6 +52,36 @@ export interface ConnectOptions {
   artifactLoader?: (circuit: CircuitName) => Promise<CircuitArtifacts>;
 }
 
+/** One note in a disclosure document; `opening` lets the reader recompute `commitment`. */
+export interface DisclosedNote {
+  commitment: string;
+  position: number;
+  token: EvmAddress | null;
+  asset: string;
+  shares: string;
+  receivedBlock: number | null;
+  receivedAt: number | null;
+  spent: boolean;
+  spentBlock: number | null;
+  spentAt: number | null;
+  nullifier?: string;
+  memo?: string;
+  opening: { gd: [string, string]; pkd: [string, string]; rseed: string };
+}
+export interface Disclosure {
+  format: "bunker-disclosure/1";
+  generatedAt: number;
+  chainId: number;
+  pool: EvmAddress;
+  protocolVersion: number;
+  scope: "notes" | "full";
+  address: string;
+  viewingKey?: string;
+  note?: string;
+  howToVerify: string;
+  notes: DisclosedNote[];
+}
+
 export type TxStage = "proving" | "relaying" | "confirming" | "draining" | "done";
 export interface TxEvent { stage: TxStage; message?: string; txHash?: string; releaseAt?: number }
 
@@ -60,6 +90,23 @@ export interface RelayOptions {
   fee?: bigint;
   /** UTF-8 memo encrypted to the recipient (private sends only). */
   memo?: string;
+  /**
+   * Attach an association-set membership proof: every note spent is shown to
+   * descend from a deposit the current ASP vouches for (sanctions screening at
+   * the entrance, SPEC §10). Optional; the pool itself never requires it, a
+   * counterparty or a compliance-only relayer may.
+   */
+  compliant?: boolean;
+  /** unix seconds after which the pool refuses the proof (default now + 2 h; 0 = never) */
+  validUntil?: bigint;
+  onEvent?: (e: TxEvent) => void;
+}
+
+export interface DirectOptions {
+  signer: Signer;
+  memo?: string;
+  compliant?: boolean;
+  validUntil?: bigint;
   onEvent?: (e: TxEvent) => void;
 }
 
@@ -143,10 +190,18 @@ export class BunkerClient {
   static randomSeed(): Uint8Array { return crypto.getRandomValues(new Uint8Array(32)); }
 
   private get hrp(): "bunker" | "tbunker" { return this.network.chainId === 56 ? "bunker" : "tbunker"; }
-  /** This wallet's stable shielded address (`bunker1…`, diversifier 0). Hand it out to receive private payments. */
-  address(): string { return encodeAddress(this.wallet.bjj, this.primaryAddress(), this.hrp); }
+  /**
+   * This wallet's stable shielded address (`bunker1…`, diversifier 0). Hand it
+   * out to receive private payments. With `{ pq: true }`, the post-quantum
+   * form (`bunkerq1…`): the same address plus its ML-KEM-768 key, ~2,000
+   * characters; senders then use the hybrid envelope.
+   */
+  address(o: { pq?: boolean } = {}): string {
+    const a = this.primaryAddress();
+    return encodeAddress(this.wallet.bjj, o.pq ? toPqAddress(this.wallet.fvk.ivk, a) : a, this.hrp);
+  }
   /** A fresh diversified address of the same wallet: unlinkable to the others, pays into the same balance. */
-  freshAddress(): string { return encodeAddress(this.wallet.bjj, this.wallet.address(), this.hrp); }
+  freshAddress(o: { pq?: boolean } = {}): string { return encodeAddress(this.wallet.bjj, o.pq ? this.wallet.pqAddress() : this.wallet.address(), this.hrp); }
   private primaryAddress(): Address { return addressAtIndex(this.wallet.bjj, this.wallet.fvk.ivk, 0); }
   backup(): string { if (!this.seed) throw new Error("watch-only client has no seed"); return seedToBackup(this.seed); }
   /** The full viewing key (`bunkerview1…`): lets an auditor or a watch-only device see every note and spend, and sign nothing. */
@@ -185,10 +240,13 @@ export class BunkerClient {
         if (row.blockTime != null) this.noteBlockTime(row.block, row.blockTime);
         const ct = b64ToBytes(row.ciphertext);
         const where = { block: row.block, blockTime: row.blockTime ?? null };
-        if (row.kind === "open" && row.shares != null && row.ownerHash != null) {
-          await this.wallet.scanOpenNote({ index: row.index, commitment: cm, shares: BigInt(row.shares), ownerHash: BigInt("0x" + row.ownerHash.replace(/^0x/, "")), ciphertext: ct, ...where }, idFor(row.token));
+        // `token` is null for a private send (the asset is inside the ciphertext); open notes and boundary crossings name it
+        const hinted = row.token ? idFor(row.token) : null;
+        if (row.kind === "open" && row.shares != null && row.ownerHash != null && hinted !== null) {
+          await this.wallet.scanOpenNote({ index: row.index, commitment: cm, shares: BigInt(row.shares), ownerHash: BigInt("0x" + row.ownerHash.replace(/^0x/, "")), ciphertext: ct, ...where }, hinted, getAddress(row.token!));
         } else if (ct.length) {
-          await this.wallet.scan({ index: row.index, commitment: cm, ciphertext: ct, ...where }, idFor(row.token));
+          const n = await this.wallet.scan({ index: row.index, commitment: cm, ciphertext: ct, ...where }, hinted);
+          if (n?.token) idFor(n.token);
         }
       }
       from = page.next;
@@ -228,6 +286,49 @@ export class BunkerClient {
   /** Every note this vault has ever owned (received and spent), oldest first; the raw material for a balance history. */
   history(token?: Token): LedgerEntry[] {
     return this.wallet.history(token === undefined ? undefined : assetId(norm(token).toLowerCase()));
+  }
+
+  /**
+   * Selective disclosure (SPEC §13): a document the owner hands to a counterparty,
+   * auditor or authority of their choosing. Nothing in it can be produced by
+   * anyone else, and nothing in it affects the chain.
+   *
+   *   * `scope: "notes"` (default) lists the chosen notes (all by default) with
+   *     their openings: the reader recomputes each commitment from
+   *     (token, value, g_d, pk_d, rseed) and finds it as a leaf of the pool,
+   *     which shows exactly those notes, their amounts and their timing, and
+   *     nothing about any other note of the vault;
+   *   * `scope: "full"` adds the full viewing key, with which the reader rescans
+   *     the chain and reproduces the whole history independently (every note
+   *     in, every spend out, and the balance at any block).
+   */
+  disclosure(o: { scope?: "notes" | "full"; commitments?: bigint[]; note?: string } = {}): Disclosure {
+    const hex = (x: bigint) => "0x" + x.toString(16).padStart(64, "0");
+    const bytes = (b: Uint8Array) => "0x" + Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+    const pick = o.commitments ? new Set(o.commitments.map((c) => c.toString(16))) : null;
+    const entries = this.wallet.history().filter((e) => !pick || pick.has(e.commitment.toString(16)));
+    const notes: DisclosedNote[] = entries.map((e) => ({
+      commitment: hex(e.commitment), position: e.position, token: e.token ?? null, asset: hex(e.asset), shares: e.value.toString(),
+      receivedBlock: e.receivedBlock, receivedAt: e.receivedAt, spent: e.spentBlock !== null, spentBlock: e.spentBlock, spentAt: e.spentAt,
+      nullifier: e.spentBlock !== null ? hex(e.nullifier) : undefined,
+      memo: e.memo && e.memo.length ? bytes(e.memo) : undefined,
+      opening: { gd: [hex(e.opening.gd[0]), hex(e.opening.gd[1])], pkd: [hex(e.opening.pkd[0]), hex(e.opening.pkd[1])], rseed: bytes(e.opening.rseed) },
+    }));
+    return {
+      format: "bunker-disclosure/1",
+      generatedAt: Math.floor(Date.now() / 1000),
+      chainId: this.network.chainId,
+      pool: this.network.pool,
+      protocolVersion: PROTOCOL_VERSION,
+      scope: o.scope ?? "notes",
+      address: this.address(),
+      viewingKey: o.scope === "full" ? this.viewingKey() : undefined,
+      note: o.note,
+      howToVerify: o.scope === "full"
+        ? "Open the viewing key in any BUNKER wallet (watch-only) or BunkerClient.connect({ viewingKey }) and sync: it reproduces every entry below from the chain. For each note, noteCommitment({asset, value: shares, gd, pkd, rseed}) equals `commitment`, which is leaf `position` of the pool's tree."
+        : "For each note, noteCommitment({asset: assetId(token), value: shares, gd, pkd, rseed}) equals `commitment`, which is leaf `position` of the pool's tree (indexer /commitments). A spent note's nullifier appears in the pool's Nullified events at `spentBlock`. Notes not listed are not disclosed.",
+      notes,
+    };
   }
 
   /** Keep syncing until the local view has every leaf the chain has (the indexer trails the chain by a few seconds). */
@@ -360,9 +461,14 @@ export class BunkerClient {
 
   // ---- registry
 
-  /** Publish this wallet's shielded address under the signer's EOA, so anyone can pay the EOA privately. */
-  async register(signer: Signer): Promise<Hex> {
-    const h = await this.write(signer, registerCall(this.network.pool, addressToBytes(this.wallet.bjj, this.primaryAddress())));
+  /**
+   * Publish this wallet's shielded address under the signer's EOA, so anyone
+   * can pay the EOA privately. `{ pq: true }` publishes the post-quantum form,
+   * so payments to the EOA use the hybrid envelope.
+   */
+  async register(signer: Signer, o: { pq?: boolean } = {}): Promise<Hex> {
+    const a = this.primaryAddress();
+    const h = await this.write(signer, registerCall(this.network.pool, addressToBytes(this.wallet.bjj, o.pq ? toPqAddress(this.wallet.fvk.ivk, a) : a)));
     await this.waitOk(h);
     return h;
   }
@@ -422,15 +528,15 @@ export class BunkerClient {
    * your own shielded address (or `to`: a `bunker1…` address or a registered EOA).
    * ERC-20s must be approved to the pool first.
    */
-  async buildShield(token: Token, amount: bigint, o: { to?: string } = {}): Promise<BuiltTransact> {
+  async buildShield(token: Token, amount: bigint, o: { to?: string; complianceData?: Uint8Array } = {}): Promise<BuiltTransact> {
     const t = norm(token);
     const pool = await this.pool(t, true);
     const units = toUnits(amount, pool.unit);
     if (units <= 0n) throw new Error("amount too small for this pool's unit");
     await this.sync();
     return this.wallet.buildTransact({
-      asset: assetId(t.toLowerCase()), poolAddress: this.network.pool, token: t, pool, tree: this.tree, artifacts: await this.allArtifacts(),
-      kind: "shield", amount: units, to: o.to ? await this.toShieldedAddress(o.to) : undefined,
+      asset: assetId(t.toLowerCase()), poolAddress: this.network.pool, chainId: this.network.chainId, token: t, pool, tree: this.tree, artifacts: await this.allArtifacts(),
+      kind: "shield", amount: units, to: o.to ? await this.toShieldedAddress(o.to) : undefined, complianceData: o.complianceData,
     });
   }
 
@@ -439,7 +545,7 @@ export class BunkerClient {
    * shield, approves the ERC-20 if needed, proves, sends, waits for the
    * receipt, re-syncs. Returns the tx hash. `to` defaults to your own address.
    */
-  async shield(token: Token, amount: bigint, o: { signer: Signer; to?: string; onEvent?: (e: TxEvent) => void }): Promise<Hex> {
+  async shield(token: Token, amount: bigint, o: { signer: Signer; to?: string; complianceData?: Uint8Array; onEvent?: (e: TxEvent) => void }): Promise<Hex> {
     const t = norm(token);
     const wc = this.walletClientFor(o.signer);
     const sender = wc.account?.address;
@@ -461,7 +567,7 @@ export class BunkerClient {
       }
     }
     o.onEvent?.({ stage: "proving", message: "generating proof" });
-    const built = await this.buildShield(t, amount, { to: o.to });
+    const built = await this.buildShield(t, amount, { to: o.to, complianceData: o.complianceData });
     try {
       o.onEvent?.({ stage: "confirming", message: "sending transaction" });
       const hash = await this.write(wc, built.call);
@@ -505,22 +611,47 @@ export class BunkerClient {
    * is public on the transaction, so use it for an account that may be linked
    * to the recipient anyway (typically the recipient itself).
    */
-  async unshieldDirect(token: Token, amount: bigint, recipient: EvmAddress, o: { signer: Signer; onEvent?: (e: TxEvent) => void }): Promise<Hex> {
-    const t = norm(token);
-    const pool = await this.pool(t, true);
+  unshieldDirect(token: Token, amount: bigint, recipient: EvmAddress, o: DirectOptions): Promise<Hex> {
+    return this.direct(norm(token), amount, "unshield", { ...o, recipient: getAddress(recipient) });
+  }
+
+  /**
+   * Private send without a relayer: `signer` pays the gas. The transaction
+   * names no token and no amount; what it does reveal is that the signer's
+   * account made a shielded transfer at this time. The censorship-resistant
+   * path when no relayer will carry the payment.
+   */
+  sendDirect(token: Token, amount: bigint, to: string, o: DirectOptions): Promise<Hex> {
+    return this.direct(norm(token), amount, "send", { ...o, to });
+  }
+
+  /** An exit (launchpad trade, swap, any `IBunkerExit`) submitted by `signer` instead of a relayer. */
+  exitDirect(token: Token, amount: bigint, target: EvmAddress, data: Uint8Array, o: DirectOptions & { reshield?: Token }): Promise<Hex> {
+    return this.direct(norm(token), amount, "exit", { ...o, exit: { target: getAddress(target), data }, reshield: o.reshield ? norm(o.reshield) : undefined });
+  }
+
+  private async direct(token: EvmAddress, amount: bigint, kind: Exclude<TransactKind, "shield">, o: DirectOptions & { to?: string; recipient?: EvmAddress; exit?: { target: EvmAddress; data: Uint8Array }; reshield?: EvmAddress }): Promise<Hex> {
+    if (o.reshield) await this.pool(o.reshield, true);
+    const pool = await this.pool(token, true);
     const units = toUnits(amount, pool.unit);
     if (units <= 0n) throw new Error("amount too small for this pool's unit");
+    const to = o.to ? await this.toShieldedAddress(o.to) : undefined;
     await this.sync();
-    const asset = assetId(t.toLowerCase());
+    const asset = assetId(token.toLowerCase());
     const need = sharesForWithdraw(pool, units);
     if (this.wallet.balance(asset) < need && this.wallet.balance(asset) + this.wallet.queuedBalance(asset) >= need) await this.ensureInserted(undefined, { signer: o.signer, onEvent: o.onEvent });
+    const asp = o.compliant ? await this.aspFor() : undefined;
     let consumed: bigint[] = [];
     try {
       const build = async () => {
         o.onEvent?.({ stage: "proving", message: "generating proof" });
         const built = await this.wallet.buildTransact({
-          asset, poolAddress: this.network.pool, token: t, pool, tree: this.tree, artifacts: await this.allArtifacts(),
-          kind: "unshield", amount: units, recipient: getAddress(recipient), relayerFee: 0n,
+          asset, poolAddress: this.network.pool, chainId: this.network.chainId, token, pool, tree: this.tree, artifacts: await this.allArtifacts(),
+          kind, amount: units, to, recipient: o.recipient, relayerFee: 0n,
+          memo: o.memo ? new TextEncoder().encode(o.memo) : undefined,
+          exitTarget: o.exit?.target, exitData: o.exit?.data,
+          reshield: o.reshield ? { token: o.reshield } : undefined,
+          validUntil: o.validUntil, ...asp,
         });
         consumed = built.consumed;
         return built;
@@ -532,7 +663,7 @@ export class BunkerClient {
         await this.sync();
         built = await build();
       }
-      o.onEvent?.({ stage: "confirming", message: "confirm the withdrawal in your wallet" });
+      o.onEvent?.({ stage: "confirming", message: "confirm the transaction in your wallet" });
       const hash = await this.write(o.signer, built.call);
       o.onEvent?.({ stage: "confirming", message: "waiting for the transaction", txHash: hash });
       await this.waitOk(hash);
@@ -545,6 +676,36 @@ export class BunkerClient {
       this.wallet.release(consumed.filter((cm) => !this.wallet.isSpent(cm)));
       throw e;
     }
+  }
+
+  // ---- association sets (SPEC §10): prove the notes you spend descend from deposits an ASP vouches for
+
+  /**
+   * The current association-set root and its on-chain provider, as the
+   * indexer publishes them, or null if no set is being maintained.
+   */
+  async aspInfo(): Promise<{ provider: EvmAddress; root: bigint; leaves: number; updatedAt: number | null } | null> {
+    const r = await this.indexer.aspRoot().catch(() => null);
+    if (!r || !r.root || !r.provider) return null;
+    return { provider: getAddress(r.provider), root: BigInt(r.root), leaves: r.leaves, updatedAt: r.updatedAt ?? null };
+  }
+
+  /** @internal buildTransact options that make the proof carry ASP membership for every real input */
+  private async aspFor(): Promise<{ aspRoot: bigint; aspProvider: EvmAddress; aspPathFor: (cm: bigint) => Promise<{ elements: bigint[]; indices: number[] } | undefined> }> {
+    const info = await this.aspInfo();
+    if (!info) throw new Error("no association set is available for this pool");
+    const onChain = await this.publicClient.readContract({ address: this.network.pool, abi: ShieldedPoolAbi, functionName: "isKnownAspRoot", args: [info.provider, info.root] });
+    if (!onChain) throw new Error("the association-set root has not been published on-chain yet; try again in a minute");
+    return {
+      aspRoot: info.root,
+      aspProvider: info.provider,
+      aspPathFor: async (cm) => {
+        const p = await this.indexer.aspPath(cm);
+        if (!p || !p.included) throw new Error("one of the notes you are spending is not in the association set; withdraw it without the compliance proof or from a different note");
+        if (BigInt(p.root) !== info.root) throw new Error("the association set changed while building; retry");
+        return { elements: p.elements.map((x) => BigInt(x)), indices: p.indices };
+      },
+    };
   }
 
   /**
@@ -571,18 +732,20 @@ export class BunkerClient {
     const asset = assetId(token.toLowerCase());
     const need = sharesForWithdraw(pool, units + fee);
     if (this.wallet.balance(asset) < need && this.wallet.balance(asset) + this.wallet.queuedBalance(asset) >= need) await this.ensureInserted(undefined, { onEvent: o.onEvent });
+    const asp = o.compliant || info.asp?.required ? await this.aspFor() : undefined;
     let consumed: bigint[] = [];
     let accepted = false;
     try {
       const build = async () => {
         o.onEvent?.({ stage: "proving", message: "generating proof" });
         const built = await this.wallet.buildTransact({
-          asset, poolAddress: this.network.pool, token, pool, tree: this.tree, artifacts: await this.allArtifacts(),
+          asset, poolAddress: this.network.pool, chainId: this.network.chainId, token, pool, tree: this.tree, artifacts: await this.allArtifacts(),
           kind, amount: units, to, recipient: o.recipient,
           relayerAddress, relayerFee: fee,
           memo: o.memo ? new TextEncoder().encode(o.memo) : undefined,
           exitTarget: o.exit?.target, exitData: o.exit?.data,
           reshield: o.reshield ? { token: o.reshield } : undefined,
+          validUntil: o.validUntil, ...asp,
         });
         consumed = built.consumed;
         o.onEvent?.({ stage: "relaying", message: "handing the proof to the relayer" });

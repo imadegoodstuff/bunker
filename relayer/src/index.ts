@@ -9,7 +9,7 @@ import { bsc, bscTestnet, hardhat } from "viem/chains";
 import {
   transactCallFromJson, contractErrorName, readPool, readCurve, decodeExitData, decodeSwapExitData, EXIT_BUY, EXIT_SELL, ZERO_ADDRESS, NATIVE_UNIT,
   ShieldedWallet, BabyJub, tryDecryptNote, groupHash, noteCommitment, assetId, amountForBurn, encodeAddress, addressAtIndex,
-  drainCall, readInsertedIndex, readNextIndex, ShieldedPoolAbi, IERC20MetadataAbi, PROTOCOL_VERSION, MAX_DRAIN,
+  drainCall, readInsertedIndex, readNextIndex, ShieldedPoolAbi, IERC20MetadataAbi, PROTOCOL_VERSION, PROTOCOL_REVISION, MAX_DRAIN,
   type TransactCallJson, type EvmAddress,
 } from "@bunker/sdk";
 import { FeePolicy, NATIVE } from "./policy.js";
@@ -37,6 +37,14 @@ const chain = CHAIN_ID === 56 ? bsc : CHAIN_ID === 97 ? bscTestnet : CHAIN_ID ==
 const { account, key } = loadAccount();
 const publicClient = createPublicClient({ chain, transport: http(RPC) });
 const walletClient = createWalletClient({ account, chain, transport: http(RPC) });
+// SUBMIT_RPC_URL: a private / MEV-protected endpoint that only ever sees the signed bytes (eth_sendRawTransaction).
+// Reads, simulation and receipts stay on RPC_URL. Verified at boot: it must answer eth_chainId with our chain.
+const SUBMIT_RPC = process.env.SUBMIT_RPC_URL || undefined;
+const submitClient = SUBMIT_RPC ? createPublicClient({ chain, transport: http(SUBMIT_RPC, { retryCount: 1 }) }) : undefined;
+if (submitClient) {
+  const id = await submitClient.getChainId().catch((e) => { throw new Error(`SUBMIT_RPC_URL does not answer eth_chainId: ${(e as Error).message}`); });
+  if (id !== CHAIN_ID) throw new Error(`SUBMIT_RPC_URL is chain ${id}, expected ${CHAIN_ID}`);
+}
 
 // The relayer's shielded wallet: fee notes are paid to it. Its seed is derived
 // from the relayer key (RELAYER_SEED overrides), so one secret runs the service.
@@ -57,17 +65,22 @@ const gas = new GasPriceOracle(publicClient, {
 });
 await gas.refresh();
 gas.start();
+/** a relayed call must remain valid this long beyond the maximum hold, for inclusion and retries */
+const VALIDITY_SLACK_MS = Number(process.env.VALIDITY_SLACK_MS ?? 120_000);
 /** gas priced into the fee: a transact with an exit + reshield runs ~850k; the headroom covers an auto-drain of a few leaves */
 const GAS_LIMIT = BigInt(process.env.GAS_LIMIT ?? 1_600_000);
 /** the most the relayer will attach to any single transaction (a 512-leaf drain stays far under this) */
 const GAS_MAX = BigInt(process.env.GAS_MAX ?? 12_000_000);
-const queue = new SubmitQueue({ publicClient, walletClient }, {
+/** transacts per transactBatch when several are due together; 1 = one transaction per user */
+const BATCH_MAX = Math.max(1, Number(process.env.BATCH_MAX ?? 4));
+const queue = new SubmitQueue({ publicClient, walletClient, submit: submitClient }, {
   minDelayMs: Number(process.env.MIN_DELAY_MS ?? 5_000),
   maxDelayMs: Number(process.env.MAX_DELAY_MS ?? 90_000),
   gasLimit: GAS_LIMIT,
   gasPrice: () => gas.current(),
   maxAttempts: 4,
   pool: POOL,
+  batchMax: BATCH_MAX,
 });
 queue.start();
 const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
@@ -161,6 +174,40 @@ if (DRAINS) setInterval(() => void keeperTick(), 3_000).unref?.();
 // a relayed transact adds leaves: start the clock right away
 queue.onConfirmed = (job) => { if (job.kind === "transact" && firstQueuedAt === undefined) firstQueuedAt = Date.now(); };
 
+// ---- association-set keeper (SPEC §10): publish the indexer's current root under this EOA so proofs can cite it.
+// The indexer builds the set (denylisted depositors out, proven lineage in); this relayer is only the on-chain
+// provider that signs the root. ASP_REQUIRED=1 makes every relayed transact carry a membership proof.
+
+const INDEXER_URL = process.env.INDEXER_URL?.replace(/\/+$/, "");
+const ASP_PUBLISH = process.env.ASP_PUBLISH !== "0" && !!INDEXER_URL;
+const ASP_REQUIRED = process.env.ASP_REQUIRED === "1";
+let aspRootKnown: { root: bigint; onChain: boolean; leaves: number; checkedAt: number } | null = null;
+async function aspTick() {
+  try {
+    const r = await fetch(`${INDEXER_URL}/asp/root`, { signal: AbortSignal.timeout(10_000) });
+    if (r.status === 404) { aspRootKnown = null; return; }
+    if (!r.ok) throw new Error(`indexer /asp/root: HTTP ${r.status}`);
+    const j = (await r.json()) as { root: string | null; leaves: number; provider: string | null };
+    if (!j.root) { aspRootKnown = null; return; }
+    if (j.provider && getAddress(j.provider) !== account.address) {
+      app.log.warn({ provider: j.provider, me: account.address }, "indexer names a different ASP provider; not publishing");
+      return;
+    }
+    const root = BigInt(j.root);
+    const onChain = await publicClient.readContract({ address: POOL, abi: ShieldedPoolAbi, functionName: "isKnownAspRoot", args: [account.address, root] });
+    aspRootKnown = { root, onChain, leaves: j.leaves, checkedAt: Date.now() };
+    if (onChain || queue.liveKeeper("keeper", "publishAspRoot")) return;
+    const job = queue.enqueueKeeper("keeper", { address: POOL, abi: ShieldedPoolAbi, functionName: "publishAspRoot", args: [root] }, 120_000n);
+    app.log.info({ root: j.root, leaves: j.leaves, job: job.id }, "publishing association-set root");
+  } catch (e) {
+    app.log.warn({ err: (e as Error).message }, "asp tick failed");
+  }
+}
+if (ASP_PUBLISH) {
+  setInterval(() => void aspTick(), Number(process.env.ASP_INTERVAL_MS ?? 60_000)).unref?.();
+  setTimeout(() => void aspTick(), 5_000).unref?.();
+}
+
 // ---- sweeper: turn accumulated fee notes into gas money
 
 const sweeper = new Sweeper({
@@ -184,6 +231,15 @@ app.post("/sweep", { config: { rateLimit: { max: 2, timeWindow: "1 minute" } } }
 app.get("/info", async () => ({
   commit: process.env.GIT_SHA ?? "unknown",
   protocolVersion: PROTOCOL_VERSION,
+  revision: PROTOCOL_REVISION,
+  /** association set: who publishes roots (this EOA) and whether a membership proof is required to be relayed */
+  asp: ASP_PUBLISH || ASP_REQUIRED ? { provider: account.address, required: ASP_REQUIRED, publishes: ASP_PUBLISH, root: aspRootKnown ? "0x" + aspRootKnown.root.toString(16).padStart(64, "0") : null, onChain: aspRootKnown?.onChain ?? false, leaves: aspRootKnown?.leaves ?? 0 } : null,
+  /** "private": signed transactions are broadcast through a private endpoint, not the public mempool */
+  submit: submitClient ? "private" : "public",
+  /** several due transacts go out in one transactBatch (max per bundle, bundles sent so far) */
+  batches: { max: BATCH_MAX, sent: queue.batchesSent },
+  /** the longest a relayed call may be held before it goes out; set ext.validUntil beyond now + this */
+  minValidityMs: queue.opts.maxDelayMs + VALIDITY_SLACK_MS,
   /** v1 notes and curves are still served under /v1/* when this is set */
   legacy: POOL_V1 ? { pool: POOL_V1, info: "/v1/info" } : null,
   relayer: account.address,
@@ -261,15 +317,23 @@ app.post<{ Body: TransactCallJson }>("/relay", async (req, reply) => {
   } catch (e) {
     return reply.code(400).send({ error: (e as Error).message });
   }
-  const [, token, , publicAmount, , , nullifiers, outCommitments, ext] = call.args;
-  if (!isAddress(token)) return reply.code(400).send({ error: "bad token" });
+  const { token: argToken, publicAmount, nullifiers, outCommitments, ext, aspRoot } = call.args[0];
+  if (!isAddress(argToken)) return reply.code(400).send({ error: "bad token" });
 
   // --- structural policy
   if (publicAmount > 0n) return reply.code(400).send({ error: "shields are not relayed" });
   if (call.value !== 0n) return reply.code(400).send({ error: "relayed calls carry no value" });
+  // the call must stay valid for the whole random hold plus a margin for inclusion
+  if (ext.validUntil !== 0n && Number(ext.validUntil) * 1000 < Date.now() + queue.opts.maxDelayMs + VALIDITY_SLACK_MS) {
+    return reply.code(400).send({ error: "validUntil is too soon for this relayer's delay window", minValidityMs: queue.opts.maxDelayMs + VALIDITY_SLACK_MS });
+  }
+  if (ASP_REQUIRED && aspRoot === 0n) return reply.code(400).send({ error: "this relayer only forwards transactions that prove association-set membership", asp: { provider: account.address } });
 
   // --- exit target: none, the launchpad (a private buy or sell), or SwapExit (a private swap)
+  // `token` is the public asset of an unshield / exit; an in-pool send (publicAmount 0) publishes none (zero address).
+  const token = getAddress(argToken);
   if (ext.exitTarget !== ZERO_ADDRESS) {
+    if (publicAmount === 0n) return reply.code(400).send({ error: "an exit withdraws value; publicAmount must be negative" });
     const target = getAddress(ext.exitTarget);
     if (getAddress(ext.recipient) !== target) return reply.code(400).send({ error: "an exit pays its target" });
     if (ext.reshield.ownerHash === 0n) return reply.code(400).send({ error: "an exit must reshield its proceeds; without it they would be stranded" });
@@ -303,12 +367,23 @@ app.post<{ Body: TransactCallJson }>("/relay", async (req, reply) => {
   }
 
   // --- the fee: output 2 must be a note to this relayer's shielded address, in the asset being spent
-  const pool = await readPool(publicClient, POOL, getAddress(token));
-  if (!pool.exists) return reply.code(400).send({ error: "pool not found" });
-  const asset = assetId(token.toLowerCase());
   const ct2 = Uint8Array.from(Buffer.from(ext.ciphertext2.slice(2), "hex"));
   const dec = ct2.length ? tryDecryptNote(bjj, shielded.fvk.ivk, ct2) : null;
   if (!dec) return reply.code(402).send({ error: "no fee note: output 2 must be encrypted to the relayer's shielded address", shieldedAddress: SHIELDED_ADDRESS });
+  // The asset: public when value leaves the pool; for an in-pool send it exists only inside the note (format v3 carries
+  // the token). The commitment check below binds the fee note to the proof, and the circuit binds every output to the
+  // same asset as the inputs, so a wrong token here can only make the proof fail.
+  let feeToken: EvmAddress;
+  if (publicAmount < 0n) {
+    feeToken = token;
+    if (dec.plaintext.token && getAddress(dec.plaintext.token) !== token) return reply.code(400).send({ error: "fee note is in a different asset than the withdrawal" });
+  } else {
+    if (!dec.plaintext.token) return reply.code(400).send({ error: "fee note must carry its token (note format v3) for an in-pool send" });
+    feeToken = getAddress(dec.plaintext.token);
+  }
+  const pool = await readPool(publicClient, POOL, feeToken);
+  if (!pool.exists) return reply.code(400).send({ error: "pool not found" });
+  const asset = assetId(feeToken.toLowerCase());
   const gd = groupHash(bjj, dec.plaintext.d);
   if (!gd) return reply.code(400).send({ error: "fee note has a bad diversifier" });
   const pkd = bjj.mulScalar(gd, shielded.fvk.ivk);
@@ -322,8 +397,8 @@ app.post<{ Body: TransactCallJson }>("/relay", async (req, reply) => {
   const costWei = relayCostWei();
   const floor = floorWei();
   let dyn: Awaited<ReturnType<typeof dynamic.policyFor>>;
-  if (!policy.supports(token)) {
-    dyn = await dynamic.policyFor(getAddress(token), floor);
+  if (!policy.supports(feeToken)) {
+    dyn = await dynamic.policyFor(feeToken, floor);
     if (!dyn) return reply.code(400).send({ error: "unsupported asset" });
   }
   let amount = 0n;
@@ -333,8 +408,8 @@ app.post<{ Body: TransactCallJson }>("/relay", async (req, reply) => {
     const pct = (amount * BigInt(dyn.bps)) / 10_000n;
     required = pct > dyn.min ? pct : dyn.min;
   } else {
-    required = policy.required(token, amount);
-    if (token === ZERO_ADDRESS) {
+    required = policy.required(feeToken, amount);
+    if (feeToken === ZERO_ADDRESS) {
       const floorUnits = (floor + NATIVE_UNIT - 1n) / NATIVE_UNIT;
       if (floorUnits > required) required = floorUnits;
     }

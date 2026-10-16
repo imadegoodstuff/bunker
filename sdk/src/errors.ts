@@ -33,6 +33,10 @@ export const POOL_ERRORS = [
   "BadAddress",
   "AmountTooSmall",
   "NothingQueued",
+  "Expired",
+  "ComplianceRejected",
+  "BatchShield",
+  "EmptyBatch",
 ] as const;
 export type PoolErrorName = (typeof POOL_ERRORS)[number];
 
@@ -60,8 +64,8 @@ export type LaunchErrorName = (typeof LAUNCH_ERRORS)[number];
 
 export type ContractErrorName = PoolErrorName | LaunchErrorName | SwapExitErrorName;
 
-/** Errors that mean "the tree moved under you": a fresh sync and a new proof against the current root are the right response. */
-export const STALE_ROOT_ERRORS: readonly ContractErrorName[] = ["UnknownRoot", "InvalidProof"];
+/** Errors that mean "the tree moved under you" (or the proof aged out): a fresh sync and a new proof against the current root are the right response. */
+export const STALE_ROOT_ERRORS: readonly ContractErrorName[] = ["UnknownRoot", "InvalidProof", "Expired"];
 
 const ABIS = [...ShieldedPoolAbi, ...LaunchpadAbi, ...SwapExitAbi];
 const KNOWN: readonly string[] = [...POOL_ERRORS, ...LAUNCH_ERRORS, ...SWAP_EXIT_ERRORS];

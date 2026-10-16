@@ -10,6 +10,7 @@ import { Scanner } from "./scanner.js";
 import { contiguousPrefix } from "./paging.js";
 import { inspectContract, type ContractInfo } from "./contracts.js";
 import { buildMeta, MAX_IMAGE_BYTES, MetaError, MetaStore, RateLimit } from "./meta.js";
+import { AssociationSet, Denylist, DEFAULT_DENYLIST_URLS } from "./asp.js";
 
 const RPC = process.env.RPC_URL ?? "https://bsc-dataseed.bnbchain.org";
 const CHAIN_ID = Number(process.env.CHAIN_ID ?? 56);
@@ -25,6 +26,12 @@ const PORT = Number(process.env.PORT ?? 8788);
 const META_DIR = process.env.META_DIR ?? join(dirname(DB_PATH), "meta");
 const PUBLIC_URL = process.env.PUBLIC_URL ?? `http://localhost:${PORT}`;
 const META_UPLOADS_PER_HOUR = Number(process.env.META_UPLOADS_PER_HOUR ?? 20);
+// Association set (SPEC §10). ASP_PROVIDER is the EOA that publishes this indexer's roots on-chain (the relayer's
+// keeper); without it wallets cannot use the set. ASP_DENYLIST_URLS="" disables the set entirely.
+const ASP_PROVIDER = process.env.ASP_PROVIDER ? getAddress(process.env.ASP_PROVIDER) : null;
+const ASP_DENYLIST_URLS = process.env.ASP_DENYLIST_URLS === undefined ? DEFAULT_DENYLIST_URLS : process.env.ASP_DENYLIST_URLS.split(",").map((s) => s.trim()).filter(Boolean);
+const ASP_DENYLIST = (process.env.ASP_DENYLIST ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+const ASP_ENABLED = process.env.ASP_DENYLIST_URLS !== "" || ASP_DENYLIST.length > 0;
 
 function fail(name: string): never {
   throw new Error(`${name} not set and no deployments file for chain ${CHAIN_ID}`);
@@ -63,6 +70,17 @@ const scanner = new Scanner(clients, db, {
 console.log(`[indexer] chain ${CHAIN_ID}, pool ${POOL}, launchpad ${LAUNCHPAD ?? "-"}, from block ${START_BLOCK}; rpc endpoints: ${RPC_LIST.map(redact).join(", ")}`);
 void scanner.start();
 
+const denylist = new Denylist(ASP_DENYLIST_URLS, ASP_DENYLIST);
+const asp = ASP_ENABLED ? new AssociationSet(db, denylist, (s) => console.log(`[asp] ${s}`)) : null;
+if (asp) {
+  await denylist.refresh().catch((e) => console.warn("[asp] denylist refresh failed:", (e as Error).message));
+  console.log(`[asp] denylist: ${denylist.size} addresses from ${ASP_DENYLIST_URLS.length} source(s)${ASP_DENYLIST.length ? ` + ${ASP_DENYLIST.length} inline` : ""}; provider ${ASP_PROVIDER ?? "(unset: roots are not published)"}`);
+  const tickAsp = () => asp.update().catch((e) => console.error("[asp] update failed:", (e as Error).message));
+  void tickAsp();
+  setInterval(tickAsp, Number(process.env.ASP_INTERVAL_MS ?? 15_000)).unref();
+  setInterval(() => void denylist.refresh().then(tickAsp).catch(() => {}), 6 * 60 * 60 * 1000).unref();
+}
+
 let onChain: { pool: ContractInfo; launchpad: ContractInfo | null } = await inspect();
 setInterval(() => void inspect().then((p) => (onChain = p)), 10 * 60 * 1000).unref();
 async function inspect() {
@@ -97,7 +115,33 @@ app.get("/health", async (_req, reply) => {
     scan: { ...scanner.status(), head: head === null ? null : Number(head) },
     rpc: redact(RPC),
     rpcs: RPC_LIST.map((u, i) => ({ url: redact(u), recovered: scanner.recoveredVia[i] })),
+    asp: asp ? { provider: ASP_PROVIDER, root: asp.current().root, leaves: asp.current().leaves, excluded: asp.current().excluded, denylist: denylist.size, sources: denylist.sources } : null,
   });
+});
+
+/**
+ * Association set (SPEC §10): the current root, who publishes it on-chain and how it is built. Wallets fetch this,
+ * check `isKnownAspRoot(provider, root)` on the pool, then take membership paths for the notes they spend.
+ */
+app.get("/asp/root", async (_req, reply) => {
+  if (!asp) return reply.code(404).send({ error: "this indexer maintains no association set" });
+  const s = asp.current();
+  return {
+    provider: ASP_PROVIDER, root: s.leaves ? s.root : null, leaves: s.leaves, excluded: s.excluded, updatedAt: s.updatedAt,
+    sources: ASP_DENYLIST_URLS,
+    policy: "shields from depositors not on the denylist; outputs of transactions that proved membership against an earlier root of this provider",
+  };
+});
+/** Membership path of a note commitment (32-byte hex) in the current association set. */
+app.get<{ Params: { cm: string } }>("/asp/path/:cm", async (req, reply) => {
+  if (!asp) return reply.code(404).send({ error: "this indexer maintains no association set" });
+  const cm = req.params.cm.toLowerCase().replace(/^0x/, "");
+  if (!/^[0-9a-f]{1,64}$/.test(cm)) return reply.code(400).send({ error: "bad commitment" });
+  const row = db.commitmentByHex(cm.padStart(64, "0"));
+  if (!row) return reply.code(404).send({ error: "unknown commitment" });
+  const p = await asp.path(row.idx);
+  if (!p) return { included: false, root: asp.current().root, elements: [], indices: [] };
+  return { included: true, ...p };
 });
 
 /** Leaves and their note ciphertexts, paginated by leaf index. Wallets trial-decrypt these. */

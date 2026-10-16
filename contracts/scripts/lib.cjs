@@ -59,10 +59,19 @@ async function deployAll(ethers, opts = {}) {
   log(`Transact4x3Verifier ${await v4.getAddress()}`);
 
   const leaf = await emptyLeaf();
+  // governance = a timelock (24 h by default) administered by `opts.timelockAdmin` (the deployer, until a multisig takes over)
+  let timelock = opts.timelock;
+  if (!timelock) {
+    const TL = await ethers.getContractFactory("Timelock");
+    const tl = await TL.deploy(opts.timelockAdmin || deployer.address, opts.timelockDelay ?? 24 * 3600);
+    await tl.waitForDeployment();
+    timelock = await tl.getAddress();
+    log(`Timelock ${timelock}`);
+  }
   const Pool = await ethers.getContractFactory("ShieldedPool", { libraries: { PoseidonT3: poseidon, PoseidonT6: poseidonT6 } });
   const guardian = opts.guardian || deployer.address;
   const nativeCap = opts.nativeTvlCap ?? ethers.MaxUint256;
-  const pool = await Pool.deploy(await v2.getAddress(), await v4.getAddress(), guardian, leaf, nativeCap);
+  const pool = await Pool.deploy(await v2.getAddress(), await v4.getAddress(), guardian, timelock, leaf, nativeCap);
   await pool.waitForDeployment();
   log(`ShieldedPool ${await pool.getAddress()}`);
 
@@ -84,7 +93,7 @@ async function deployAll(ethers, opts = {}) {
   await swapExit.waitForDeployment();
   log(`SwapExit ${await swapExit.getAddress()}`);
 
-  return { poseidon, poseidonT6, verifier2x3: await v2.getAddress(), verifier4x3: await v4.getAddress(), pool, launchpad, swapExit, router, params, emptyLeaf: leaf };
+  return { poseidon, poseidonT6, verifier2x3: await v2.getAddress(), verifier4x3: await v4.getAddress(), timelock, pool, launchpad, swapExit, router, params, emptyLeaf: leaf };
 }
 
 /**

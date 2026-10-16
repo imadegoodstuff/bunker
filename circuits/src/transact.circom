@@ -12,7 +12,12 @@ template Transact(nIns, nOuts, levels) {
     // ---- public ----
     signal input root;
     signal input publicAmount;
-    signal input asset;
+    // The asset the pool moves across its boundary. Bound to the notes' asset
+    // only when value crosses the boundary (publicAmount != 0); a private
+    // send passes 0 here and the asset of every note it spends and creates
+    // stays inside the proof. In-pool transfers therefore do not partition
+    // the anonymity set by asset.
+    signal input assetPublic;
     signal input extDataHash;
     signal input aspRoot;
     signal input nullifiers[nIns];
@@ -21,6 +26,13 @@ template Transact(nIns, nOuts, levels) {
     // ---- private: keys ----
     signal input ask;
     signal input nsk;
+
+    // ---- private: the asset every spent and created note is denominated in
+    signal input asset;
+    // publicAmount != 0  =>  assetPublic == asset
+    signal assetGap;
+    assetGap <== assetPublic - asset;
+    assetGap * publicAmount === 0;
 
     // ---- private: spends ----
     signal input inValue[nIns];

@@ -56,23 +56,24 @@ before(async () => {
   const otherGd = groupHash(bjj, other.d);
 
   // one real note of 1000 in the tree
-  const n0 = { asset, value: 1000n, gd: selfGd, pkd: self.pkd, ...freshRandomness() };
+  const n0 = { asset, token: NATIVE_TOKEN, value: 1000n, gd: selfGd, pkd: self.pkd, ...freshRandomness() };
   const cm0 = await noteCommitment(n0);
   const pos0 = await tree.insert(cm0);
 
   // unshield 400 to the public, 590 change to self, a 10 fee note to the relayer (the stranger here)
-  const change = { asset, value: 590n, gd: selfGd, pkd: self.pkd, ...freshRandomness() };
-  const zero = { asset, value: 0n, gd: selfGd, pkd: self.pkd, ...freshRandomness() };
-  const fee = { asset, value: 10n, gd: otherGd, pkd: other.pkd, ...freshRandomness() };
+  const change = { asset, token: NATIVE_TOKEN, value: 590n, gd: selfGd, pkd: self.pkd, ...freshRandomness() };
+  const zero = { asset, token: NATIVE_TOKEN, value: 0n, gd: selfGd, pkd: self.pkd, ...freshRandomness() };
+  const fee = { asset, token: NATIVE_TOKEN, value: 10n, gd: otherGd, pkd: other.pkd, ...freshRandomness() };
   const c0 = encryptNote(bjj, self, change, undefined, false);
   const c2 = encryptNote(bjj, other, fee, undefined, false);
   const ext = {
     recipient: ZERO_ADDRESS, exitTarget: NO_EXIT, exitData: new Uint8Array(0),
     ciphertext0: c0.ciphertext, ciphertext1: new Uint8Array(0), ciphertext2: c2.ciphertext, outCiphertext: new Uint8Array(0), reshield: NO_RESHIELD,
+    validUntil: 0n, complianceData: new Uint8Array(0),
   };
   const params = {
     spend: wallet.spend, fvk: wallet.fvk, root: await tree.root(), asset, publicAmount: -400n,
-    extDataHash: extDataHash(ext), aspRoot: 0n,
+    extDataHash: extDataHash(ext, 56, ZERO_ADDRESS), aspRoot: 0n,
     inputs: [{ note: { ...n0, commitment: cm0, position: pos0 }, path: await tree.path(pos0) }],
     outputs: [change, zero, fee], dummyPath: tree.dummyPath(), self: { gd: selfGd, pkd: self.pkd },
   };
@@ -189,6 +190,27 @@ test("a dummy (zero-value) input cannot carry value", async () => {
     w.outValue[0] = "595";
     w.outCommitments[0] = c0;
   }, "dummy with value");
+});
+
+// ---- asset -----------------------------------------------------------------
+
+test("when value crosses the boundary, the public asset must equal the notes' asset", async () => {
+  await rejects((w) => { w.assetPublic = (BigInt(w.assetPublic) + 1n).toString(); }, "assetPublic != asset on an unshield");
+  await rejects((w) => { w.assetPublic = "0"; }, "assetPublic = 0 on an unshield");
+});
+
+test("a private send (publicAmount = 0) proves with assetPublic = 0 and the asset hidden", async () => {
+  // rebalance to a pure in-pool transfer: 1000 in = 990 to self + 10 fee, nothing public
+  const input = structuredClone(honest.input);
+  input.publicAmount = "0";
+  input.assetPublic = "0";
+  input.outValue[0] = "990";
+  input.outCommitments[0] = await cmWith(0, 990n);
+  const { publicSignals } = await groth16.fullProve(input, wasm, zkey);
+  assert.equal(publicSignals[2], "0", "the asset is not among the public signals of a private send");
+  // and the asset inside still has to be consistent across inputs and outputs: a foreign-asset output breaks its commitment
+  const foreignCm = (await noteCommitment({ ...honest.params.outputs[0], value: 990n, asset: assetId("0x1111111111111111111111111111111111111111") })).toString();
+  await assert.rejects(groth16.fullProve({ ...input, outCommitments: [foreignCm, input.outCommitments[1], input.outCommitments[2]] }, wasm, zkey), /Assert Failed|Error in template|not satisfied/i);
 });
 
 // ---- asp -------------------------------------------------------------------

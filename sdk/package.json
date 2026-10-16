@@ -9,7 +9,15 @@
     "url": "https://github.com/imadegoodstuff/bunker.git",
     "directory": "sdk"
   },
-  "keywords": ["bnb", "bsc", "privacy", "zk", "shielded", "launchpad", "bunker"],
+  "keywords": [
+    "bnb",
+    "bsc",
+    "privacy",
+    "zk",
+    "shielded",
+    "launchpad",
+    "bunker"
+  ],
   "publishConfig": {
     "access": "public"
   },
@@ -34,6 +42,7 @@
   "dependencies": {
     "@noble/ciphers": "^2.4.0",
     "@noble/hashes": "^2.4.0",
+    "@noble/post-quantum": "^0.7.1",
     "bech32": "^2.0.0",
     "circomlibjs": "^0.1.7",
     "ffjavascript": "^0.3.1",

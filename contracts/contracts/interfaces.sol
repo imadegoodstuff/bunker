@@ -18,6 +18,18 @@ interface IBunkerExit {
     function onExit(address token, uint256 amount, address relayer, bytes calldata data) external;
 }
 
+/**
+ * @notice An entrance policy the pool's governance may attach to a token (SPEC §10).
+ * Consulted on shields only: it sees the depositor, the token and the amount —
+ * exactly what the shield transaction already makes public — plus whatever the
+ * depositor chose to attach (`ext.complianceData`: a sanctions non-membership
+ * proof, a zkKYC credential, …). It never sees inside the pool and is never
+ * asked about an exit.
+ */
+interface IComplianceHook {
+    function onShield(address token, address depositor, uint256 amountWei, bytes calldata data) external returns (bool);
+}
+
 interface IERC20 {
     function totalSupply() external view returns (uint256);
     function balanceOf(address a) external view returns (uint256);
