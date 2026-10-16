@@ -59,4 +59,5 @@ primary_region = "sin"
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "1024mb"
+  # the sweeper proves transact circuits in-process (snarkjs); 512mb is the floor for that
+  memory = "512mb"
